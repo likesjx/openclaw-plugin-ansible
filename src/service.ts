@@ -12,7 +12,8 @@ import { WebSocketServer, WebSocket } from "ws";
 import * as fs from "fs";
 import * as path from "path";
 import type { OpenClawPluginApi, ServiceContext } from "./types.js";
-import type { AnsibleConfig, AnsibleState, TailscaleId, PulseData, NodeContext } from "./schema.js";
+import type { AnsibleConfig, AnsibleState, TailscaleId, PulseData, NodeContext, Message } from "./schema.js";
+import { MESSAGE_RETENTION } from "./schema.js";
 
 // Re-export for convenience
 export type { AnsibleState };
@@ -23,8 +24,10 @@ let nodeId: TailscaleId | null = null;
 let wsServer: WebSocketServer | null = null;
 let providers: WebsocketProvider[] = [];
 let heartbeatInterval: ReturnType<typeof setInterval> | null = null;
+let cleanupInterval: ReturnType<typeof setInterval> | null = null;
 
 const HEARTBEAT_INTERVAL_MS = 30_000;
+const CLEANUP_INTERVAL_MS = 60_000; // Run cleanup every minute
 const STATE_FILE = "ansible-state.yjs";
 
 /**
@@ -103,6 +106,9 @@ export function createAnsibleService(
       // Start pulse heartbeat
       startPulseHeartbeat(ctx);
 
+      // Start message cleanup
+      startMessageCleanup(ctx);
+
       // Set up auto-persistence
       setupAutoPersist(ctx.stateDir);
 
@@ -116,6 +122,12 @@ export function createAnsibleService(
       if (heartbeatInterval) {
         clearInterval(heartbeatInterval);
         heartbeatInterval = null;
+      }
+
+      // Stop cleanup
+      if (cleanupInterval) {
+        clearInterval(cleanupInterval);
+        cleanupInterval = null;
       }
 
       // Persist state before shutdown
@@ -398,4 +410,66 @@ function startPulseHeartbeat(ctx: ServiceContext) {
 
   // Periodic heartbeat
   heartbeatInterval = setInterval(updatePulse, HEARTBEAT_INTERVAL_MS);
+}
+
+// ============================================================================
+// Message Cleanup
+// ============================================================================
+
+function startMessageCleanup(ctx: ServiceContext) {
+  const runCleanup = () => {
+    if (!doc || !nodeId) return;
+
+    const messages = doc.getMap("messages");
+    const now = Date.now();
+    const maxAgeMs = MESSAGE_RETENTION.maxAgeHours * 60 * 60 * 1000;
+    const cutoff = now - maxAgeMs;
+
+    // Collect messages to potentially delete
+    const allMessages: Array<{ id: string; msg: Message }> = [];
+    for (const [id, msg] of messages.entries()) {
+      allMessages.push({ id, msg: msg as Message });
+    }
+
+    // Sort by timestamp (oldest first)
+    allMessages.sort((a, b) => a.msg.timestamp - b.msg.timestamp);
+
+    let deleted = 0;
+    const toDelete: string[] = [];
+
+    for (const { id, msg } of allMessages) {
+      // Skip unread messages if configured to keep them
+      if (MESSAGE_RETENTION.keepUnread && !msg.readBy.includes(nodeId)) {
+        continue;
+      }
+
+      // Delete if too old
+      if (msg.timestamp < cutoff) {
+        toDelete.push(id);
+        continue;
+      }
+
+      // Delete if over count limit (keeping newest)
+      const remaining = allMessages.length - toDelete.length;
+      if (remaining > MESSAGE_RETENTION.maxCount) {
+        toDelete.push(id);
+      }
+    }
+
+    // Perform deletions
+    for (const id of toDelete) {
+      messages.delete(id);
+      deleted++;
+    }
+
+    if (deleted > 0) {
+      ctx.logger.debug(`Cleaned up ${deleted} old messages`);
+    }
+  };
+
+  // Run cleanup periodically
+  cleanupInterval = setInterval(runCleanup, CLEANUP_INTERVAL_MS);
+
+  // Run once at startup (after a short delay to allow sync)
+  setTimeout(runCleanup, 5000);
 }
