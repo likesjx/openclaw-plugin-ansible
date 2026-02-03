@@ -11,8 +11,10 @@ import { WebsocketProvider } from "y-websocket";
 import { WebSocketServer, WebSocket } from "ws";
 import * as fs from "fs";
 import * as path from "path";
-// @ts-expect-error - CommonJS module
-import { setupWSConnection, getYDoc } from "y-websocket/bin/utils.cjs";
+import { createRequire } from "module";
+const require = createRequire(import.meta.url);
+// y-websocket utils are not exported, so we need to use require
+const { setupWSConnection, getYDoc } = require("y-websocket/bin/utils.cjs");
 import type { OpenClawPluginApi, ServiceContext } from "./types.js";
 import type { AnsibleConfig, AnsibleState, TailscaleId, PulseData, NodeContext, Message } from "./schema.js";
 import { MESSAGE_RETENTION } from "./schema.js";
