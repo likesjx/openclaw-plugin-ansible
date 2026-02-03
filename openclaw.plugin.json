@@ -1,0 +1,53 @@
+{
+  "id": "ansible",
+  "name": "Ansible",
+  "description": "Distributed coordination layer - one agent, multiple bodies",
+  "version": "0.1.0",
+  "configSchema": {
+    "type": "object",
+    "properties": {
+      "tier": {
+        "type": "string",
+        "enum": ["backbone", "edge"],
+        "description": "Node tier: backbone (always-on VPS) or edge (intermittent client)"
+      },
+      "listenPort": {
+        "type": "number",
+        "default": 1234,
+        "description": "WebSocket port for backbone nodes to listen on"
+      },
+      "backbonePeers": {
+        "type": "array",
+        "items": { "type": "string" },
+        "description": "WebSocket URLs of backbone peers to connect to",
+        "examples": ["ws://vps-jane.tail:1234", "ws://100.64.212.8:1234"]
+      },
+      "capabilities": {
+        "type": "array",
+        "items": { "type": "string" },
+        "default": [],
+        "description": "Capabilities this node provides: always-on, local-files, gpu"
+      }
+    },
+    "required": ["tier"]
+  },
+  "uiHints": {
+    "tier": {
+      "label": "Node Tier",
+      "help": "Backbone nodes are always-on servers that form the sync mesh. Edge nodes connect as clients."
+    },
+    "listenPort": {
+      "label": "Listen Port",
+      "help": "Port for the WebSocket server (backbone only)",
+      "advanced": true
+    },
+    "backbonePeers": {
+      "label": "Backbone Peers",
+      "help": "WebSocket URLs of backbone nodes to sync with"
+    },
+    "capabilities": {
+      "label": "Capabilities",
+      "help": "What this node can do: always-on, local-files, gpu"
+    }
+  }
+}

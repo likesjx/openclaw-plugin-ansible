@@ -1,0 +1,39 @@
+/**
+ * Ansible Plugin - Distributed coordination layer for OpenClaw
+ *
+ * Enables a single agent identity to operate across multiple OpenClaw instances
+ * ("one agent, multiple bodies") via Yjs CRDT synchronization.
+ */
+
+import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
+import { createAnsibleService } from "./service.js";
+import { registerAnsibleHooks } from "./hooks.js";
+import { registerAnsibleTools } from "./tools.js";
+import { registerAnsibleCli } from "./cli.js";
+import type { AnsibleConfig } from "./schema.js";
+
+export function register(api: OpenClawPluginApi<AnsibleConfig>) {
+  const config = api.pluginConfig;
+
+  if (!config?.tier) {
+    api.logger?.warn("Ansible plugin: 'tier' not configured, skipping initialization");
+    return;
+  }
+
+  // Register the Yjs sync service
+  api.registerService(createAnsibleService(api, config));
+
+  // Register hooks for context injection
+  registerAnsibleHooks(api, config);
+
+  // Register agent tools
+  registerAnsibleTools(api, config);
+
+  // Register CLI commands
+  registerAnsibleCli(api, config);
+
+  api.logger?.info(`Ansible plugin initialized (tier: ${config.tier})`);
+}
+
+export type { AnsibleConfig } from "./schema.js";
+export type { AnsibleState, Task, Message, NodeContext, NodeInfo } from "./schema.js";
