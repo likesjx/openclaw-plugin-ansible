@@ -5,15 +5,15 @@
  * ("one agent, multiple bodies") via Yjs CRDT synchronization.
  */
 
-import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
+import type { OpenClawPluginApi } from "./types.js";
 import { createAnsibleService } from "./service.js";
 import { registerAnsibleHooks } from "./hooks.js";
 import { registerAnsibleTools } from "./tools.js";
 import { registerAnsibleCli } from "./cli.js";
 import type { AnsibleConfig } from "./schema.js";
 
-export function register(api: OpenClawPluginApi<AnsibleConfig>) {
-  const config = api.pluginConfig;
+export function register(api: OpenClawPluginApi) {
+  const config = api.pluginConfig as AnsibleConfig | undefined;
 
   if (!config?.tier) {
     api.logger?.warn("Ansible plugin: 'tier' not configured, skipping initialization");

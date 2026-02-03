@@ -5,12 +5,12 @@
  */
 
 import { randomUUID } from "crypto";
-import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
+import type { OpenClawPluginApi } from "./types.js";
 import type { AnsibleConfig, Task, Message, Decision, Thread } from "./schema.js";
 import { getDoc, getNodeId, getAnsibleState } from "./service.js";
 
 export function registerAnsibleTools(
-  api: OpenClawPluginApi<AnsibleConfig>,
+  api: OpenClawPluginApi,
   config: AnsibleConfig
 ) {
   // === ansible.delegate_task ===

@@ -7,22 +7,25 @@
  */
 
 import * as Y from "yjs";
-import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
-import type { AnsibleConfig, AnsibleState, TailscaleId } from "./schema.js";
+import { WebsocketProvider } from "y-websocket";
+import { WebSocketServer, WebSocket } from "ws";
+import * as fs from "fs";
+import * as path from "path";
+import type { OpenClawPluginApi, ServiceContext } from "./types.js";
+import type { AnsibleConfig, AnsibleState, TailscaleId, PulseData, NodeContext } from "./schema.js";
 
 // Re-export for convenience
 export type { AnsibleState };
 
-interface ServiceContext {
-  config: AnsibleConfig;
-  workspaceDir: string;
-  stateDir: string;
-  logger: { info: (msg: string) => void; warn: (msg: string) => void; debug: (msg: string) => void };
-}
-
 // Singleton state
 let doc: Y.Doc | null = null;
 let nodeId: TailscaleId | null = null;
+let wsServer: WebSocketServer | null = null;
+let providers: WebsocketProvider[] = [];
+let heartbeatInterval: ReturnType<typeof setInterval> | null = null;
+
+const HEARTBEAT_INTERVAL_MS = 30_000;
+const STATE_FILE = "ansible-state.yjs";
 
 /**
  * Get the shared Yjs document
@@ -45,7 +48,7 @@ export function getAnsibleState(): AnsibleState | null {
   if (!doc) return null;
 
   return {
-    nodes: doc.getMap("nodes") as unknown as Map<TailscaleId, AnsibleState["nodes"] extends Map<any, infer V> ? V : never>,
+    nodes: doc.getMap("nodes") as unknown as Map<TailscaleId, AnsibleState["nodes"] extends Map<string, infer V> ? V : never>,
     pendingInvites: doc.getMap("pendingInvites") as unknown as AnsibleState["pendingInvites"],
     tasks: doc.getMap("tasks") as unknown as AnsibleState["tasks"],
     messages: doc.getMap("messages") as unknown as AnsibleState["messages"],
@@ -58,7 +61,7 @@ export function getAnsibleState(): AnsibleState | null {
  * Create the Ansible sync service
  */
 export function createAnsibleService(
-  api: OpenClawPluginApi<AnsibleConfig>,
+  _api: OpenClawPluginApi,
   config: AnsibleConfig
 ) {
   return {
@@ -74,7 +77,8 @@ export function createAnsibleService(
       nodeId = await detectTailscaleId();
       if (!nodeId) {
         ctx.logger.warn("Could not detect Tailscale ID, using hostname");
-        nodeId = (await import("os")).hostname();
+        const os = await import("os");
+        nodeId = os.hostname();
       }
 
       ctx.logger.info(`Ansible node ID: ${nodeId}`);
@@ -99,11 +103,20 @@ export function createAnsibleService(
       // Start pulse heartbeat
       startPulseHeartbeat(ctx);
 
+      // Set up auto-persistence
+      setupAutoPersist(ctx.stateDir);
+
       ctx.logger.info("Ansible sync service started");
     },
 
     async stop(ctx: ServiceContext) {
       ctx.logger.info("Ansible sync service stopping...");
+
+      // Stop heartbeat
+      if (heartbeatInterval) {
+        clearInterval(heartbeatInterval);
+        heartbeatInterval = null;
+      }
 
       // Persist state before shutdown
       await persistState(ctx.stateDir);
@@ -111,15 +124,25 @@ export function createAnsibleService(
       // Update pulse to offline
       if (doc && nodeId) {
         const pulse = doc.getMap("pulse");
-        const existing = pulse.get(nodeId) as Record<string, unknown> | undefined;
+        const existing = pulse.get(nodeId) as PulseData | undefined;
         pulse.set(nodeId, {
           ...existing,
           status: "offline",
           lastSeen: Date.now(),
-        });
+        } as PulseData);
       }
 
-      // TODO: Close WebSocket connections
+      // Close WebSocket providers
+      for (const provider of providers) {
+        provider.destroy();
+      }
+      providers = [];
+
+      // Close WebSocket server
+      if (wsServer) {
+        wsServer.close();
+        wsServer = null;
+      }
 
       doc = null;
       nodeId = null;
@@ -130,7 +153,7 @@ export function createAnsibleService(
 }
 
 // ============================================================================
-// Private Implementation
+// Tailscale Detection
 // ============================================================================
 
 async function detectTailscaleId(): Promise<string | null> {
@@ -147,15 +170,70 @@ async function detectTailscaleId(): Promise<string | null> {
   }
 }
 
+// ============================================================================
+// Backbone Mode (Server + Peer Connections)
+// ============================================================================
+
 async function startBackboneMode(ctx: ServiceContext, config: AnsibleConfig) {
   const port = config.listenPort || 1234;
   ctx.logger.info(`Backbone mode: starting WebSocket server on port ${port}`);
 
-  // TODO: Start y-websocket server
-  // TODO: Connect to other backbone peers
+  if (!doc) return;
 
-  ctx.logger.debug(`Backbone peers to connect: ${config.backbonePeers?.join(", ") || "none"}`);
+  // Start WebSocket server for incoming connections
+  wsServer = new WebSocketServer({ port });
+
+  wsServer.on("connection", (ws: WebSocket, req) => {
+    const clientIp = req.socket.remoteAddress;
+    ctx.logger.info(`New connection from ${clientIp}`);
+
+    // Set up Yjs sync for this connection
+    setupYjsSync(ws, ctx);
+  });
+
+  wsServer.on("error", (err) => {
+    ctx.logger.warn(`WebSocket server error: ${err.message}`);
+  });
+
+  ctx.logger.info(`WebSocket server listening on port ${port}`);
+
+  // Connect to other backbone peers
+  if (config.backbonePeers?.length) {
+    for (const peerUrl of config.backbonePeers) {
+      // Skip self (don't connect to our own server)
+      if (isSelfUrl(peerUrl, port)) {
+        ctx.logger.debug(`Skipping self URL: ${peerUrl}`);
+        continue;
+      }
+
+      connectToPeer(peerUrl, ctx);
+    }
+  }
 }
+
+function isSelfUrl(url: string, myPort: number): boolean {
+  try {
+    const parsed = new URL(url);
+    const urlPort = parseInt(parsed.port) || 1234;
+
+    // Check if this is our own port on localhost or our tailscale IP
+    if (urlPort !== myPort) return false;
+
+    const host = parsed.hostname;
+    if (host === "localhost" || host === "127.0.0.1") return true;
+
+    // Check if it matches our tailscale hostname
+    if (nodeId && host.includes(nodeId)) return true;
+
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+// ============================================================================
+// Edge Mode (Client Only)
+// ============================================================================
 
 async function startEdgeMode(ctx: ServiceContext, config: AnsibleConfig) {
   ctx.logger.info("Edge mode: connecting to backbone peers");
@@ -165,35 +243,159 @@ async function startEdgeMode(ctx: ServiceContext, config: AnsibleConfig) {
     return;
   }
 
-  // TODO: Connect to backbone peers with failover
-  ctx.logger.debug(`Backbone peers: ${config.backbonePeers.join(", ")}`);
+  // Connect to backbone peers (with failover logic)
+  for (const peerUrl of config.backbonePeers) {
+    connectToPeer(peerUrl, ctx);
+  }
 }
 
+// ============================================================================
+// Yjs Sync
+// ============================================================================
+
+function connectToPeer(url: string, ctx: ServiceContext) {
+  if (!doc) return;
+
+  ctx.logger.info(`Connecting to peer: ${url}`);
+
+  try {
+    // Use y-websocket provider for sync
+    const provider = new WebsocketProvider(url, "ansible-shared", doc, {
+      connect: true,
+      WebSocketPolyfill: WebSocket as unknown as typeof globalThis.WebSocket,
+    });
+
+    provider.on("status", (event: { status: string }) => {
+      ctx.logger.debug(`Connection to ${url}: ${event.status}`);
+    });
+
+    provider.on("sync", (synced: boolean) => {
+      if (synced) {
+        ctx.logger.info(`Synced with ${url}`);
+      }
+    });
+
+    providers.push(provider);
+  } catch (err) {
+    ctx.logger.warn(`Failed to connect to ${url}: ${err}`);
+  }
+}
+
+function setupYjsSync(ws: WebSocket, ctx: ServiceContext) {
+  if (!doc) return;
+
+  // Handle incoming Yjs messages
+  ws.on("message", (data: Buffer) => {
+    try {
+      // y-websocket protocol: first byte is message type
+      const messageType = data[0];
+
+      if (messageType === 0) {
+        // Sync step 1
+        const syncMessage = Y.encodeStateAsUpdate(doc!);
+        ws.send(Buffer.concat([Buffer.from([1]), syncMessage]));
+      } else if (messageType === 1) {
+        // Sync step 2 / update
+        Y.applyUpdate(doc!, data.slice(1));
+      } else if (messageType === 2) {
+        // Awareness (not implemented yet)
+      }
+    } catch (err) {
+      ctx.logger.warn(`Error processing Yjs message: ${err}`);
+    }
+  });
+
+  // Send initial state
+  const stateVector = Y.encodeStateVector(doc);
+  ws.send(Buffer.concat([Buffer.from([0]), stateVector]));
+
+  // Subscribe to local changes and broadcast
+  const updateHandler = (update: Uint8Array, origin: unknown) => {
+    if (origin !== ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(Buffer.concat([Buffer.from([1]), update]));
+    }
+  };
+
+  doc.on("update", updateHandler);
+
+  ws.on("close", () => {
+    doc?.off("update", updateHandler);
+  });
+}
+
+// ============================================================================
+// Persistence
+// ============================================================================
+
 async function loadPersistedState(stateDir: string) {
-  // TODO: Load Yjs state from stateDir
+  if (!doc) return;
+
+  const statePath = path.join(stateDir, STATE_FILE);
+
+  try {
+    if (fs.existsSync(statePath)) {
+      const data = fs.readFileSync(statePath);
+      Y.applyUpdate(doc, new Uint8Array(data));
+      console.log(`Loaded Ansible state from ${statePath}`);
+    }
+  } catch (err) {
+    console.warn(`Failed to load persisted state: ${err}`);
+  }
 }
 
 async function persistState(stateDir: string) {
-  // TODO: Save Yjs state to stateDir
+  if (!doc) return;
+
+  const statePath = path.join(stateDir, STATE_FILE);
+
+  try {
+    // Ensure directory exists
+    fs.mkdirSync(stateDir, { recursive: true });
+
+    const state = Y.encodeStateAsUpdate(doc);
+    fs.writeFileSync(statePath, Buffer.from(state));
+    console.log(`Persisted Ansible state to ${statePath}`);
+  } catch (err) {
+    console.warn(`Failed to persist state: ${err}`);
+  }
 }
 
-function startPulseHeartbeat(ctx: ServiceContext) {
-  const HEARTBEAT_INTERVAL_MS = 30_000; // 30 seconds
+function setupAutoPersist(stateDir: string) {
+  if (!doc) return;
 
+  // Persist on changes (debounced)
+  let persistTimeout: ReturnType<typeof setTimeout> | null = null;
+
+  doc.on("update", () => {
+    if (persistTimeout) clearTimeout(persistTimeout);
+    persistTimeout = setTimeout(() => {
+      persistState(stateDir);
+    }, 5000); // Persist 5 seconds after last change
+  });
+}
+
+// ============================================================================
+// Heartbeat
+// ============================================================================
+
+function startPulseHeartbeat(ctx: ServiceContext) {
   const updatePulse = () => {
     if (!doc || !nodeId) return;
 
     const pulse = doc.getMap("pulse");
+    const existing = pulse.get(nodeId) as PulseData | undefined;
+
     pulse.set(nodeId, {
       lastSeen: Date.now(),
       status: "online",
       version: "0.1.0",
-    });
+      currentTask: existing?.currentTask,
+    } as PulseData);
   };
 
   // Initial pulse
   updatePulse();
 
   // Periodic heartbeat
-  setInterval(updatePulse, HEARTBEAT_INTERVAL_MS);
+  heartbeatInterval = setInterval(updatePulse, HEARTBEAT_INTERVAL_MS);
 }

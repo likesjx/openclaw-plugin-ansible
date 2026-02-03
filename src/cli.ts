@@ -4,16 +4,16 @@
  * Management commands for the Ansible coordination layer.
  */
 
-import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
+import type { OpenClawPluginApi, CliProgram, CliCommand } from "./types.js";
 import type { AnsibleConfig } from "./schema.js";
 import { getAnsibleState, getNodeId } from "./service.js";
 
 export function registerAnsibleCli(
-  api: OpenClawPluginApi<AnsibleConfig>,
+  api: OpenClawPluginApi,
   config: AnsibleConfig
 ) {
-  api.registerCli?.((program) => {
-    const ansible = program.command("ansible").description("Ansible coordination layer");
+  api.registerCli?.((program: CliProgram) => {
+    const ansible = program.command("ansible").description("Ansible coordination layer") as CliCommand;
 
     // === ansible status ===
     ansible
@@ -92,7 +92,8 @@ export function registerAnsibleCli(
       .command("tasks")
       .description("List all tasks")
       .option("-s, --status <status>", "Filter by status")
-      .action(async (opts) => {
+      .action(async (...args: unknown[]) => {
+        const opts = (args[0] || {}) as { status?: string };
         const state = getAnsibleState();
 
         if (!state) {
@@ -128,7 +129,9 @@ export function registerAnsibleCli(
       .command("invite <nodeId>")
       .description("Invite a new node to join")
       .option("-t, --tier <tier>", "Node tier: backbone or edge", "edge")
-      .action(async (nodeId, opts) => {
+      .action(async (...args: unknown[]) => {
+        const nodeId = args[0] as string;
+        const opts = (args[1] || { tier: "edge" }) as { tier: string };
         // TODO: Implement invite flow
         console.log(`Inviting ${nodeId} as ${opts.tier} node...`);
         console.log("TODO: Generate bootstrap token");
@@ -138,7 +141,8 @@ export function registerAnsibleCli(
     ansible
       .command("revoke <nodeId>")
       .description("Revoke a node's access")
-      .action(async (nodeId) => {
+      .action(async (...args: unknown[]) => {
+        const nodeId = args[0] as string;
         // TODO: Implement revoke
         console.log(`Revoking ${nodeId}...`);
         console.log("TODO: Remove from authorized nodes");
@@ -149,7 +153,9 @@ export function registerAnsibleCli(
       .command("send <message>")
       .description("Send a message to other hemispheres")
       .option("-t, --to <nodeId>", "Send to specific node")
-      .action(async (message, opts) => {
+      .action(async (...args: unknown[]) => {
+        const message = args[0] as string;
+        const opts = (args[1] || {}) as { to?: string };
         // TODO: Implement send via doc
         console.log(`Sending message: ${message}`);
         if (opts.to) {

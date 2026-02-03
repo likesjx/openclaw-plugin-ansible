@@ -5,13 +5,13 @@
  * into agent prompts via the before_agent_start hook.
  */
 
-import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
+import type { OpenClawPluginApi } from "./types.js";
 import type { AnsibleConfig, NodeContext, Task, Message, TailscaleId } from "./schema.js";
 import { CONTEXT_LIMITS } from "./schema.js";
 import { getAnsibleState, getNodeId } from "./service.js";
 
 export function registerAnsibleHooks(
-  api: OpenClawPluginApi<AnsibleConfig>,
+  api: OpenClawPluginApi,
   config: AnsibleConfig
 ) {
   api.on("before_agent_start", async () => {
