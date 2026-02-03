@@ -19,8 +19,9 @@ export function registerAnsibleCli(
   api: OpenClawPluginApi,
   config: AnsibleConfig
 ) {
-  api.registerCli?.((program: CliProgram) => {
-    const ansible = program.command("ansible").description("Ansible coordination layer") as CliCommand;
+  api.registerCli?.(
+    ({ program }: { program: CliProgram }) => {
+      const ansible = program.command("ansible").description("Ansible coordination layer") as CliCommand;
 
     // === ansible status ===
     ansible
@@ -304,5 +305,7 @@ export function registerAnsibleCli(
           console.log("✓ Message broadcast to all hemispheres");
         }
       });
-  });
+    },
+    { commands: ["ansible"] }
+  );
 }

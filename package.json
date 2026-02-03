@@ -1,10 +1,13 @@
 {
-  "name": "openclaw-plugin-ansible",
+  "name": "ansible",
   "version": "0.1.0",
   "description": "Distributed coordination layer for OpenClaw - one agent, multiple bodies",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "openclaw": {
+    "extensions": ["./dist/index.js"]
+  },
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",

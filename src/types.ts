@@ -40,12 +40,20 @@ export interface PluginLogger {
   error: (msg: string) => void;
 }
 
+export interface CliRegistrarContext {
+  program: CliProgram;
+}
+
+export interface CliRegistrarOptions {
+  commands?: string[];
+}
+
 export interface OpenClawPluginApi {
   pluginConfig: unknown;
   logger?: PluginLogger;
   registerService: (service: PluginService) => void;
   registerTool: (tool: PluginTool) => void;
-  registerCli?: (registrar: (program: CliProgram) => void) => void;
+  registerCli?: (registrar: (ctx: CliRegistrarContext) => void, options?: CliRegistrarOptions) => void;
   on: (event: string, handler: (...args: unknown[]) => Promise<unknown>) => void;
 }
 
