@@ -1,0 +1,21 @@
+# Example OpenClaw configuration for a BACKBONE node (VPS)
+# Copy relevant sections to your openclaw.yaml
+
+plugins:
+  ansible:
+    # Backbone nodes are always-on and form the sync mesh
+    tier: backbone
+
+    # Port to listen for incoming connections
+    listenPort: 1234
+
+    # Other backbone peers to connect to (for redundancy)
+    # Uses Tailscale MagicDNS hostnames
+    backbonePeers:
+      # - ws://vps-2.tail:1234
+      # - ws://vps-3.tail:1234
+
+    # Capabilities this node provides
+    capabilities:
+      - always-on
+      # - gpu  # if this VPS has GPU

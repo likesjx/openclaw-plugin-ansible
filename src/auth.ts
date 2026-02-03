@@ -1,0 +1,223 @@
+/**
+ * Ansible Authorization
+ *
+ * Handles node invitation, bootstrap tokens, and revocation.
+ */
+
+import { randomUUID } from "crypto";
+import type { TailscaleId, NodeInfo, PendingInvite } from "./schema.js";
+import { INVITE_TTL_MS } from "./schema.js";
+import { getDoc, getNodeId } from "./service.js";
+
+/**
+ * Generate a bootstrap token for inviting a new node
+ */
+export function generateInviteToken(
+  tier: "backbone" | "edge"
+): { token: string; expiresAt: number } | { error: string } {
+  const doc = getDoc();
+  const myId = getNodeId();
+
+  if (!doc || !myId) {
+    return { error: "Ansible not initialized" };
+  }
+
+  // Check if we're a backbone node (only backbone can invite)
+  const nodes = doc.getMap("nodes");
+  const myInfo = nodes.get(myId) as NodeInfo | undefined;
+
+  // If nodes map is empty, we're the first node - allow self-registration
+  const isFirstNode = nodes.size === 0;
+
+  if (!isFirstNode && myInfo?.tier !== "backbone") {
+    return { error: "Only backbone nodes can invite new nodes" };
+  }
+
+  const token = randomUUID().replace(/-/g, "");
+  const expiresAt = Date.now() + INVITE_TTL_MS;
+
+  const invites = doc.getMap("pendingInvites");
+  invites.set(token, {
+    tier,
+    expiresAt,
+    createdBy: myId,
+  } as PendingInvite);
+
+  return { token, expiresAt };
+}
+
+/**
+ * Join the Ansible network using a bootstrap token
+ */
+export function joinWithToken(
+  token: string,
+  capabilities: string[] = []
+): { success: boolean; error?: string } {
+  const doc = getDoc();
+  const myId = getNodeId();
+
+  if (!doc || !myId) {
+    return { success: false, error: "Ansible not initialized" };
+  }
+
+  const invites = doc.getMap("pendingInvites");
+  const invite = invites.get(token) as PendingInvite | undefined;
+
+  if (!invite) {
+    return { success: false, error: "Invalid or expired token" };
+  }
+
+  if (Date.now() > invite.expiresAt) {
+    invites.delete(token);
+    return { success: false, error: "Token expired" };
+  }
+
+  // Register ourselves
+  const nodes = doc.getMap("nodes");
+  nodes.set(myId, {
+    name: myId,
+    tier: invite.tier,
+    capabilities,
+    addedBy: invite.createdBy,
+    addedAt: Date.now(),
+  } as NodeInfo);
+
+  // Remove the used token (single-use)
+  invites.delete(token);
+
+  return { success: true };
+}
+
+/**
+ * Self-register as the first node (bootstrap)
+ */
+export function bootstrapFirstNode(
+  tier: "backbone" | "edge",
+  capabilities: string[] = []
+): { success: boolean; error?: string } {
+  const doc = getDoc();
+  const myId = getNodeId();
+
+  if (!doc || !myId) {
+    return { success: false, error: "Ansible not initialized" };
+  }
+
+  const nodes = doc.getMap("nodes");
+
+  if (nodes.size > 0) {
+    return { success: false, error: "Network already has nodes. Use invite flow." };
+  }
+
+  // Register ourselves as the first node
+  nodes.set(myId, {
+    name: myId,
+    tier,
+    capabilities,
+    addedBy: myId, // Self-added
+    addedAt: Date.now(),
+  } as NodeInfo);
+
+  return { success: true };
+}
+
+/**
+ * Revoke a node's access
+ */
+export function revokeNode(nodeIdToRevoke: TailscaleId): { success: boolean; error?: string } {
+  const doc = getDoc();
+  const myId = getNodeId();
+
+  if (!doc || !myId) {
+    return { success: false, error: "Ansible not initialized" };
+  }
+
+  // Check if we're a backbone node
+  const nodes = doc.getMap("nodes");
+  const myInfo = nodes.get(myId) as NodeInfo | undefined;
+
+  if (myInfo?.tier !== "backbone") {
+    return { success: false, error: "Only backbone nodes can revoke access" };
+  }
+
+  // Can't revoke yourself
+  if (nodeIdToRevoke === myId) {
+    return { success: false, error: "Cannot revoke your own access" };
+  }
+
+  const targetInfo = nodes.get(nodeIdToRevoke);
+  if (!targetInfo) {
+    return { success: false, error: "Node not found" };
+  }
+
+  // Remove from authorized nodes
+  nodes.delete(nodeIdToRevoke);
+
+  // Also remove their context and pulse
+  const context = doc.getMap("context");
+  const pulse = doc.getMap("pulse");
+  context.delete(nodeIdToRevoke);
+  pulse.delete(nodeIdToRevoke);
+
+  return { success: true };
+}
+
+/**
+ * Check if a node is authorized
+ */
+export function isNodeAuthorized(checkNodeId: TailscaleId): boolean {
+  const doc = getDoc();
+  if (!doc) return false;
+
+  const nodes = doc.getMap("nodes");
+
+  // If no nodes registered yet, allow (bootstrapping)
+  if (nodes.size === 0) return true;
+
+  return nodes.has(checkNodeId);
+}
+
+/**
+ * Get list of pending invites (for backbone nodes)
+ */
+export function listPendingInvites(): PendingInvite[] {
+  const doc = getDoc();
+  if (!doc) return [];
+
+  const invites = doc.getMap("pendingInvites");
+  const now = Date.now();
+  const result: PendingInvite[] = [];
+
+  // Clean up expired invites while listing
+  for (const [token, invite] of invites.entries()) {
+    const inv = invite as PendingInvite;
+    if (now > inv.expiresAt) {
+      invites.delete(token);
+    } else {
+      result.push(inv);
+    }
+  }
+
+  return result;
+}
+
+/**
+ * Prune expired invites
+ */
+export function pruneExpiredInvites(): number {
+  const doc = getDoc();
+  if (!doc) return 0;
+
+  const invites = doc.getMap("pendingInvites");
+  const now = Date.now();
+  let pruned = 0;
+
+  for (const [token, invite] of invites.entries()) {
+    const inv = invite as PendingInvite;
+    if (now > inv.expiresAt) {
+      invites.delete(token);
+      pruned++;
+    }
+  }
+
+  return pruned;
+}

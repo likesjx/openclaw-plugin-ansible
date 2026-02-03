@@ -1,0 +1,16 @@
+# Example OpenClaw configuration for an EDGE node (Mac/laptop)
+# Copy relevant sections to your openclaw.yaml
+
+plugins:
+  ansible:
+    # Edge nodes connect to backbone peers when available
+    tier: edge
+
+    # Backbone peers to sync with (uses Tailscale MagicDNS)
+    backbonePeers:
+      - ws://jane-vps:1234
+      # - ws://vps-2.tail:1234  # fallback
+
+    # Capabilities this node provides
+    capabilities:
+      - local-files  # has access to local Mac filesystem
