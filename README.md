@@ -74,13 +74,28 @@ The plugin provides these tools to the agent:
 ## CLI Commands
 
 ```bash
+# Status & monitoring
 openclaw ansible status              # Show all hemispheres
 openclaw ansible nodes               # List authorized nodes
 openclaw ansible tasks               # List tasks
-openclaw ansible invite <node>       # Invite a new node
-openclaw ansible revoke <node>       # Revoke access
-openclaw ansible send "message"      # Send a message
+openclaw ansible tasks -s pending    # Filter by status
+
+# Node management
+openclaw ansible bootstrap           # Bootstrap as first node
+openclaw ansible invite --tier edge  # Generate invite token
+openclaw ansible join --token <tok>  # Join network with token
+openclaw ansible revoke --node <id>  # Revoke a node's access
+
+# Messaging
+openclaw ansible send --message "hi" # Broadcast to all
+openclaw ansible send -m "hi" -t id  # Send to specific node
 ```
+
+### Node Onboarding Flow
+
+1. **First node** runs `openclaw ansible bootstrap`
+2. **Backbone node** generates invite: `openclaw ansible invite --tier edge`
+3. **New node** joins with token: `openclaw ansible join --token <token>`
 
 ## Shared State
 
