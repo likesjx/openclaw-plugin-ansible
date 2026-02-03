@@ -11,6 +11,8 @@ import { WebsocketProvider } from "y-websocket";
 import { WebSocketServer, WebSocket } from "ws";
 import * as fs from "fs";
 import * as path from "path";
+// @ts-expect-error - CommonJS module
+import { setupWSConnection, getYDoc } from "y-websocket/bin/utils.cjs";
 import type { OpenClawPluginApi, ServiceContext } from "./types.js";
 import type { AnsibleConfig, AnsibleState, TailscaleId, PulseData, NodeContext, Message } from "./schema.js";
 import { MESSAGE_RETENTION } from "./schema.js";
@@ -25,6 +27,7 @@ let wsServer: WebSocketServer | null = null;
 let providers: WebsocketProvider[] = [];
 let heartbeatInterval: ReturnType<typeof setInterval> | null = null;
 let cleanupInterval: ReturnType<typeof setInterval> | null = null;
+let isBackboneMode = false;
 
 const HEARTBEAT_INTERVAL_MS = 30_000;
 const CLEANUP_INTERVAL_MS = 60_000; // Run cleanup every minute
@@ -32,8 +35,19 @@ const STATE_FILE = "ansible-state.yjs";
 
 /**
  * Get the shared Yjs document
+ * For backbone: returns the y-websocket managed doc
+ * For edge: returns our local doc (synced via WebsocketProvider)
  */
 export function getDoc(): Y.Doc | null {
+  // If backbone mode, try to get the y-websocket managed doc
+  if (isBackboneMode && !doc) {
+    try {
+      const wsDoc = getYDoc("ansible-shared");
+      return wsDoc;
+    } catch {
+      return null;
+    }
+  }
   return doc;
 }
 
@@ -73,9 +87,6 @@ export function createAnsibleService(
     async start(ctx: ServiceContext) {
       ctx.logger.info("Ansible sync service starting...");
 
-      // Initialize Yjs document
-      doc = new Y.Doc();
-
       // Get our Tailscale node ID
       nodeId = await detectTailscaleId();
       if (!nodeId) {
@@ -86,7 +97,23 @@ export function createAnsibleService(
 
       ctx.logger.info(`Ansible node ID: ${nodeId}`);
 
-      // Initialize Yjs maps
+      if (config.tier === "backbone") {
+        // Backbone mode: Start server first, then get the y-websocket managed doc
+        await startBackboneMode(ctx, config);
+        // Get the doc created by y-websocket utils
+        doc = getYDoc("ansible-shared");
+      } else {
+        // Edge mode: Create our own doc that will be synced via WebsocketProvider
+        doc = new Y.Doc();
+        await startEdgeMode(ctx, config);
+      }
+
+      if (!doc) {
+        ctx.logger.warn("Failed to initialize Yjs document");
+        return;
+      }
+
+      // Initialize Yjs maps (creates them if they don't exist)
       doc.getMap("nodes");
       doc.getMap("pendingInvites");
       doc.getMap("tasks");
@@ -94,13 +121,9 @@ export function createAnsibleService(
       doc.getMap("context");
       doc.getMap("pulse");
 
-      // Load persisted state if available
-      await loadPersistedState(ctx.stateDir);
-
-      if (config.tier === "backbone") {
-        await startBackboneMode(ctx, config);
-      } else {
-        await startEdgeMode(ctx, config);
+      // Load persisted state if available (for edge mode primarily)
+      if (config.tier !== "backbone") {
+        await loadPersistedState(ctx.stateDir);
       }
 
       // Start pulse heartbeat
@@ -187,10 +210,9 @@ async function detectTailscaleId(): Promise<string | null> {
 // ============================================================================
 
 async function startBackboneMode(ctx: ServiceContext, config: AnsibleConfig) {
+  isBackboneMode = true;
   const port = config.listenPort || 1234;
   ctx.logger.info(`Backbone mode: starting WebSocket server on port ${port}`);
-
-  if (!doc) return;
 
   // Start WebSocket server for incoming connections
   wsServer = new WebSocketServer({ port });
@@ -199,8 +221,9 @@ async function startBackboneMode(ctx: ServiceContext, config: AnsibleConfig) {
     const clientIp = req.socket.remoteAddress;
     ctx.logger.info(`New connection from ${clientIp}`);
 
-    // Set up Yjs sync for this connection
-    setupYjsSync(ws, ctx);
+    // Use y-websocket utility for proper sync protocol
+    // All clients connect to "ansible-shared" room
+    setupWSConnection(ws, req, { docName: "ansible-shared" });
   });
 
   wsServer.on("error", (err) => {
@@ -291,48 +314,6 @@ function connectToPeer(url: string, ctx: ServiceContext) {
   } catch (err) {
     ctx.logger.warn(`Failed to connect to ${url}: ${err}`);
   }
-}
-
-function setupYjsSync(ws: WebSocket, ctx: ServiceContext) {
-  if (!doc) return;
-
-  // Handle incoming Yjs messages
-  ws.on("message", (data: Buffer) => {
-    try {
-      // y-websocket protocol: first byte is message type
-      const messageType = data[0];
-
-      if (messageType === 0) {
-        // Sync step 1
-        const syncMessage = Y.encodeStateAsUpdate(doc!);
-        ws.send(Buffer.concat([Buffer.from([1]), syncMessage]));
-      } else if (messageType === 1) {
-        // Sync step 2 / update
-        Y.applyUpdate(doc!, data.slice(1));
-      } else if (messageType === 2) {
-        // Awareness (not implemented yet)
-      }
-    } catch (err) {
-      ctx.logger.warn(`Error processing Yjs message: ${err}`);
-    }
-  });
-
-  // Send initial state
-  const stateVector = Y.encodeStateVector(doc);
-  ws.send(Buffer.concat([Buffer.from([0]), stateVector]));
-
-  // Subscribe to local changes and broadcast
-  const updateHandler = (update: Uint8Array, origin: unknown) => {
-    if (origin !== ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(Buffer.concat([Buffer.from([1]), update]));
-    }
-  };
-
-  doc.on("update", updateHandler);
-
-  ws.on("close", () => {
-    doc?.off("update", updateHandler);
-  });
 }
 
 // ============================================================================
