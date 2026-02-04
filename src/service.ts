@@ -105,6 +105,24 @@ export function createAnsibleService(
       } else {
         // Edge mode: Create our own doc that will be synced via WebsocketProvider
         doc = new Y.Doc();
+
+        // Add error handler for debugging sync issues
+        doc.on("update", (update: Uint8Array, origin: unknown) => {
+          ctx.logger.debug(`Doc update received, size: ${update.length}, origin: ${origin}`);
+        });
+
+        // Initialize Yjs maps BEFORE loading state or connecting
+        doc.getMap("nodes");
+        doc.getMap("pendingInvites");
+        doc.getMap("tasks");
+        doc.getMap("messages");
+        doc.getMap("context");
+        doc.getMap("pulse");
+
+        // Load persisted state BEFORE starting sync
+        await loadPersistedState(ctx.stateDir);
+
+        // Now connect to peers
         await startEdgeMode(ctx, config);
       }
 
@@ -113,17 +131,14 @@ export function createAnsibleService(
         return;
       }
 
-      // Initialize Yjs maps (creates them if they don't exist)
-      doc.getMap("nodes");
-      doc.getMap("pendingInvites");
-      doc.getMap("tasks");
-      doc.getMap("messages");
-      doc.getMap("context");
-      doc.getMap("pulse");
-
-      // Load persisted state if available (for edge mode primarily)
-      if (config.tier !== "backbone") {
-        await loadPersistedState(ctx.stateDir);
+      // Initialize Yjs maps for backbone mode (edge already did this above)
+      if (config.tier === "backbone") {
+        doc.getMap("nodes");
+        doc.getMap("pendingInvites");
+        doc.getMap("tasks");
+        doc.getMap("messages");
+        doc.getMap("context");
+        doc.getMap("pulse");
       }
 
       // Start pulse heartbeat
@@ -308,6 +323,16 @@ function connectToPeer(url: string, ctx: ServiceContext) {
       if (synced) {
         ctx.logger.info(`Synced with ${url}`);
       }
+    });
+
+    // Add error handler for debugging
+    provider.on("connection-error", (event: unknown) => {
+      ctx.logger.warn(`Connection error to ${url}: ${event}`);
+    });
+
+    // Log when connection closes
+    provider.on("connection-close", (event: unknown) => {
+      ctx.logger.debug(`Connection closed to ${url}: ${event}`);
     });
 
     providers.push(provider);
