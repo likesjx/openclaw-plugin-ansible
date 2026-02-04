@@ -7,13 +7,14 @@
 
 export interface PluginTool {
   name: string;
+  label: string;
   description: string;
   parameters: {
     type: "object";
     properties: Record<string, unknown>;
     required?: string[];
   };
-  handler: (params: Record<string, unknown>) => Promise<unknown>;
+  execute: (id: string, params: Record<string, unknown>) => Promise<unknown>;
 }
 
 export interface PluginService {

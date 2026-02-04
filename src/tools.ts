@@ -16,6 +16,7 @@ export function registerAnsibleTools(
   // === ansible.delegate_task ===
   api.registerTool({
     name: "ansible.delegate_task",
+    label: "Ansible Delegate",
     description:
       "Delegate a task to another hemisphere (body) of Jane. Use when you want another instance to handle work, especially for long-running tasks or tasks requiring specific capabilities.",
     parameters: {
@@ -45,7 +46,7 @@ export function registerAnsibleTools(
       },
       required: ["title", "description"],
     },
-    handler: async (params) => {
+    async execute(_id, params) {
       api.logger?.info(`Ansible: delegating task "${params.title}"`);
       const doc = getDoc();
       const nodeId = getNodeId();
@@ -83,6 +84,7 @@ export function registerAnsibleTools(
   // === ansible.send_message ===
   api.registerTool({
     name: "ansible.send_message",
+    label: "Ansible Send Message",
     description:
       "Send a message to other hemispheres of Jane. Use for coordination, status updates, or sharing information.",
     parameters: {
@@ -99,7 +101,7 @@ export function registerAnsibleTools(
       },
       required: ["content"],
     },
-    handler: async (params) => {
+    async execute(_id, params) {
       api.logger?.info(`Ansible: sending message to ${params.to || "all"}`);
       const doc = getDoc();
       const nodeId = getNodeId();
@@ -134,6 +136,7 @@ export function registerAnsibleTools(
   // === ansible.update_context ===
   api.registerTool({
     name: "ansible.update_context",
+    label: "Ansible Update Context",
     description:
       "Update your current context (focus, threads, decisions) so other hemispheres know what you're working on.",
     parameters: {
@@ -160,7 +163,7 @@ export function registerAnsibleTools(
         },
       },
     },
-    handler: async (params) => {
+    async execute(_id, params) {
       api.logger?.debug("Ansible: updating context");
       const doc = getDoc();
       const nodeId = getNodeId();
@@ -215,13 +218,14 @@ export function registerAnsibleTools(
   // === ansible.status ===
   api.registerTool({
     name: "ansible.status",
+    label: "Ansible Status",
     description:
       "Get the current status of all Jane hemispheres, including who's online, what they're working on, and pending tasks.",
     parameters: {
       type: "object",
       properties: {},
     },
-    handler: async () => {
+    async execute() {
       api.logger?.debug("Ansible: checking status");
       const state = getAnsibleState();
       const myId = getNodeId();
@@ -256,7 +260,7 @@ export function registerAnsibleTools(
         }));
 
       const unreadCount = Array.from(state.messages.values()).filter(
-        (m) => m.from !== myId && !m.readBy.includes(myId)
+        (m) => m && m.from !== myId && m.readBy && !m.readBy.includes(myId)
       ).length;
 
       return {
@@ -271,6 +275,7 @@ export function registerAnsibleTools(
   // === ansible.claim_task ===
   api.registerTool({
     name: "ansible.claim_task",
+    label: "Ansible Claim Task",
     description: "Claim a pending task to work on it.",
     parameters: {
       type: "object",
@@ -282,7 +287,7 @@ export function registerAnsibleTools(
       },
       required: ["taskId"],
     },
-    handler: async (params) => {
+    async execute(_id, params) {
       api.logger?.info(`Ansible: claiming task ${params.taskId}`);
       const doc = getDoc();
       const nodeId = getNodeId();
@@ -329,6 +334,7 @@ export function registerAnsibleTools(
   // === ansible.complete_task ===
   api.registerTool({
     name: "ansible.complete_task",
+    label: "Ansible Complete Task",
     description: "Mark a task as completed with an optional result.",
     parameters: {
       type: "object",
@@ -344,7 +350,7 @@ export function registerAnsibleTools(
       },
       required: ["taskId"],
     },
-    handler: async (params) => {
+    async execute(_id, params) {
       api.logger?.info(`Ansible: completing task ${params.taskId}`);
       const doc = getDoc();
       const nodeId = getNodeId();
@@ -384,6 +390,7 @@ export function registerAnsibleTools(
   // === ansible.mark_read ===
   api.registerTool({
     name: "ansible.mark_read",
+    label: "Ansible Mark Read",
     description: "Mark messages as read.",
     parameters: {
       type: "object",
@@ -395,7 +402,7 @@ export function registerAnsibleTools(
         },
       },
     },
-    handler: async (params) => {
+    async execute(_id, params) {
       const doc = getDoc();
       const nodeId = getNodeId();
 

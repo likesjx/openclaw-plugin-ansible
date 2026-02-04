@@ -37,24 +37,36 @@ Binary protocol mismatch between `setupWSConnection` (server) and `WebsocketProv
 3. ✅ Generated package-lock.json for version consistency
 4. ✅ Enhanced logging across service, tools, and hooks for better observability
 5. ✅ Refactored persistence to use service logger
-6. 🔄 Need to rebuild and test
+6. ✅ Updated plugin code on VPS (`/home/deploy/code/openclaw-plugin-ansible`)
+7. ✅ Updated VPS `docker-compose.yml` to mount plugin directory into container
+8. ✅ Recreated VPS Docker container to apply volume mount
+9. ✅ Cleaned up invalid OpenClaw configuration using `jq` on host
+10. ✅ Manually created plugin symlink and injected valid config to bypass CLI validation loop
+11. ✅ Restarted VPS gateway - **Ansible Plugin is Running!**
+12. ✅ Opened VPS firewall port `1235`.
+13. ✅ Updated Mac config to use VPS Public IP.
+14. ✅ **Verified Sync!** Mac logs show "Successfully synced with ws://31.97.130.98:1235".
 
 ## Current Step
-**Local test PASSED - protocol works correctly locally**
+**Verifying State Sync**
 
-The y-websocket sync protocol works fine between setupWSConnection and WebsocketProvider on the same machine. This means the issue is likely:
-1. Version mismatch on VPS
-2. Corrupted persisted state on VPS
-3. Network/encoding issue
+Sync is working at the protocol level.
+**CLI Issue:** `openclaw ansible status` reports "not initialized" because the CLI process doesn't start the background sync service.
+**Next Step:** Test via the running agent (which HAS the active sync service).
 
 ## Next Steps
 - [x] Run local test with setupWSConnection + WebsocketProvider ✅ PASSED
-- [ ] Commit and push fixes to GitHub
-- [ ] Run VPS commands above to update plugin
-- [ ] Verify versions match: y-websocket 2.1.0, yjs 13.6.29
-- [ ] Clear any corrupted state files
-- [ ] Restart VPS gateway
-- [ ] Test two-node sync from Mac
+- [x] Commit and push fixes to GitHub ✅ (commit f1f39ac)
+- [x] Update plugin code on VPS ✅
+- [x] Mount plugin to VPS container ✅
+- [x] Fix VPS OpenClaw configuration & install plugin ✅
+- [x] Restart VPS gateway & verify logs ✅
+- [x] Test sync from Mac ✅ (Protocol verified)
+- [ ] **Verify data sync via Agent**
+    - [ ] Run `openclaw agent --message "ansible status"`
+    - [ ] Verify both nodes are visible
+- [ ] Fix CLI command initialization (ensure it can read doc state)
+- [ ] Fix Tailscale connectivity (long term)
 
 ## Key Code Locations
 - `src/service.ts:291-327` - connectToPeer() with WebsocketProvider
