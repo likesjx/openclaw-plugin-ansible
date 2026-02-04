@@ -59,16 +59,21 @@ async function callGateway(
   args: Record<string, unknown> = {}
 ): Promise<any> {
   const { port, token } = readGatewayConfig();
-  const url = `http://localhost:${port}/tools/invoke`;
+  const url = `http://127.0.0.1:${port}/tools/invoke`;
 
-  const res = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${token}`,
-    },
-    body: JSON.stringify({ tool, args }),
-  });
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ tool, args }),
+    });
+  } catch (err: any) {
+    throw new Error(`Gateway not running on port ${port} (${err.cause?.code || err.message})`);
+  }
 
   if (!res.ok) {
     const body = await res.text().catch(() => "");
@@ -78,7 +83,14 @@ async function callGateway(
     throw new Error(`Gateway returned ${res.status}: ${body}`);
   }
 
-  return res.json();
+  const json: any = await res.json();
+
+  // Gateway wraps tool results in { ok, result } or { error }
+  if (json.error) {
+    throw new Error(json.error.message || JSON.stringify(json.error));
+  }
+
+  return json.result ?? json;
 }
 
 export function registerAnsibleCli(
