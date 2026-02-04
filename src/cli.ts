@@ -60,8 +60,8 @@ export function registerAnsibleCli(
         console.log();
 
         // Tasks
-        const pendingTasks = Array.from(state.tasks.values()).filter(
-          (t) => t.status === "pending"
+        const pendingTasks = (state.tasks ? Array.from(state.tasks.values()) : []).filter(
+          (t) => t && t.status === "pending"
         );
         console.log(`Pending tasks: ${pendingTasks.length}`);
         for (const task of pendingTasks.slice(0, 5)) {
@@ -74,8 +74,8 @@ export function registerAnsibleCli(
         console.log();
 
         // Messages
-        const unread = Array.from(state.messages.values()).filter(
-          (m) => myId && m.from !== myId && !m.readBy.includes(myId)
+        const unread = (state.messages ? Array.from(state.messages.values()) : []).filter(
+          (m) => myId && m && m.from !== myId && m.readBy && !m.readBy.includes(myId)
         );
         console.log(`Unread messages: ${unread.length}`);
         for (const msg of unread.slice(0, 3)) {
