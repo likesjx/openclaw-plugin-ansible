@@ -15,7 +15,7 @@ import * as path from "path";
 import { setupWSConnection, getYDoc } from "y-websocket/bin/utils";
 import type { OpenClawPluginApi, ServiceContext } from "./types.js";
 import type { AnsibleConfig, AnsibleState, TailscaleId, PulseData, NodeContext, Message } from "./schema.js";
-import { MESSAGE_RETENTION } from "./schema.js";
+import { MESSAGE_RETENTION, VALIDATION_LIMITS } from "./schema.js";
 
 // Re-export for convenience
 export type { AnsibleState };
@@ -208,13 +208,26 @@ export function createAnsibleService(
 
 async function detectTailscaleId(): Promise<string | null> {
   try {
-    const { exec } = await import("child_process");
+    const { execFile } = await import("child_process");
     const { promisify } = await import("util");
-    const execAsync = promisify(exec);
+    const execFileAsync = promisify(execFile);
 
-    const { stdout } = await execAsync("tailscale status --json");
+    const { stdout } = await execFileAsync("tailscale", ["status", "--json"]);
     const status = JSON.parse(stdout);
     return status.Self?.HostName || null;
+  } catch {
+    return null;
+  }
+}
+
+async function getTailscaleIP(): Promise<string | null> {
+  try {
+    const { execFile } = await import("child_process");
+    const { promisify } = await import("util");
+    const execFileAsync = promisify(execFile);
+
+    const { stdout } = await execFileAsync("tailscale", ["ip", "-4"]);
+    return stdout.trim() || null;
   } catch {
     return null;
   }
@@ -227,10 +240,13 @@ async function detectTailscaleId(): Promise<string | null> {
 async function startBackboneMode(ctx: ServiceContext, config: AnsibleConfig) {
   isBackboneMode = true;
   const port = config.listenPort || 1234;
-  ctx.logger.info(`Backbone mode: starting WebSocket server on port ${port}`);
+
+  // Bind to Tailscale interface for security (only tailnet peers can connect)
+  const host = config.listenHost || await getTailscaleIP() || "127.0.0.1";
+  ctx.logger.info(`Backbone mode: starting WebSocket server on ${host}:${port}`);
 
   // Start WebSocket server for incoming connections
-  wsServer = new WebSocketServer({ port });
+  wsServer = new WebSocketServer({ host, port });
 
   wsServer.on("connection", (ws: WebSocket, req) => {
     const clientIp = req.socket.remoteAddress;
@@ -355,13 +371,27 @@ function connectToPeer(url: string, ctx: ServiceContext) {
 // Persistence
 // ============================================================================
 
+function validateStatePath(stateDir: string): string {
+  const statePath = path.resolve(path.join(stateDir, STATE_FILE));
+  const resolvedDir = path.resolve(stateDir);
+  if (!statePath.startsWith(resolvedDir)) {
+    throw new Error("Invalid state path: path traversal detected");
+  }
+  return statePath;
+}
+
 async function loadPersistedState(ctx: ServiceContext) {
   if (!doc) return;
 
-  const statePath = path.join(ctx.stateDir, STATE_FILE);
+  const statePath = validateStatePath(ctx.stateDir);
 
   try {
     if (fs.existsSync(statePath)) {
+      const stats = fs.statSync(statePath);
+      if (stats.size > VALIDATION_LIMITS.maxStateFileBytes) {
+        ctx.logger.warn(`State file too large (${stats.size} bytes), skipping load`);
+        return;
+      }
       const data = fs.readFileSync(statePath);
       Y.applyUpdate(doc, new Uint8Array(data));
       ctx.logger.info(`Loaded Ansible state from ${statePath} (${data.length} bytes)`);
@@ -374,13 +404,17 @@ async function loadPersistedState(ctx: ServiceContext) {
 async function persistState(ctx: ServiceContext) {
   if (!doc) return;
 
-  const statePath = path.join(ctx.stateDir, STATE_FILE);
+  const statePath = validateStatePath(ctx.stateDir);
 
   try {
     // Ensure directory exists
     fs.mkdirSync(ctx.stateDir, { recursive: true });
 
     const state = Y.encodeStateAsUpdate(doc);
+    if (state.length > VALIDATION_LIMITS.maxStateFileBytes) {
+      ctx.logger.warn(`State too large to persist (${state.length} bytes)`);
+      return;
+    }
     fs.writeFileSync(statePath, Buffer.from(state));
     ctx.logger.info(`Persisted Ansible state to ${statePath} (${state.length} bytes)`);
   } catch (err) {

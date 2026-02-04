@@ -15,6 +15,7 @@ export interface PluginTool {
     required?: string[];
   };
   execute: (id: string, params: Record<string, unknown>) => Promise<unknown>;
+  handler?: (params: Record<string, unknown>) => Promise<unknown>;
 }
 
 export interface PluginService {

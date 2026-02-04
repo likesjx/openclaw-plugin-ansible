@@ -7,7 +7,25 @@
 import { randomUUID } from "crypto";
 import type { OpenClawPluginApi } from "./types.js";
 import type { AnsibleConfig, Task, Message, Decision, Thread } from "./schema.js";
+import { VALIDATION_LIMITS } from "./schema.js";
 import { getDoc, getNodeId, getAnsibleState } from "./service.js";
+import { isNodeAuthorized } from "./auth.js";
+
+function validateString(value: unknown, maxLength: number, fieldName: string): string {
+  if (typeof value !== "string") {
+    throw new Error(`${fieldName} must be a string`);
+  }
+  if (value.length > maxLength) {
+    throw new Error(`${fieldName} exceeds max length of ${maxLength}`);
+  }
+  return value;
+}
+
+function requireAuth(nodeId: string): void {
+  if (!isNodeAuthorized(nodeId)) {
+    throw new Error("Node not authorized. Use 'ansible join' first.");
+  }
+}
 
 export function registerAnsibleTools(
   api: OpenClawPluginApi,
@@ -47,7 +65,7 @@ export function registerAnsibleTools(
       required: ["title", "description"],
     },
     async execute(_id, params) {
-      api.logger?.info(`Ansible: delegating task "${params.title}"`);
+      api.logger?.info(`Ansible: delegating task`);
       const doc = getDoc();
       const nodeId = getNodeId();
 
@@ -56,28 +74,37 @@ export function registerAnsibleTools(
         return { error: "Ansible not initialized" };
       }
 
-      const task: Task = {
-        id: randomUUID(),
-        title: params.title as string,
-        description: params.description as string,
-        status: "pending",
-        createdBy: nodeId,
-        createdAt: Date.now(),
-        context: params.context as string | undefined,
-        assignedTo: params.assignedTo as string | undefined,
-        requires: params.requires as string[] | undefined,
-      };
+      try {
+        requireAuth(nodeId);
+        const title = validateString(params.title, VALIDATION_LIMITS.maxTitleLength, "title");
+        const description = validateString(params.description, VALIDATION_LIMITS.maxDescriptionLength, "description");
+        const context = params.context ? validateString(params.context, VALIDATION_LIMITS.maxContextLength, "context") : undefined;
 
-      const tasks = doc.getMap("tasks");
-      tasks.set(task.id, task);
+        const task: Task = {
+          id: randomUUID(),
+          title,
+          description,
+          status: "pending",
+          createdBy: nodeId,
+          createdAt: Date.now(),
+          context,
+          assignedTo: params.assignedTo as string | undefined,
+          requires: params.requires as string[] | undefined,
+        };
 
-      api.logger?.info(`Ansible: task ${task.id.slice(0, 8)} delegated to ${params.assignedTo || "anyone"}`);
+        const tasks = doc.getMap("tasks");
+        tasks.set(task.id, task);
 
-      return {
-        success: true,
-        taskId: task.id,
-        message: `Task "${task.title}" created and delegated`,
-      };
+        api.logger?.info(`Ansible: task ${task.id.slice(0, 8)} delegated`);
+
+        return {
+          success: true,
+          taskId: task.id,
+          message: `Task "${task.title}" created and delegated`,
+        };
+      } catch (err: any) {
+        return { error: err.message };
+      }
     },
   });
 
@@ -102,7 +129,7 @@ export function registerAnsibleTools(
       required: ["content"],
     },
     async execute(_id, params) {
-      api.logger?.info(`Ansible: sending message to ${params.to || "all"}`);
+      api.logger?.info(`Ansible: sending message`);
       const doc = getDoc();
       const nodeId = getNodeId();
 
@@ -111,25 +138,32 @@ export function registerAnsibleTools(
         return { error: "Ansible not initialized" };
       }
 
-      const message: Message = {
-        id: randomUUID(),
-        from: nodeId,
-        to: params.to as string | undefined,
-        content: params.content as string,
-        timestamp: Date.now(),
-        readBy: [nodeId], // Sender has implicitly read it
-      };
+      try {
+        requireAuth(nodeId);
+        const content = validateString(params.content, VALIDATION_LIMITS.maxMessageLength, "content");
 
-      const messages = doc.getMap("messages");
-      messages.set(message.id, message);
+        const message: Message = {
+          id: randomUUID(),
+          from: nodeId,
+          to: params.to as string | undefined,
+          content,
+          timestamp: Date.now(),
+          readBy: [nodeId],
+        };
 
-      return {
-        success: true,
-        messageId: message.id,
-        message: params.to
-          ? `Message sent to ${params.to}`
-          : "Message broadcast to all hemispheres",
-      };
+        const messages = doc.getMap("messages");
+        messages.set(message.id, message);
+
+        return {
+          success: true,
+          messageId: message.id,
+          message: params.to
+            ? `Message sent to ${params.to}`
+            : "Message broadcast to all hemispheres",
+        };
+      } catch (err: any) {
+        return { error: err.message };
+      }
     },
   });
 
@@ -172,46 +206,51 @@ export function registerAnsibleTools(
         return { error: "Ansible not initialized" };
       }
 
-      const contextMap = doc.getMap("context");
-      const existing = (contextMap.get(nodeId) as Record<string, unknown>) || {
-        currentFocus: "",
-        activeThreads: [],
-        recentDecisions: [],
-      };
+      try {
+        requireAuth(nodeId);
 
-      const updated = { ...existing };
-
-      if (params.currentFocus) {
-        api.logger?.info(`Ansible: focus updated to "${params.currentFocus}"`);
-        updated.currentFocus = params.currentFocus;
-      }
-
-      if (params.addThread) {
-        const thread: Thread = {
-          id: randomUUID(),
-          summary: (params.addThread as { summary: string }).summary,
-          lastActivity: Date.now(),
+        const contextMap = doc.getMap("context");
+        const existing = (contextMap.get(nodeId) as Record<string, unknown>) || {
+          currentFocus: "",
+          activeThreads: [],
+          recentDecisions: [],
         };
-        api.logger?.info(`Ansible: thread added "${thread.summary}"`);
-        updated.activeThreads = [thread, ...((existing.activeThreads as Thread[]) || [])].slice(0, 10);
-      }
 
-      if (params.addDecision) {
-        const decision: Decision = {
-          decision: (params.addDecision as { decision: string; reasoning: string }).decision,
-          reasoning: (params.addDecision as { decision: string; reasoning: string }).reasoning,
-          madeAt: Date.now(),
+        const updated = { ...existing };
+
+        if (params.currentFocus) {
+          updated.currentFocus = validateString(params.currentFocus, VALIDATION_LIMITS.maxContextLength, "currentFocus");
+        }
+
+        if (params.addThread) {
+          const raw = params.addThread as { summary: string };
+          const thread: Thread = {
+            id: randomUUID(),
+            summary: validateString(raw.summary, VALIDATION_LIMITS.maxTitleLength, "thread summary"),
+            lastActivity: Date.now(),
+          };
+          updated.activeThreads = [thread, ...((existing.activeThreads as Thread[]) || [])].slice(0, 10);
+        }
+
+        if (params.addDecision) {
+          const raw = params.addDecision as { decision: string; reasoning: string };
+          const decision: Decision = {
+            decision: validateString(raw.decision, VALIDATION_LIMITS.maxTitleLength, "decision"),
+            reasoning: validateString(raw.reasoning, VALIDATION_LIMITS.maxDescriptionLength, "reasoning"),
+            madeAt: Date.now(),
+          };
+          updated.recentDecisions = [decision, ...((existing.recentDecisions as Decision[]) || [])].slice(0, 10);
+        }
+
+        contextMap.set(nodeId, updated);
+
+        return {
+          success: true,
+          message: "Context updated",
         };
-        api.logger?.info(`Ansible: decision recorded "${decision.decision}"`);
-        updated.recentDecisions = [decision, ...((existing.recentDecisions as Decision[]) || [])].slice(0, 10);
+      } catch (err: any) {
+        return { error: err.message };
       }
-
-      contextMap.set(nodeId, updated);
-
-      return {
-        success: true,
-        message: "Context updated",
-      };
     },
   });
 
@@ -279,6 +318,11 @@ export function registerAnsibleTools(
         return { error: `Status tool error: ${err.message}` };
       }
     },
+    // Backward compatibility for OpenClaw <= 2026.1
+    handler: async () => {
+      // @ts-ignore
+      return this.execute();
+    },
   });
 
   // === ansible.claim_task ===
@@ -297,7 +341,7 @@ export function registerAnsibleTools(
       required: ["taskId"],
     },
     async execute(_id, params) {
-      api.logger?.info(`Ansible: claiming task ${params.taskId}`);
+      api.logger?.info(`Ansible: claiming task`);
       const doc = getDoc();
       const nodeId = getNodeId();
 
@@ -305,38 +349,40 @@ export function registerAnsibleTools(
         return { error: "Ansible not initialized" };
       }
 
-      const tasks = doc.getMap("tasks");
-      const task = tasks.get(params.taskId as string) as Task | undefined;
+      try {
+        requireAuth(nodeId);
 
-      if (!task) {
-        api.logger?.warn(`Ansible: task ${params.taskId} not found`);
-        return { error: "Task not found" };
+        const tasks = doc.getMap("tasks");
+        const task = tasks.get(params.taskId as string) as Task | undefined;
+
+        if (!task) {
+          return { error: "Task not found" };
+        }
+
+        if (task.status !== "pending") {
+          return { error: `Task is already ${task.status}` };
+        }
+
+        tasks.set(params.taskId as string, {
+          ...task,
+          status: "claimed",
+          claimedBy: nodeId,
+          claimedAt: Date.now(),
+        });
+
+        return {
+          success: true,
+          message: `Claimed task: ${task.title}`,
+          task: {
+            id: task.id,
+            title: task.title,
+            description: task.description,
+            context: task.context,
+          },
+        };
+      } catch (err: any) {
+        return { error: err.message };
       }
-
-      if (task.status !== "pending") {
-        api.logger?.warn(`Ansible: task ${params.taskId} is already ${task.status}`);
-        return { error: `Task is already ${task.status}` };
-      }
-
-      tasks.set(params.taskId as string, {
-        ...task,
-        status: "claimed",
-        claimedBy: nodeId,
-        claimedAt: Date.now(),
-      });
-
-      api.logger?.info(`Ansible: task "${task.title}" claimed by ${nodeId}`);
-
-      return {
-        success: true,
-        message: `Claimed task: ${task.title}`,
-        task: {
-          id: task.id,
-          title: task.title,
-          description: task.description,
-          context: task.context,
-        },
-      };
     },
   });
 
@@ -360,7 +406,7 @@ export function registerAnsibleTools(
       required: ["taskId"],
     },
     async execute(_id, params) {
-      api.logger?.info(`Ansible: completing task ${params.taskId}`);
+      api.logger?.info(`Ansible: completing task`);
       const doc = getDoc();
       const nodeId = getNodeId();
 
@@ -368,31 +414,36 @@ export function registerAnsibleTools(
         return { error: "Ansible not initialized" };
       }
 
-      const tasks = doc.getMap("tasks");
-      const task = tasks.get(params.taskId as string) as Task | undefined;
+      try {
+        requireAuth(nodeId);
 
-      if (!task) {
-        return { error: "Task not found" };
+        const tasks = doc.getMap("tasks");
+        const task = tasks.get(params.taskId as string) as Task | undefined;
+
+        if (!task) {
+          return { error: "Task not found" };
+        }
+
+        if (task.claimedBy !== nodeId) {
+          return { error: "You don't have this task claimed" };
+        }
+
+        const result = params.result ? validateString(params.result, VALIDATION_LIMITS.maxResultLength, "result") : undefined;
+
+        tasks.set(params.taskId as string, {
+          ...task,
+          status: "completed",
+          completedAt: Date.now(),
+          result,
+        });
+
+        return {
+          success: true,
+          message: `Completed task: ${task.title}`,
+        };
+      } catch (err: any) {
+        return { error: err.message };
       }
-
-      if (task.claimedBy !== nodeId) {
-        api.logger?.warn(`Ansible: complete_task failed - task ${params.taskId} claimed by ${task.claimedBy}, not ${nodeId}`);
-        return { error: "You don't have this task claimed" };
-      }
-
-      tasks.set(params.taskId as string, {
-        ...task,
-        status: "completed",
-        completedAt: Date.now(),
-        result: params.result as string | undefined,
-      });
-
-      api.logger?.info(`Ansible: task "${task.title}" completed`);
-
-      return {
-        success: true,
-        message: `Completed task: ${task.title}`,
-      };
     },
   });
 
@@ -419,33 +470,34 @@ export function registerAnsibleTools(
         return { error: "Ansible not initialized" };
       }
 
-      const messages = doc.getMap("messages");
-      const messageIds = params.messageIds as string[] | undefined;
-      let count = 0;
+      try {
+        requireAuth(nodeId);
 
-      for (const [id, msg] of messages.entries()) {
-        const message = msg as Message;
+        const messages = doc.getMap("messages");
+        const messageIds = params.messageIds as string[] | undefined;
+        let count = 0;
 
-        // Skip if specific IDs provided and this isn't one
-        if (messageIds && !messageIds.includes(id)) continue;
+        for (const [id, msg] of messages.entries()) {
+          const message = msg as Message;
 
-        // Skip if already read
-        if (message.readBy.includes(nodeId)) continue;
+          if (messageIds && !messageIds.includes(id)) continue;
+          if (message.readBy.includes(nodeId)) continue;
+          if (message.to && message.to !== nodeId) continue;
 
-        // Skip if not for me
-        if (message.to && message.to !== nodeId) continue;
+          messages.set(id, {
+            ...message,
+            readBy: [...message.readBy, nodeId],
+          });
+          count++;
+        }
 
-        messages.set(id, {
-          ...message,
-          readBy: [...message.readBy, nodeId],
-        });
-        count++;
+        return {
+          success: true,
+          message: `Marked ${count} message(s) as read`,
+        };
+      } catch (err: any) {
+        return { error: err.message };
       }
-
-      return {
-        success: true,
-        message: `Marked ${count} message(s) as read`,
-      };
     },
   });
 }

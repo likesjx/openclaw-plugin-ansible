@@ -27,7 +27,7 @@
   "dependencies": {
     "yjs": "^13.6.0",
     "y-websocket": "^2.0.0",
-    "ws": "^8.0.0"
+    "ws": "^8.17.1"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",

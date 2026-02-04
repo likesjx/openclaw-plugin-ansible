@@ -15,12 +15,28 @@ export interface AnsibleConfig {
   /** WebSocket port for backbone nodes to listen on */
   listenPort?: number;
 
+  /** Host/IP to bind WebSocket server to. Defaults to auto-detected Tailscale IP. */
+  listenHost?: string;
+
   /** WebSocket URLs of backbone peers to connect to */
   backbonePeers?: string[];
 
   /** Capabilities this node provides */
   capabilities?: string[];
 }
+
+// ============================================================================
+// Validation Limits
+// ============================================================================
+
+export const VALIDATION_LIMITS = {
+  maxTitleLength: 200,
+  maxDescriptionLength: 5000,
+  maxMessageLength: 10000,
+  maxContextLength: 5000,
+  maxResultLength: 5000,
+  maxStateFileBytes: 50 * 1024 * 1024, // 50MB
+} as const;
 
 // ============================================================================
 // Node Identity
