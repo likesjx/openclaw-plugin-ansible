@@ -2,18 +2,84 @@
  * Ansible CLI Commands
  *
  * Management commands for the Ansible coordination layer.
+ *
+ * Commands that read live state (status, nodes, tasks, send) call the running
+ * gateway's /tools/invoke HTTP endpoint so they see the real Yjs document.
+ * Setup commands (bootstrap, join, invite, revoke) still use direct Yjs access
+ * because they run when the gateway IS the current process.
  */
 
+import * as fs from "fs";
+import * as path from "path";
 import type { OpenClawPluginApi, CliProgram, CliCommand } from "./types.js";
 import type { AnsibleConfig } from "./schema.js";
-import { getAnsibleState, getNodeId } from "./service.js";
+import { getNodeId } from "./service.js";
 import {
   generateInviteToken,
   joinWithToken,
   bootstrapFirstNode,
   revokeNode,
-  isNodeAuthorized,
 } from "./auth.js";
+
+// ---------------------------------------------------------------------------
+// Gateway HTTP helper
+// ---------------------------------------------------------------------------
+
+interface GatewayConfig {
+  port: number;
+  token: string;
+}
+
+function readGatewayConfig(): GatewayConfig {
+  // Resolve config path: $OPENCLAW_CONFIG or ~/.openclaw/openclaw.json
+  const configPath =
+    process.env.OPENCLAW_CONFIG ||
+    path.join(process.env.HOME || process.env.USERPROFILE || ".", ".openclaw", "openclaw.json");
+
+  let raw: string;
+  try {
+    raw = fs.readFileSync(configPath, "utf-8");
+  } catch {
+    throw new Error(`Cannot read config at ${configPath}`);
+  }
+
+  const config = JSON.parse(raw);
+  const port = config?.gateway?.port ?? 18789;
+  const token = config?.gateway?.auth?.token;
+
+  if (!token) {
+    throw new Error("gateway.auth.token not set in openclaw config");
+  }
+
+  return { port, token };
+}
+
+async function callGateway(
+  tool: string,
+  args: Record<string, unknown> = {}
+): Promise<any> {
+  const { port, token } = readGatewayConfig();
+  const url = `http://localhost:${port}/tools/invoke`;
+
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ tool, args }),
+  });
+
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    if (res.status === 401 || res.status === 403) {
+      throw new Error("Authentication failed — check gateway.auth.token in config");
+    }
+    throw new Error(`Gateway returned ${res.status}: ${body}`);
+  }
+
+  return res.json();
+}
 
 export function registerAnsibleCli(
   api: OpenClawPluginApi,
@@ -28,50 +94,45 @@ export function registerAnsibleCli(
       .command("status")
       .description("Show status of all hemispheres")
       .action(async () => {
-        const state = getAnsibleState();
-        const myId = getNodeId();
+        let result: any;
+        try {
+          result = await callGateway("ansible.status");
+        } catch (err: any) {
+          console.log(`✗ ${err.message}`);
+          return;
+        }
 
-        if (!state) {
-          console.log("Ansible not initialized");
+        if (result.error) {
+          console.log(`✗ ${result.error}`);
           return;
         }
 
         console.log("\n=== Ansible Status ===\n");
-        console.log(`My ID: ${myId}`);
+        console.log(`My ID: ${result.myId}`);
         console.log(`Tier: ${config.tier}`);
-        console.log(`Authorized: ${myId ? isNodeAuthorized(myId) : false}`);
         console.log();
 
         // Nodes
         console.log("Hemispheres:");
-        if (state.pulse.size === 0) {
+        const nodes = result.nodes || [];
+        if (nodes.length === 0) {
           console.log("  (no nodes online)");
         }
-        for (const [id, pulseEntry] of state.pulse.entries()) {
-          if (!pulseEntry) continue;
-          const context = state.context.get(id);
-          const nodeInfo = state.nodes.get(id);
-          const isMe = id === myId ? " (me)" : "";
-          const tier = nodeInfo?.tier ? ` [${nodeInfo.tier}]` : "";
-          const focus = context?.currentFocus ? ` - ${context.currentFocus}` : "";
-          // Pulse entries may be Y.Map instances — read fields via .get()
-          const p = pulseEntry instanceof Map || (pulseEntry as any).get
-            ? { status: (pulseEntry as any).get("status"), lastSeen: (pulseEntry as any).get("lastSeen") }
-            : pulseEntry as any;
-          const icon = p.status === "online" ? "●" : "○";
-          console.log(`  ${icon} ${id}${isMe}${tier}${focus}`);
-          console.log(`    Last seen: ${new Date(p.lastSeen).toLocaleString()}`);
+        for (const node of nodes) {
+          const isMe = node.id === result.myId ? " (me)" : "";
+          const focus = node.currentFocus ? ` - ${node.currentFocus}` : "";
+          const icon = node.status === "online" ? "●" : "○";
+          console.log(`  ${icon} ${node.id}${isMe}${focus}`);
+          console.log(`    Last seen: ${new Date(node.lastSeen).toLocaleString()}`);
         }
         console.log();
 
         // Tasks
-        const pendingTasks = (state.tasks ? Array.from(state.tasks.values()) : []).filter(
-          (t) => t && t.status === "pending"
-        );
+        const pendingTasks = result.pendingTasks || [];
         console.log(`Pending tasks: ${pendingTasks.length}`);
         for (const task of pendingTasks.slice(0, 5)) {
-          const assignee = task.assignedTo ? ` → ${task.assignedTo}` : "";
-          console.log(`  - [${task.id.slice(0, 8)}] ${task.title}${assignee}`);
+          const assignee = task.assignedTo && task.assignedTo !== "anyone" ? ` → ${task.assignedTo}` : "";
+          console.log(`  - [${task.id}] ${task.title}${assignee}`);
         }
         if (pendingTasks.length > 5) {
           console.log(`  ... and ${pendingTasks.length - 5} more`);
@@ -79,17 +140,7 @@ export function registerAnsibleCli(
         console.log();
 
         // Messages
-        const unread = (state.messages ? Array.from(state.messages.values()) : []).filter(
-          (m) => myId && m && m.from !== myId && m.readBy && !m.readBy.includes(myId)
-        );
-        console.log(`Unread messages: ${unread.length}`);
-        for (const msg of unread.slice(0, 3)) {
-          const preview = msg.content.length > 50 ? msg.content.slice(0, 50) + "..." : msg.content;
-          console.log(`  - From ${msg.from}: ${preview}`);
-        }
-        if (unread.length > 3) {
-          console.log(`  ... and ${unread.length - 3} more`);
-        }
+        console.log(`Unread messages: ${result.unreadMessages || 0}`);
       });
 
     // === ansible nodes ===
@@ -97,36 +148,39 @@ export function registerAnsibleCli(
       .command("nodes")
       .description("List authorized nodes")
       .action(async () => {
-        const state = getAnsibleState();
-        const myId = getNodeId();
+        let result: any;
+        try {
+          result = await callGateway("ansible.status");
+        } catch (err: any) {
+          console.log(`✗ ${err.message}`);
+          return;
+        }
 
-        if (!state) {
-          console.log("Ansible not initialized");
+        if (result.error) {
+          console.log(`✗ ${result.error}`);
           return;
         }
 
         console.log("\n=== Authorized Nodes ===\n");
 
-        if (state.nodes.size === 0) {
-          console.log("No nodes authorized yet.");
+        const nodes = result.nodes || [];
+        if (nodes.length === 0) {
+          console.log("No nodes online.");
           console.log("\nTo bootstrap the first node, run:");
           console.log("  openclaw ansible bootstrap");
           return;
         }
 
-        for (const [id, info] of state.nodes.entries()) {
-          const isMe = id === myId ? " (me)" : "";
-          const pulseEntry = state.pulse.get(id);
-          const pulseStatus = pulseEntry instanceof Map || (pulseEntry as any)?.get
-            ? (pulseEntry as any).get("status")
-            : (pulseEntry as any)?.status;
-          const status = pulseStatus === "online" ? "●" : "○";
+        for (const node of nodes) {
+          const isMe = node.id === result.myId ? " (me)" : "";
+          const icon = node.status === "online" ? "●" : "○";
 
-          console.log(`${status} ${id}${isMe}`);
-          console.log(`  Tier: ${info.tier}`);
-          console.log(`  Capabilities: ${info.capabilities?.join(", ") || "none"}`);
-          console.log(`  Added by: ${info.addedBy}`);
-          console.log(`  Added: ${new Date(info.addedAt).toLocaleString()}`);
+          console.log(`${icon} ${node.id}${isMe}`);
+          console.log(`  Status: ${node.status}`);
+          if (node.currentFocus) {
+            console.log(`  Focus: ${node.currentFocus}`);
+          }
+          console.log(`  Last seen: ${new Date(node.lastSeen).toLocaleString()}`);
           console.log();
         }
       });
@@ -138,47 +192,36 @@ export function registerAnsibleCli(
       .option("-s, --status <status>", "Filter by status")
       .action(async (...args: unknown[]) => {
         const opts = (args[0] || {}) as { status?: string };
-        const state = getAnsibleState();
 
-        if (!state) {
-          console.log("Ansible not initialized");
+        let result: any;
+        try {
+          result = await callGateway("ansible.status");
+        } catch (err: any) {
+          console.log(`✗ ${err.message}`);
+          return;
+        }
+
+        if (result.error) {
+          console.log(`✗ ${result.error}`);
           return;
         }
 
         console.log("\n=== Tasks ===\n");
 
-        const tasks = Array.from(state.tasks.values());
+        // The status tool only returns pending tasks; display what we have
+        const tasks: any[] = result.pendingTasks || [];
         if (tasks.length === 0) {
-          console.log("No tasks.");
+          console.log("No pending tasks.");
           return;
         }
 
         for (const task of tasks) {
-          if (opts.status && task.status !== opts.status) continue;
+          // If caller filtered by status and this doesn't match, skip
+          if (opts.status && opts.status !== "pending") continue;
 
-          const statusIcon =
-            task.status === "completed"
-              ? "✓"
-              : task.status === "in_progress"
-                ? "▶"
-                : task.status === "claimed"
-                  ? "◎"
-                  : task.status === "failed"
-                    ? "✗"
-                    : "○";
-
-          console.log(`${statusIcon} [${task.id.slice(0, 8)}] ${task.title}`);
-          console.log(`  Status: ${task.status}`);
-          console.log(`  Created by: ${task.createdBy}`);
-          if (task.assignedTo) {
-            console.log(`  Assigned to: ${task.assignedTo}`);
-          }
-          if (task.claimedBy) {
-            console.log(`  Claimed by: ${task.claimedBy}`);
-          }
-          if (task.result) {
-            console.log(`  Result: ${task.result.slice(0, 100)}...`);
-          }
+          const assignee = task.assignedTo && task.assignedTo !== "anyone" ? ` → ${task.assignedTo}` : "";
+          console.log(`○ [${task.id}] ${task.title}${assignee}`);
+          console.log(`  Status: pending`);
           console.log();
         }
       });
@@ -285,27 +328,23 @@ export function registerAnsibleCli(
           return;
         }
 
-        const doc = (await import("./service.js")).getDoc();
-        const nodeId = (await import("./service.js")).getNodeId();
+        const toolArgs: Record<string, unknown> = { content: opts.message };
+        if (opts.to) {
+          toolArgs.to = opts.to;
+        }
 
-        if (!doc || !nodeId) {
-          console.log("✗ Ansible not initialized");
+        let result: any;
+        try {
+          result = await callGateway("ansible.send_message", toolArgs);
+        } catch (err: any) {
+          console.log(`✗ ${err.message}`);
           return;
         }
 
-        const { randomUUID } = await import("crypto");
-        const messages = doc.getMap("messages");
-
-        const message = {
-          id: randomUUID(),
-          from: nodeId,
-          to: opts.to,
-          content: opts.message,
-          timestamp: Date.now(),
-          readBy: [nodeId],
-        };
-
-        messages.set(message.id, message);
+        if (result.error) {
+          console.log(`✗ ${result.error}`);
+          return;
+        }
 
         if (opts.to) {
           console.log(`✓ Message sent to ${opts.to}`);
