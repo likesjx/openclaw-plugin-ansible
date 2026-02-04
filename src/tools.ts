@@ -226,49 +226,58 @@ export function registerAnsibleTools(
       properties: {},
     },
     async execute() {
-      api.logger?.debug("Ansible: checking status");
-      const state = getAnsibleState();
-      const myId = getNodeId();
+      try {
+        api.logger?.debug("Ansible: checking status");
+        const state = getAnsibleState();
+        const myId = getNodeId();
 
-      if (!state || !myId) {
-        return { error: "Ansible not initialized" };
+        if (!state || !myId) {
+          api.logger?.warn("Ansible: status failed - not initialized");
+          return { error: "Ansible not initialized" };
+        }
+
+        const nodes: Array<{
+          id: string;
+          status: string;
+          lastSeen: string;
+          currentFocus?: string;
+        }> = [];
+
+        if (state.pulse) {
+          for (const [id, pulse] of state.pulse.entries()) {
+            if (!pulse) continue;
+            const context = state.context?.get(id);
+            nodes.push({
+              id,
+              status: pulse.status || "unknown",
+              lastSeen: new Date(pulse.lastSeen || Date.now()).toISOString(),
+              currentFocus: context?.currentFocus,
+            });
+          }
+        }
+
+        const pendingTasks = (state.tasks ? Array.from(state.tasks.values()) : [])
+          .filter((t) => t && t.status === "pending")
+          .map((t) => ({
+            id: t.id ? t.id.slice(0, 8) : "unknown",
+            title: t.title || "Untitled",
+            assignedTo: t.assignedTo || "anyone",
+          }));
+
+        const unreadCount = (state.messages ? Array.from(state.messages.values()) : [])
+          .filter((m) => m && m.from !== myId && m.readBy && !m.readBy.includes(myId))
+          .length;
+
+        return {
+          myId,
+          nodes,
+          pendingTasks,
+          unreadMessages: unreadCount,
+        };
+      } catch (err: any) {
+        api.logger?.error(`Ansible: status tool error: ${err.message}`);
+        return { error: `Status tool error: ${err.message}` };
       }
-
-      const nodes: Array<{
-        id: string;
-        status: string;
-        lastSeen: string;
-        currentFocus?: string;
-      }> = [];
-
-      for (const [id, pulse] of state.pulse.entries()) {
-        const context = state.context.get(id);
-        nodes.push({
-          id,
-          status: pulse.status,
-          lastSeen: new Date(pulse.lastSeen).toISOString(),
-          currentFocus: context?.currentFocus,
-        });
-      }
-
-      const pendingTasks = Array.from(state.tasks.values())
-        .filter((t) => t.status === "pending")
-        .map((t) => ({
-          id: t.id.slice(0, 8),
-          title: t.title,
-          assignedTo: t.assignedTo || "anyone",
-        }));
-
-      const unreadCount = Array.from(state.messages.values()).filter(
-        (m) => m && m.from !== myId && m.readBy && !m.readBy.includes(myId)
-      ).length;
-
-      return {
-        myId,
-        nodes,
-        pendingTasks,
-        unreadMessages: unreadCount,
-      };
     },
   });
 

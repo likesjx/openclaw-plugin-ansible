@@ -65,9 +65,9 @@ function buildContextInjection(
   }
 
   // === My Active Threads ===
-  if (myContext?.activeThreads?.length) {
+  if (myContext?.activeThreads && Array.isArray(myContext.activeThreads)) {
     const threads = myContext.activeThreads
-      .filter((t) => now - t.lastActivity < maxAgeMs)
+      .filter((t) => t && now - t.lastActivity < maxAgeMs)
       .slice(0, CONTEXT_LIMITS.activeThreads)
       .map((t) => `- ${t.summary}`);
 
@@ -77,9 +77,9 @@ function buildContextInjection(
   }
 
   // === Recent Decisions ===
-  if (myContext?.recentDecisions?.length) {
+  if (myContext?.recentDecisions && Array.isArray(myContext.recentDecisions)) {
     const decisions = myContext.recentDecisions
-      .filter((d) => now - d.madeAt < maxAgeMs)
+      .filter((d) => d && now - d.madeAt < maxAgeMs)
       .slice(0, CONTEXT_LIMITS.recentDecisions)
       .map((d) => `- ${d.decision} (${d.reasoning})`);
 
