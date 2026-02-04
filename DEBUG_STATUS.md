@@ -1,78 +1,132 @@
-# Ansible Plugin Debug Status
+# Ansible Plugin Status
 
-## Current Issue
-Two-node Yjs sync fails with "Invalid typed array length: 1022146939"
+## Architecture (as understood)
 
-## VPS Commands Needed
-Run these on VPS (jane-vps) to update the plugin:
-```bash
-cd ~/.openclaw/plugins/ansible
-git pull origin main
-npm install
-npm run build
-
-# Clear any corrupted state
-rm -f ~/.openclaw/state/ansible*.yjs 2>/dev/null
-find ~/.openclaw -name "ansible-state.yjs" -delete 2>/dev/null
-
-# Check versions match Mac
-npm ls y-websocket yjs
-
-# Restart gateway
-pkill -f "openclaw gateway" || true
-openclaw gateway start
+```
+Mac (edge)                          VPS (backbone)
+┌──────────────────┐                ┌─────────────────────────────────┐
+│ openclaw-tui     │                │ Docker: jane-gateway            │
+│ + LaunchAgent GW │                │   openclaw-gateway (port 18789) │
+│   (port 18789)   │                │   ansible plugin (port 1235)    │
+│ ansible plugin   │──ws://jane-vps:1235──▶│   telegram channel           │
+│   (edge mode)    │                │   = "vps-jane"                  │
+└──────────────────┘                └─────────────────────────────────┘
+      "mac-jane"                    Docker volumes:
+                                      ./data -> /home/node/.openclaw
+                                      ./workspace -> /home/node/.openclaw/workspace
+                                      plugin -> /home/node/code/openclaw-plugin-ansible
 ```
 
-## Environment
-- **Mac (edge)**: y-websocket 2.1.0, yjs 13.6.29
-- **VPS (backbone)**: Unknown versions (need to verify)
-- **Connection**: Establishes successfully, fails during sync handshake
+## Current State: PARTIALLY WORKING
 
-## Root Cause Hypothesis
-Binary protocol mismatch between `setupWSConnection` (server) and `WebsocketProvider` (client). The huge number suggests bytes are being misinterpreted.
+| Component | Status | Notes |
+|-----------|--------|-------|
+| Mac gateway | RUNNING | LaunchAgent on port 18789 |
+| VPS Docker container | RUNNING | `984be14cb661_jane-gateway`, up since ~04:46 UTC |
+| vps-jane agent | ALIVE | Processing Telegram messages (Gemini Flash) |
+| Ansible sync (Mac→VPS) | BROKEN | Mac sends to ws://jane-vps:1235 but plugin inside Docker binds to 127.0.0.1 |
+| Tailscale | WORKING | Both nodes online, MagicDNS resolves |
 
-## Changes Made
-1. ✅ Fixed initialization order - edge now loads persisted state BEFORE connecting
-2. ✅ Added debug logging for doc updates and connection events
-3. ✅ Generated package-lock.json for version consistency
-4. ✅ Enhanced logging across service, tools, and hooks for better observability
-5. ✅ Refactored persistence to use service logger
-6. ✅ Updated plugin code on VPS (`/home/deploy/code/openclaw-plugin-ansible`)
-7. ✅ Updated VPS `docker-compose.yml` to mount plugin directory into container
-8. ✅ Recreated VPS Docker container to apply volume mount
-9. ✅ Cleaned up invalid OpenClaw configuration using `jq` on host
-10. ✅ Manually created plugin symlink and injected valid config to bypass CLI validation loop
-11. ✅ Restarted VPS gateway - **Ansible Plugin is Running!**
-12. ✅ Opened VPS firewall port `1235`.
-13. ✅ Updated Mac config to use VPS Public IP.
-14. ✅ **Verified Sync!** Mac logs show "Successfully synced with ws://31.97.130.98:1235".
+## ROOT CAUSE: Ansible sync broken inside Docker
 
-## Current Step
-**Verifying State Sync**
+The ansible plugin's backbone WebSocket server binds to `127.0.0.1:1235` inside the container:
+```
+Backbone mode: starting WebSocket server on 127.0.0.1:1235
+```
 
-Sync is working at the protocol level.
-**CLI Issue:** `openclaw ansible status` reports "not initialized" because the CLI process doesn't start the background sync service.
-**Next Step:** Test via the running agent (which HAS the active sync service).
+This happens because `getTailscaleIP()` fails inside Docker (no tailscale binary), falling back to `127.0.0.1`. Docker's port forwarding sends traffic to the container's network interface (172.x.x.x), which can't reach 127.0.0.1.
 
-## Next Steps
-- [x] Run local test with setupWSConnection + WebsocketProvider ✅ PASSED
-- [x] Commit and push fixes to GitHub ✅ (commit f1f39ac)
-- [x] Update plugin code on VPS ✅
-- [x] Mount plugin to VPS container ✅
-- [x] Fix VPS OpenClaw configuration & install plugin ✅
-- [x] Restart VPS gateway & verify logs ✅
-- [x] Test sync from Mac ✅ (Protocol verified)
-- [ ] **Verify data sync via Agent**
-    - [ ] Run `openclaw agent --message "ansible status"`
-    - [ ] Verify both nodes are visible
-- [ ] Fix CLI command initialization (ensure it can read doc state)
-- [ ] Fix Tailscale connectivity (long term)
+**Mac state: 725 bytes** (stale from when standalone gateway was running)
+**Container state: 110 bytes** (no external connections received)
 
-## Key Code Locations
-- `src/service.ts:291-327` - connectToPeer() with WebsocketProvider
-- `src/service.ts:212-247` - startBackboneMode() with setupWSConnection
-- `node_modules/y-websocket/bin/utils.cjs` - server protocol
-- `node_modules/y-websocket/src/y-websocket.js` - client protocol
+### Fix Required (2 changes)
+
+1. **Container ansible config** (`~/apps/jane/data/openclaw.json` on host, needs sudo):
+   Add `listenHost: "0.0.0.0"` to ansible plugin config. Safe inside Docker since Docker networking handles isolation.
+   ```json
+   "ansible": {
+     "enabled": true,
+     "config": {
+       "tier": "backbone",
+       "listenPort": 1235,
+       "listenHost": "0.0.0.0",
+       "capabilities": ["always-on"]
+     }
+   }
+   ```
+
+2. **docker-compose.yml** (`~/apps/jane/docker-compose.yml`):
+   Change `"1235:1235"` to `"100.64.212.8:1235:1235"` so port 1235 is only exposed on Tailscale, not public internet.
+   ```yaml
+   ports:
+     - "100.64.212.8:18789:18789"
+     - "127.0.0.1:9090:9090"
+     - "100.64.212.8:1235:1235"  # was "1235:1235" (exposed to 0.0.0.0!)
+   ```
+
+   Then: `cd ~/apps/jane && docker compose up -d` to recreate container.
 
 ---
-Last updated: VPS gateway running! Ansible listening on port 1235. Testing from Mac...
+
+## What mac-jane did (incident at ~04:33-04:41 UTC)
+
+Mac-jane investigated why vps-jane was silent. She:
+1. Found `jane-gateway` Docker container in "Created" state
+2. Found standalone `openclaw-gateway` (PID 3226623) on port 1235
+3. Tried `docker compose up -d` - port conflict with standalone gateway
+4. **Killed standalone gateway** (`sudo kill 3226623`)
+5. Docker container auto-restarted (`restart: unless-stopped`)
+6. Container came up, but ansible plugin binds to 127.0.0.1 (see root cause above)
+
+Standalone gateway I started on port 18789 (as `deploy` user) appears to have been superseded by Docker taking port 18789.
+
+---
+
+## SECURITY: Port 1235 publicly exposed AGAIN
+
+Docker maps `1235:1235` to `0.0.0.0` on the host, bypassing UFW via iptables:
+```
+docker-pr  root  TCP *:1235 (LISTEN)
+```
+Fix: change docker-compose to `"100.64.212.8:1235:1235"`.
+
+---
+
+## SECURITY AUDIT - Code Fixes (all applied)
+
+| # | Severity | Finding | Status |
+|---|----------|---------|--------|
+| 1-4 | CRITICAL | Auth, binding, CRDT writes, command injection | ALL FIXED |
+| 5-8 | HIGH | Validation, path traversal, deserialization, ws CVE | ALL FIXED |
+| 9 | MEDIUM | Log info disclosure | OPEN |
+
+Commit: `5981cdf - security: harden WebSocket, auth, validation, and dependencies`
+
+---
+
+## TODO
+
+### P0 - Fix ansible sync in Docker
+- [ ] Add `listenHost: "0.0.0.0"` to container's ansible config (needs sudo on `~/apps/jane/data/openclaw.json`)
+- [ ] Fix docker-compose port: `"1235:1235"` → `"100.64.212.8:1235:1235"`
+- [ ] Recreate container: `cd ~/apps/jane && docker compose up -d`
+- [ ] Verify Mac can connect and sync (check for "incoming connection" in container logs)
+
+### P1 - Operational
+- [ ] Kill any leftover standalone openclaw-gateway on host (check `ps aux | grep openclaw | grep deploy`)
+- [ ] Clean up host's `/home/deploy/.openclaw/openclaw.json` (misleading, not used by vps-jane)
+- [ ] Sanitize production logs (security finding #9)
+
+### P2 - Hardening
+- [ ] Consider disabling Tailscale key expiry for VPS
+- [ ] VPS container gateway token should not be logged/exposed
+
+### SSH Notes
+- `ssh deploy@vps-jane` (Tailscale MagicDNS)
+- Container data volume needs `sudo` to access: `~/apps/jane/data/`
+- NVM: `source ~/.nvm/nvm.sh` or `bash -lc`
+- Container name: `984be14cb661_jane-gateway`
+- Docker exec: `docker exec 984be14cb661_jane-gateway <cmd>`
+
+---
+Last updated: 2026-02-04 04:58 UTC
