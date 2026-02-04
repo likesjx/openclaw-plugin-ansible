@@ -121,12 +121,13 @@ Commit: `5981cdf - security: harden WebSocket, auth, validation, and dependencie
 - [ ] Consider disabling Tailscale key expiry for VPS
 - [ ] VPS container gateway token should not be logged/exposed
 
-### SSH Notes
-- `ssh deploy@vps-jane` (Tailscale MagicDNS)
-- Container data volume needs `sudo` to access: `~/apps/jane/data/`
-- NVM: `source ~/.nvm/nvm.sh` or `bash -lc`
-- Container name: `984be14cb661_jane-gateway`
-- Docker exec: `docker exec 984be14cb661_jane-gateway <cmd>`
+---
+**Status Update (05:25 UTC):** VPS is undergoing a hard reboot to clear extreme load (150+) and memory exhaustion.
+
+**After Reboot Checklist:**
+1. Verify `jane-gateway` container is running: `ssh deploy@vps-jane "docker ps"`
+2. Verify Ansible is listening on port 1235: `ssh deploy@vps-jane "sudo lsof -i :1235"`
+3. Check Mac sync status: `grep "Successfully synced" /tmp/openclaw/openclaw-*.log`
 
 ---
-Last updated: 2026-02-04 04:58 UTC
+Last updated: 2026-02-04 05:25 UTC
