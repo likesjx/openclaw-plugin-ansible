@@ -407,13 +407,19 @@ async function persistState(ctx: ServiceContext) {
     // Ensure directory exists
     fs.mkdirSync(ctx.stateDir, { recursive: true });
 
-    const state = Y.encodeStateAsUpdate(doc);
-    if (state.length > VALIDATION_LIMITS.maxStateFileBytes) {
-      ctx.logger.warn(`State too large to persist (${state.length} bytes)`);
+    // Compact: create a fresh doc from current state to shed tombstones
+    const snapshot = Y.encodeStateAsUpdate(doc);
+    const compactDoc = new Y.Doc();
+    Y.applyUpdate(compactDoc, snapshot);
+    const compacted = Y.encodeStateAsUpdate(compactDoc);
+    compactDoc.destroy();
+
+    if (compacted.length > VALIDATION_LIMITS.maxStateFileBytes) {
+      ctx.logger.warn(`State too large to persist (${compacted.length} bytes)`);
       return;
     }
-    fs.writeFileSync(statePath, Buffer.from(state));
-    ctx.logger.info(`Persisted Ansible state to ${statePath} (${state.length} bytes)`);
+    fs.writeFileSync(statePath, Buffer.from(compacted));
+    ctx.logger.info(`Persisted Ansible state to ${statePath} (${compacted.length} bytes)`);
   } catch (err) {
     ctx.logger.warn(`Failed to persist state: ${err}`);
   }
@@ -454,16 +460,27 @@ function getOrCreatePulseMap(pulseRoot: Y.Map<unknown>, id: string): Y.Map<unkno
 }
 
 function startPulseHeartbeat(ctx: ServiceContext) {
+  let pulseMap: Y.Map<unknown> | null = null;
+
   const updatePulse = () => {
     if (!doc || !nodeId) return;
 
-    const pulse = doc.getMap("pulse");
-    const entry = getOrCreatePulseMap(pulse, nodeId);
+    // Create the nested Y.Map once, then reuse it
+    if (!pulseMap) {
+      const pulse = doc.getMap("pulse");
+      const existing = pulse.get(nodeId);
+      if (existing instanceof Y.Map) {
+        pulseMap = existing as Y.Map<unknown>;
+      } else {
+        pulseMap = new Y.Map<unknown>();
+        pulseMap.set("status", "online");
+        pulseMap.set("version", "0.1.0");
+        pulse.set(nodeId, pulseMap);
+      }
+    }
 
-    entry.set("lastSeen", Date.now());
-    entry.set("status", "online");
-    entry.set("version", "0.1.0");
-    // Don't touch currentTask — preserve whatever is already set
+    // Only update lastSeen — single field mutation per heartbeat
+    pulseMap.set("lastSeen", Date.now());
   };
 
   // Initial pulse
