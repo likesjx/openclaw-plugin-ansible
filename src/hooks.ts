@@ -19,15 +19,18 @@ export function registerAnsibleHooks(
     const myId = getNodeId();
 
     if (!state || !myId) {
+      api.logger?.debug("Ansible: skipping context injection (not initialized)");
       return {};
     }
 
     const prependContext = buildContextInjection(state, myId, config);
 
     if (!prependContext) {
+      api.logger?.debug("Ansible: no shared context to inject");
       return {};
     }
 
+    api.logger?.info("Ansible: injecting shared context into agent prompt");
     return { prependContext };
   });
 }

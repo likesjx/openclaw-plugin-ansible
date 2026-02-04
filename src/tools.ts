@@ -46,10 +46,12 @@ export function registerAnsibleTools(
       required: ["title", "description"],
     },
     handler: async (params) => {
+      api.logger?.info(`Ansible: delegating task "${params.title}"`);
       const doc = getDoc();
       const nodeId = getNodeId();
 
       if (!doc || !nodeId) {
+        api.logger?.warn("Ansible: delegation failed - not initialized");
         return { error: "Ansible not initialized" };
       }
 
@@ -67,6 +69,8 @@ export function registerAnsibleTools(
 
       const tasks = doc.getMap("tasks");
       tasks.set(task.id, task);
+
+      api.logger?.info(`Ansible: task ${task.id.slice(0, 8)} delegated to ${params.assignedTo || "anyone"}`);
 
       return {
         success: true,
@@ -96,10 +100,12 @@ export function registerAnsibleTools(
       required: ["content"],
     },
     handler: async (params) => {
+      api.logger?.info(`Ansible: sending message to ${params.to || "all"}`);
       const doc = getDoc();
       const nodeId = getNodeId();
 
       if (!doc || !nodeId) {
+        api.logger?.warn("Ansible: send message failed - not initialized");
         return { error: "Ansible not initialized" };
       }
 
@@ -155,6 +161,7 @@ export function registerAnsibleTools(
       },
     },
     handler: async (params) => {
+      api.logger?.debug("Ansible: updating context");
       const doc = getDoc();
       const nodeId = getNodeId();
 
@@ -172,6 +179,7 @@ export function registerAnsibleTools(
       const updated = { ...existing };
 
       if (params.currentFocus) {
+        api.logger?.info(`Ansible: focus updated to "${params.currentFocus}"`);
         updated.currentFocus = params.currentFocus;
       }
 
@@ -181,6 +189,7 @@ export function registerAnsibleTools(
           summary: (params.addThread as { summary: string }).summary,
           lastActivity: Date.now(),
         };
+        api.logger?.info(`Ansible: thread added "${thread.summary}"`);
         updated.activeThreads = [thread, ...((existing.activeThreads as Thread[]) || [])].slice(0, 10);
       }
 
@@ -190,6 +199,7 @@ export function registerAnsibleTools(
           reasoning: (params.addDecision as { decision: string; reasoning: string }).reasoning,
           madeAt: Date.now(),
         };
+        api.logger?.info(`Ansible: decision recorded "${decision.decision}"`);
         updated.recentDecisions = [decision, ...((existing.recentDecisions as Decision[]) || [])].slice(0, 10);
       }
 
@@ -212,6 +222,7 @@ export function registerAnsibleTools(
       properties: {},
     },
     handler: async () => {
+      api.logger?.debug("Ansible: checking status");
       const state = getAnsibleState();
       const myId = getNodeId();
 
@@ -272,6 +283,7 @@ export function registerAnsibleTools(
       required: ["taskId"],
     },
     handler: async (params) => {
+      api.logger?.info(`Ansible: claiming task ${params.taskId}`);
       const doc = getDoc();
       const nodeId = getNodeId();
 
@@ -283,10 +295,12 @@ export function registerAnsibleTools(
       const task = tasks.get(params.taskId as string) as Task | undefined;
 
       if (!task) {
+        api.logger?.warn(`Ansible: task ${params.taskId} not found`);
         return { error: "Task not found" };
       }
 
       if (task.status !== "pending") {
+        api.logger?.warn(`Ansible: task ${params.taskId} is already ${task.status}`);
         return { error: `Task is already ${task.status}` };
       }
 
@@ -296,6 +310,8 @@ export function registerAnsibleTools(
         claimedBy: nodeId,
         claimedAt: Date.now(),
       });
+
+      api.logger?.info(`Ansible: task "${task.title}" claimed by ${nodeId}`);
 
       return {
         success: true,
@@ -329,6 +345,7 @@ export function registerAnsibleTools(
       required: ["taskId"],
     },
     handler: async (params) => {
+      api.logger?.info(`Ansible: completing task ${params.taskId}`);
       const doc = getDoc();
       const nodeId = getNodeId();
 
@@ -344,6 +361,7 @@ export function registerAnsibleTools(
       }
 
       if (task.claimedBy !== nodeId) {
+        api.logger?.warn(`Ansible: complete_task failed - task ${params.taskId} claimed by ${task.claimedBy}, not ${nodeId}`);
         return { error: "You don't have this task claimed" };
       }
 
@@ -353,6 +371,8 @@ export function registerAnsibleTools(
         completedAt: Date.now(),
         result: params.result as string | undefined,
       });
+
+      api.logger?.info(`Ansible: task "${task.title}" completed`);
 
       return {
         success: true,

@@ -120,7 +120,7 @@ export function createAnsibleService(
         doc.getMap("pulse");
 
         // Load persisted state BEFORE starting sync
-        await loadPersistedState(ctx.stateDir);
+        await loadPersistedState(ctx);
 
         // Now connect to peers
         await startEdgeMode(ctx, config);
@@ -148,7 +148,7 @@ export function createAnsibleService(
       startMessageCleanup(ctx);
 
       // Set up auto-persistence
-      setupAutoPersist(ctx.stateDir);
+      setupAutoPersist(ctx);
 
       ctx.logger.info("Ansible sync service started");
     },
@@ -169,7 +169,7 @@ export function createAnsibleService(
       }
 
       // Persist state before shutdown
-      await persistState(ctx.stateDir);
+      await persistState(ctx);
 
       // Update pulse to offline
       if (doc && nodeId) {
@@ -234,7 +234,16 @@ async function startBackboneMode(ctx: ServiceContext, config: AnsibleConfig) {
 
   wsServer.on("connection", (ws: WebSocket, req) => {
     const clientIp = req.socket.remoteAddress;
-    ctx.logger.info(`New connection from ${clientIp}`);
+    const userAgent = req.headers["user-agent"];
+    ctx.logger.info(`New incoming connection from ${clientIp} (${userAgent || "no user-agent"})`);
+
+    ws.on("error", (err) => {
+      ctx.logger.warn(`WebSocket error for client ${clientIp}: ${err.message}`);
+    });
+
+    ws.on("close", (code, reason) => {
+      ctx.logger.info(`WebSocket closed for client ${clientIp}: code=${code}, reason=${reason}`);
+    });
 
     // Use y-websocket utility for proper sync protocol
     // All clients connect to "ansible-shared" room
@@ -316,23 +325,24 @@ function connectToPeer(url: string, ctx: ServiceContext) {
     });
 
     provider.on("status", (event: { status: string }) => {
-      ctx.logger.debug(`Connection to ${url}: ${event.status}`);
+      ctx.logger.info(`Connection status for ${url}: ${event.status}`);
     });
 
     provider.on("sync", (synced: boolean) => {
+      ctx.logger.info(`Sync event for ${url}: synced=${synced}`);
       if (synced) {
-        ctx.logger.info(`Synced with ${url}`);
+        ctx.logger.info(`Successfully synced with ${url}`);
       }
     });
 
     // Add error handler for debugging
-    provider.on("connection-error", (event: unknown) => {
-      ctx.logger.warn(`Connection error to ${url}: ${event}`);
+    provider.on("connection-error", (event: any) => {
+      ctx.logger.warn(`Connection error to ${url}: ${event?.message || JSON.stringify(event)}`);
     });
 
     // Log when connection closes
-    provider.on("connection-close", (event: unknown) => {
-      ctx.logger.debug(`Connection closed to ${url}: ${event}`);
+    provider.on("connection-close", (event: any) => {
+      ctx.logger.warn(`Connection closed to ${url}: code=${event?.code}, reason=${event?.reason}`);
     });
 
     providers.push(provider);
@@ -345,49 +355,50 @@ function connectToPeer(url: string, ctx: ServiceContext) {
 // Persistence
 // ============================================================================
 
-async function loadPersistedState(stateDir: string) {
+async function loadPersistedState(ctx: ServiceContext) {
   if (!doc) return;
 
-  const statePath = path.join(stateDir, STATE_FILE);
+  const statePath = path.join(ctx.stateDir, STATE_FILE);
 
   try {
     if (fs.existsSync(statePath)) {
       const data = fs.readFileSync(statePath);
       Y.applyUpdate(doc, new Uint8Array(data));
-      console.log(`Loaded Ansible state from ${statePath}`);
+      ctx.logger.info(`Loaded Ansible state from ${statePath} (${data.length} bytes)`);
     }
   } catch (err) {
-    console.warn(`Failed to load persisted state: ${err}`);
+    ctx.logger.warn(`Failed to load persisted state: ${err}`);
   }
 }
 
-async function persistState(stateDir: string) {
+async function persistState(ctx: ServiceContext) {
   if (!doc) return;
 
-  const statePath = path.join(stateDir, STATE_FILE);
+  const statePath = path.join(ctx.stateDir, STATE_FILE);
 
   try {
     // Ensure directory exists
-    fs.mkdirSync(stateDir, { recursive: true });
+    fs.mkdirSync(ctx.stateDir, { recursive: true });
 
     const state = Y.encodeStateAsUpdate(doc);
     fs.writeFileSync(statePath, Buffer.from(state));
-    console.log(`Persisted Ansible state to ${statePath}`);
+    ctx.logger.info(`Persisted Ansible state to ${statePath} (${state.length} bytes)`);
   } catch (err) {
-    console.warn(`Failed to persist state: ${err}`);
+    ctx.logger.warn(`Failed to persist state: ${err}`);
   }
 }
 
-function setupAutoPersist(stateDir: string) {
+function setupAutoPersist(ctx: ServiceContext) {
   if (!doc) return;
 
   // Persist on changes (debounced)
   let persistTimeout: ReturnType<typeof setTimeout> | null = null;
 
-  doc.on("update", () => {
+  doc.on("update", (update: Uint8Array) => {
+    ctx.logger.debug(`Local doc update: ${update.length} bytes`);
     if (persistTimeout) clearTimeout(persistTimeout);
     persistTimeout = setTimeout(() => {
-      persistState(stateDir);
+      persistState(ctx);
     }, 5000); // Persist 5 seconds after last change
   });
 }
