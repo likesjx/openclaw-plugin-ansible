@@ -6,7 +6,7 @@
 
 import { randomUUID } from "crypto";
 import type { OpenClawPluginApi } from "./types.js";
-import type { AnsibleConfig, Task, Message, Decision, Thread } from "./schema.js";
+import type { AnsibleConfig, Task, Message, Decision, Thread, PulseData } from "./schema.js";
 import { VALIDATION_LIMITS } from "./schema.js";
 import { getDoc, getNodeId, getAnsibleState } from "./service.js";
 import { isNodeAuthorized } from "./auth.js";
@@ -286,10 +286,14 @@ export function registerAnsibleTools(
           for (const [id, pulse] of state.pulse.entries()) {
             if (!pulse) continue;
             const context = state.context?.get(id);
+            // Pulse entries are Y.Map instances — read fields via .get()
+            const p = pulse instanceof Map || (pulse as any).get
+              ? { status: (pulse as any).get("status"), lastSeen: (pulse as any).get("lastSeen"), currentTask: (pulse as any).get("currentTask") }
+              : pulse as PulseData;
             nodes.push({
               id,
-              status: pulse.status || "unknown",
-              lastSeen: new Date(pulse.lastSeen || Date.now()).toISOString(),
+              status: p.status || "unknown",
+              lastSeen: new Date(p.lastSeen || Date.now()).toISOString(),
               currentFocus: context?.currentFocus,
             });
           }

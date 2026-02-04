@@ -47,15 +47,20 @@ export function registerAnsibleCli(
         if (state.pulse.size === 0) {
           console.log("  (no nodes online)");
         }
-        for (const [id, pulse] of state.pulse.entries()) {
+        for (const [id, pulseEntry] of state.pulse.entries()) {
+          if (!pulseEntry) continue;
           const context = state.context.get(id);
           const nodeInfo = state.nodes.get(id);
           const isMe = id === myId ? " (me)" : "";
           const tier = nodeInfo?.tier ? ` [${nodeInfo.tier}]` : "";
           const focus = context?.currentFocus ? ` - ${context.currentFocus}` : "";
-          const icon = pulse.status === "online" ? "●" : "○";
+          // Pulse entries may be Y.Map instances — read fields via .get()
+          const p = pulseEntry instanceof Map || (pulseEntry as any).get
+            ? { status: (pulseEntry as any).get("status"), lastSeen: (pulseEntry as any).get("lastSeen") }
+            : pulseEntry as any;
+          const icon = p.status === "online" ? "●" : "○";
           console.log(`  ${icon} ${id}${isMe}${tier}${focus}`);
-          console.log(`    Last seen: ${new Date(pulse.lastSeen).toLocaleString()}`);
+          console.log(`    Last seen: ${new Date(p.lastSeen).toLocaleString()}`);
         }
         console.log();
 
@@ -111,8 +116,11 @@ export function registerAnsibleCli(
 
         for (const [id, info] of state.nodes.entries()) {
           const isMe = id === myId ? " (me)" : "";
-          const pulse = state.pulse.get(id);
-          const status = pulse?.status === "online" ? "●" : "○";
+          const pulseEntry = state.pulse.get(id);
+          const pulseStatus = pulseEntry instanceof Map || (pulseEntry as any)?.get
+            ? (pulseEntry as any).get("status")
+            : (pulseEntry as any)?.status;
+          const status = pulseStatus === "online" ? "●" : "○";
 
           console.log(`${status} ${id}${isMe}`);
           console.log(`  Tier: ${info.tier}`);

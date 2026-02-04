@@ -135,7 +135,7 @@ function getMyPendingTasks(
     if (task.assignedTo && task.assignedTo !== myId) continue;
 
     // Check capability requirements
-    if (task.requires?.length) {
+    if (task.requires && Array.isArray(task.requires) && task.requires.length) {
       const hasAll = task.requires.every((req) => myCapabilities.includes(req));
       if (!hasAll) continue;
     }
@@ -163,7 +163,7 @@ function getUnreadMessages(
     if (msg.to && msg.to !== myId) continue;
 
     // Skip messages I've read
-    if (msg.readBy.includes(myId)) continue;
+    if (Array.isArray(msg.readBy) && msg.readBy.includes(myId)) continue;
 
     messages.push(msg);
   }

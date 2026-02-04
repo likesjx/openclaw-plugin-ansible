@@ -174,12 +174,9 @@ export function createAnsibleService(
       // Update pulse to offline
       if (doc && nodeId) {
         const pulse = doc.getMap("pulse");
-        const existing = pulse.get(nodeId) as PulseData | undefined;
-        pulse.set(nodeId, {
-          ...existing,
-          status: "offline",
-          lastSeen: Date.now(),
-        } as PulseData);
+        const entry = getOrCreatePulseMap(pulse, nodeId);
+        entry.set("status", "offline");
+        entry.set("lastSeen", Date.now());
       }
 
       // Close WebSocket providers
@@ -441,19 +438,32 @@ function setupAutoPersist(ctx: ServiceContext) {
 // Heartbeat
 // ============================================================================
 
+/**
+ * Get or create a nested Y.Map for a node's pulse entry.
+ * Using nested Y.Maps means field updates (e.g. lastSeen) are in-place
+ * mutations rather than full replacements, avoiding CRDT tombstone buildup.
+ */
+function getOrCreatePulseMap(pulseRoot: Y.Map<unknown>, id: string): Y.Map<unknown> {
+  let entry = pulseRoot.get(id);
+  if (!(entry instanceof Y.Map)) {
+    const m = new Y.Map<unknown>();
+    pulseRoot.set(id, m);
+    entry = m;
+  }
+  return entry as Y.Map<unknown>;
+}
+
 function startPulseHeartbeat(ctx: ServiceContext) {
   const updatePulse = () => {
     if (!doc || !nodeId) return;
 
     const pulse = doc.getMap("pulse");
-    const existing = pulse.get(nodeId) as PulseData | undefined;
+    const entry = getOrCreatePulseMap(pulse, nodeId);
 
-    pulse.set(nodeId, {
-      lastSeen: Date.now(),
-      status: "online",
-      version: "0.1.0",
-      currentTask: existing?.currentTask,
-    } as PulseData);
+    entry.set("lastSeen", Date.now());
+    entry.set("status", "online");
+    entry.set("version", "0.1.0");
+    // Don't touch currentTask — preserve whatever is already set
   };
 
   // Initial pulse
@@ -490,7 +500,7 @@ function startMessageCleanup(ctx: ServiceContext) {
 
     for (const { id, msg } of allMessages) {
       // Skip unread messages if configured to keep them
-      if (MESSAGE_RETENTION.keepUnread && !msg.readBy.includes(nodeId)) {
+      if (MESSAGE_RETENTION.keepUnread && Array.isArray(msg.readBy) && !msg.readBy.includes(nodeId)) {
         continue;
       }
 
