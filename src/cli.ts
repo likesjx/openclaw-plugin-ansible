@@ -238,6 +238,52 @@ export function registerAnsibleCli(
         }
       });
 
+    // === ansible messages ===
+    ansible
+      .command("messages")
+      .description("Read messages from other hemispheres")
+      .option("-a, --all", "Show all messages (not just unread)")
+      .option("-f, --from <nodeId>", "Filter by sender")
+      .option("-n, --limit <count>", "Max messages to show", "20")
+      .action(async (...args: unknown[]) => {
+        const opts = (args[0] || {}) as { all?: boolean; from?: string; limit?: string };
+
+        const toolArgs: Record<string, unknown> = {};
+        if (opts.all) toolArgs.all = true;
+        if (opts.from) toolArgs.from = opts.from;
+        if (opts.limit) toolArgs.limit = parseInt(opts.limit, 10);
+
+        let result: any;
+        try {
+          result = await callGateway("ansible.read_messages", toolArgs);
+        } catch (err: any) {
+          console.log(`✗ ${err.message}`);
+          return;
+        }
+
+        if (result.error) {
+          console.log(`✗ ${result.error}`);
+          return;
+        }
+
+        const messages = result.messages || [];
+        console.log(`\n=== Messages (${messages.length} of ${result.total}) ===\n`);
+
+        if (messages.length === 0) {
+          console.log("No messages.");
+          return;
+        }
+
+        for (const msg of messages) {
+          const unread = msg.unread ? " [UNREAD]" : "";
+          const to = msg.to ? ` → ${msg.to}` : " (broadcast)";
+          console.log(`${msg.from}${to}${unread}`);
+          console.log(`  ${new Date(msg.timestamp).toLocaleString()}`);
+          console.log(`  ${msg.content}`);
+          console.log();
+        }
+      });
+
     // === ansible bootstrap ===
     ansible
       .command("bootstrap")

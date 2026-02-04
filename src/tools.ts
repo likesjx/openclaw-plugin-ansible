@@ -451,6 +451,92 @@ export function registerAnsibleTools(
     },
   });
 
+  // === ansible.read_messages ===
+  api.registerTool({
+    name: "ansible.read_messages",
+    label: "Ansible Read Messages",
+    description:
+      "Read messages from other hemispheres of Jane. Returns message content, sender, and timestamp. By default returns unread messages; use the 'all' flag to include read messages too.",
+    parameters: {
+      type: "object",
+      properties: {
+        all: {
+          type: "boolean",
+          description: "If true, return all messages (not just unread). Defaults to false.",
+        },
+        from: {
+          type: "string",
+          description: "Filter messages from a specific node ID.",
+        },
+        limit: {
+          type: "number",
+          description: "Maximum number of messages to return. Defaults to 20.",
+        },
+      },
+    },
+    async execute(_id, params) {
+      const doc = getDoc();
+      const nodeId = getNodeId();
+
+      if (!doc || !nodeId) {
+        return { error: "Ansible not initialized" };
+      }
+
+      try {
+        requireAuth(nodeId);
+
+        const messagesMap = doc.getMap("messages");
+        const showAll = params.all === true;
+        const fromFilter = params.from as string | undefined;
+        const limit = (params.limit as number) || 20;
+
+        const results: Array<{
+          id: string;
+          from: string;
+          to?: string;
+          content: string;
+          timestamp: string;
+          unread: boolean;
+        }> = [];
+
+        for (const [id, msg] of messagesMap.entries()) {
+          const message = msg as Message;
+
+          // Skip messages not addressed to us (unless broadcast)
+          if (message.to && message.to !== nodeId) continue;
+
+          const unread = !message.readBy.includes(nodeId);
+
+          // By default only show unread
+          if (!showAll && !unread) continue;
+
+          // Apply from filter
+          if (fromFilter && message.from !== fromFilter) continue;
+
+          results.push({
+            id,
+            from: message.from,
+            to: message.to,
+            content: message.content,
+            timestamp: new Date(message.timestamp).toISOString(),
+            unread,
+          });
+        }
+
+        // Sort newest first
+        results.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+
+        return {
+          myId: nodeId,
+          messages: results.slice(0, limit),
+          total: results.length,
+        };
+      } catch (err: any) {
+        return { error: err.message };
+      }
+    },
+  });
+
   // === ansible.mark_read ===
   api.registerTool({
     name: "ansible.mark_read",
