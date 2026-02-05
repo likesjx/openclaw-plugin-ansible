@@ -1,8 +1,9 @@
 # Dependencies
 node_modules/
 
-# Build output
-dist/
+# Build output — NOT excluded because openclaw plugin install
+# downloads the git tarball and doesn't run build scripts.
+# dist/ must be committed for plugins to work when installed from GitHub.
 
 # IDE
 .idea/
