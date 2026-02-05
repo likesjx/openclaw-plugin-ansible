@@ -128,7 +128,7 @@ async function dispatchAnsibleMessage(
 
     // 3. Record session metadata (if available)
     if (session?.recordInboundSession) {
-      const storePath = session.resolveStorePath?.(cfg) ?? undefined;
+      const storePath = session.resolveStorePath?.() ?? undefined;
       await session.recordInboundSession({
         storePath,
         sessionKey,
