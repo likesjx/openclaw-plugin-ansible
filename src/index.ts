@@ -6,10 +6,11 @@
  */
 
 import type { OpenClawPluginApi } from "./types.js";
-import { createAnsibleService } from "./service.js";
+import { createAnsibleService, onDocReady } from "./service.js";
 import { registerAnsibleHooks } from "./hooks.js";
 import { registerAnsibleTools } from "./tools.js";
 import { registerAnsibleCli } from "./cli.js";
+import { startMessageDispatcher } from "./dispatcher.js";
 import type { AnsibleConfig } from "./schema.js";
 
 export function register(api: OpenClawPluginApi) {
@@ -31,6 +32,9 @@ export function register(api: OpenClawPluginApi) {
 
   // Register CLI commands
   registerAnsibleCli(api, config);
+
+  // Start message dispatcher once the Yjs doc is ready
+  onDocReady(() => startMessageDispatcher(api, config));
 
   api.logger?.info(`Ansible plugin initialized (tier: ${config.tier})`);
 }

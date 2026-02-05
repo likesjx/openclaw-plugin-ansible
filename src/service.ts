@@ -28,6 +28,8 @@ let providers: WebsocketProvider[] = [];
 let heartbeatInterval: ReturnType<typeof setInterval> | null = null;
 let cleanupInterval: ReturnType<typeof setInterval> | null = null;
 let isBackboneMode = false;
+let docReady = false;
+let docReadyCallbacks: Array<() => void> = [];
 
 const HEARTBEAT_INTERVAL_MS = 30_000;
 const CLEANUP_INTERVAL_MS = 60_000; // Run cleanup every minute
@@ -72,6 +74,31 @@ export function getAnsibleState(): AnsibleState | null {
     context: doc.getMap("context") as unknown as AnsibleState["context"],
     pulse: doc.getMap("pulse") as unknown as AnsibleState["pulse"],
   };
+}
+
+/**
+ * Register a callback to run once the Yjs doc is initialized and ready.
+ * If the doc is already ready, the callback fires immediately.
+ */
+export function onDocReady(cb: () => void): void {
+  if (docReady) {
+    cb();
+  } else {
+    docReadyCallbacks.push(cb);
+  }
+}
+
+function fireDocReady(): void {
+  if (docReady) return;
+  docReady = true;
+  for (const cb of docReadyCallbacks) {
+    try {
+      cb();
+    } catch {
+      // Swallow — individual callbacks shouldn't break startup
+    }
+  }
+  docReadyCallbacks = [];
 }
 
 /**
@@ -151,6 +178,12 @@ export function createAnsibleService(
       setupAutoPersist(ctx);
 
       ctx.logger.info("Ansible sync service started");
+
+      // For backbone mode, the doc is ready immediately.
+      // For edge mode, wait until the first sync completes (see connectToPeer).
+      if (config.tier === "backbone") {
+        fireDocReady();
+      }
     },
 
     async stop(ctx: ServiceContext) {
@@ -193,6 +226,8 @@ export function createAnsibleService(
 
       doc = null;
       nodeId = null;
+      docReady = false;
+      docReadyCallbacks = [];
 
       ctx.logger.info("Ansible sync service stopped");
     },
@@ -345,6 +380,8 @@ function connectToPeer(url: string, ctx: ServiceContext) {
       ctx.logger.info(`Sync event for ${url}: synced=${synced}`);
       if (synced) {
         ctx.logger.info(`Successfully synced with ${url}`);
+        // Fire doc-ready on first successful sync (edge mode)
+        fireDocReady();
       }
     });
 
