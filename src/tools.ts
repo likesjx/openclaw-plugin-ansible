@@ -11,6 +11,19 @@ import { VALIDATION_LIMITS } from "./schema.js";
 import { getDoc, getNodeId, getAnsibleState } from "./service.js";
 import { isNodeAuthorized } from "./auth.js";
 
+/**
+ * Wrap a tool result in the AgentToolResult format expected by pi-agent-core.
+ * Tools must return { content: [{type: "text", text: "..."}], details: T }
+ * or the toolResult message will be missing its content field, causing
+ * pi-ai providers to crash with "Cannot read properties of undefined (reading 'filter')".
+ */
+function toolResult(data: Record<string, unknown>) {
+  return {
+    content: [{ type: "text" as const, text: JSON.stringify(data) }],
+    details: data,
+  };
+}
+
 function validateString(value: unknown, maxLength: number, fieldName: string): string {
   if (typeof value !== "string") {
     throw new Error(`${fieldName} must be a string`);
@@ -71,7 +84,7 @@ export function registerAnsibleTools(
 
       if (!doc || !nodeId) {
         api.logger?.warn("Ansible: delegation failed - not initialized");
-        return { error: "Ansible not initialized" };
+        return toolResult({ error: "Ansible not initialized" });
       }
 
       try {
@@ -97,13 +110,13 @@ export function registerAnsibleTools(
 
         api.logger?.info(`Ansible: task ${task.id.slice(0, 8)} delegated`);
 
-        return {
+        return toolResult({
           success: true,
           taskId: task.id,
           message: `Task "${task.title}" created and delegated`,
-        };
+        });
       } catch (err: any) {
-        return { error: err.message };
+        return toolResult({ error: err.message });
       }
     },
   });
@@ -135,7 +148,7 @@ export function registerAnsibleTools(
 
       if (!doc || !nodeId) {
         api.logger?.warn("Ansible: send message failed - not initialized");
-        return { error: "Ansible not initialized" };
+        return toolResult({ error: "Ansible not initialized" });
       }
 
       try {
@@ -154,15 +167,15 @@ export function registerAnsibleTools(
         const messages = doc.getMap("messages");
         messages.set(message.id, message);
 
-        return {
+        return toolResult({
           success: true,
           messageId: message.id,
           message: params.to
             ? `Message sent to ${params.to}`
             : "Message broadcast to all hemispheres",
-        };
+        });
       } catch (err: any) {
-        return { error: err.message };
+        return toolResult({ error: err.message });
       }
     },
   });
@@ -203,7 +216,7 @@ export function registerAnsibleTools(
       const nodeId = getNodeId();
 
       if (!doc || !nodeId) {
-        return { error: "Ansible not initialized" };
+        return toolResult({ error: "Ansible not initialized" });
       }
 
       try {
@@ -244,12 +257,12 @@ export function registerAnsibleTools(
 
         contextMap.set(nodeId, updated);
 
-        return {
+        return toolResult({
           success: true,
           message: "Context updated",
-        };
+        });
       } catch (err: any) {
-        return { error: err.message };
+        return toolResult({ error: err.message });
       }
     },
   });
@@ -272,7 +285,7 @@ export function registerAnsibleTools(
 
         if (!state || !myId) {
           api.logger?.warn("Ansible: status failed - not initialized");
-          return { error: "Ansible not initialized" };
+          return toolResult({ error: "Ansible not initialized" });
         }
 
         const nodes: Array<{
@@ -311,19 +324,19 @@ export function registerAnsibleTools(
           .filter((m) => m && m.from !== myId && m.readBy && !m.readBy.includes(myId))
           .length;
 
-        return {
+        return toolResult({
           myId,
           nodes,
           pendingTasks,
           unreadMessages: unreadCount,
-        };
+        });
       } catch (err: any) {
         api.logger?.error(`Ansible: status tool error: ${err.message}`);
-        return { error: `Status tool error: ${err.message}` };
+        return toolResult({ error: `Status tool error: ${err.message}` });
       }
     },
     // Backward compatibility for OpenClaw <= 2026.1
-    handler: async () => {
+    async handler() {
       // @ts-ignore
       return this.execute();
     },
@@ -350,7 +363,7 @@ export function registerAnsibleTools(
       const nodeId = getNodeId();
 
       if (!doc || !nodeId) {
-        return { error: "Ansible not initialized" };
+        return toolResult({ error: "Ansible not initialized" });
       }
 
       try {
@@ -360,11 +373,11 @@ export function registerAnsibleTools(
         const task = tasks.get(params.taskId as string) as Task | undefined;
 
         if (!task) {
-          return { error: "Task not found" };
+          return toolResult({ error: "Task not found" });
         }
 
         if (task.status !== "pending") {
-          return { error: `Task is already ${task.status}` };
+          return toolResult({ error: `Task is already ${task.status}` });
         }
 
         tasks.set(params.taskId as string, {
@@ -374,7 +387,7 @@ export function registerAnsibleTools(
           claimedAt: Date.now(),
         });
 
-        return {
+        return toolResult({
           success: true,
           message: `Claimed task: ${task.title}`,
           task: {
@@ -383,9 +396,9 @@ export function registerAnsibleTools(
             description: task.description,
             context: task.context,
           },
-        };
+        });
       } catch (err: any) {
-        return { error: err.message };
+        return toolResult({ error: err.message });
       }
     },
   });
@@ -415,7 +428,7 @@ export function registerAnsibleTools(
       const nodeId = getNodeId();
 
       if (!doc || !nodeId) {
-        return { error: "Ansible not initialized" };
+        return toolResult({ error: "Ansible not initialized" });
       }
 
       try {
@@ -425,11 +438,11 @@ export function registerAnsibleTools(
         const task = tasks.get(params.taskId as string) as Task | undefined;
 
         if (!task) {
-          return { error: "Task not found" };
+          return toolResult({ error: "Task not found" });
         }
 
         if (task.claimedBy !== nodeId) {
-          return { error: "You don't have this task claimed" };
+          return toolResult({ error: "You don't have this task claimed" });
         }
 
         const result = params.result ? validateString(params.result, VALIDATION_LIMITS.maxResultLength, "result") : undefined;
@@ -441,12 +454,12 @@ export function registerAnsibleTools(
           result,
         });
 
-        return {
+        return toolResult({
           success: true,
           message: `Completed task: ${task.title}`,
-        };
+        });
       } catch (err: any) {
-        return { error: err.message };
+        return toolResult({ error: err.message });
       }
     },
   });
@@ -479,7 +492,7 @@ export function registerAnsibleTools(
       const nodeId = getNodeId();
 
       if (!doc || !nodeId) {
-        return { error: "Ansible not initialized" };
+        return toolResult({ error: "Ansible not initialized" });
       }
 
       try {
@@ -526,13 +539,13 @@ export function registerAnsibleTools(
         // Sort newest first
         results.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
 
-        return {
+        return toolResult({
           myId: nodeId,
           messages: results.slice(0, limit),
           total: results.length,
-        };
+        });
       } catch (err: any) {
-        return { error: err.message };
+        return toolResult({ error: err.message });
       }
     },
   });
@@ -557,7 +570,7 @@ export function registerAnsibleTools(
       const nodeId = getNodeId();
 
       if (!doc || !nodeId) {
-        return { error: "Ansible not initialized" };
+        return toolResult({ error: "Ansible not initialized" });
       }
 
       try {
@@ -581,12 +594,12 @@ export function registerAnsibleTools(
           count++;
         }
 
-        return {
+        return toolResult({
           success: true,
           message: `Marked ${count} message(s) as read`,
-        };
+        });
       } catch (err: any) {
-        return { error: err.message };
+        return toolResult({ error: err.message });
       }
     },
   });

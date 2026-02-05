@@ -7,6 +7,18 @@ import { randomUUID } from "crypto";
 import { VALIDATION_LIMITS } from "./schema.js";
 import { getDoc, getNodeId, getAnsibleState } from "./service.js";
 import { isNodeAuthorized } from "./auth.js";
+/**
+ * Wrap a tool result in the AgentToolResult format expected by pi-agent-core.
+ * Tools must return { content: [{type: "text", text: "..."}], details: T }
+ * or the toolResult message will be missing its content field, causing
+ * pi-ai providers to crash with "Cannot read properties of undefined (reading 'filter')".
+ */
+function toolResult(data) {
+    return {
+        content: [{ type: "text", text: JSON.stringify(data) }],
+        details: data,
+    };
+}
 function validateString(value, maxLength, fieldName) {
     if (typeof value !== "string") {
         throw new Error(`${fieldName} must be a string`);
@@ -60,7 +72,7 @@ export function registerAnsibleTools(api, config) {
             const nodeId = getNodeId();
             if (!doc || !nodeId) {
                 api.logger?.warn("Ansible: delegation failed - not initialized");
-                return { error: "Ansible not initialized" };
+                return toolResult({ error: "Ansible not initialized" });
             }
             try {
                 requireAuth(nodeId);
@@ -81,14 +93,14 @@ export function registerAnsibleTools(api, config) {
                 const tasks = doc.getMap("tasks");
                 tasks.set(task.id, task);
                 api.logger?.info(`Ansible: task ${task.id.slice(0, 8)} delegated`);
-                return {
+                return toolResult({
                     success: true,
                     taskId: task.id,
                     message: `Task "${task.title}" created and delegated`,
-                };
+                });
             }
             catch (err) {
-                return { error: err.message };
+                return toolResult({ error: err.message });
             }
         },
     });
@@ -117,7 +129,7 @@ export function registerAnsibleTools(api, config) {
             const nodeId = getNodeId();
             if (!doc || !nodeId) {
                 api.logger?.warn("Ansible: send message failed - not initialized");
-                return { error: "Ansible not initialized" };
+                return toolResult({ error: "Ansible not initialized" });
             }
             try {
                 requireAuth(nodeId);
@@ -132,16 +144,16 @@ export function registerAnsibleTools(api, config) {
                 };
                 const messages = doc.getMap("messages");
                 messages.set(message.id, message);
-                return {
+                return toolResult({
                     success: true,
                     messageId: message.id,
                     message: params.to
                         ? `Message sent to ${params.to}`
                         : "Message broadcast to all hemispheres",
-                };
+                });
             }
             catch (err) {
-                return { error: err.message };
+                return toolResult({ error: err.message });
             }
         },
     });
@@ -179,7 +191,7 @@ export function registerAnsibleTools(api, config) {
             const doc = getDoc();
             const nodeId = getNodeId();
             if (!doc || !nodeId) {
-                return { error: "Ansible not initialized" };
+                return toolResult({ error: "Ansible not initialized" });
             }
             try {
                 requireAuth(nodeId);
@@ -212,13 +224,13 @@ export function registerAnsibleTools(api, config) {
                     updated.recentDecisions = [decision, ...(existing.recentDecisions || [])].slice(0, 10);
                 }
                 contextMap.set(nodeId, updated);
-                return {
+                return toolResult({
                     success: true,
                     message: "Context updated",
-                };
+                });
             }
             catch (err) {
-                return { error: err.message };
+                return toolResult({ error: err.message });
             }
         },
     });
@@ -238,7 +250,7 @@ export function registerAnsibleTools(api, config) {
                 const myId = getNodeId();
                 if (!state || !myId) {
                     api.logger?.warn("Ansible: status failed - not initialized");
-                    return { error: "Ansible not initialized" };
+                    return toolResult({ error: "Ansible not initialized" });
                 }
                 const nodes = [];
                 if (state.pulse) {
@@ -268,20 +280,20 @@ export function registerAnsibleTools(api, config) {
                 const unreadCount = (state.messages ? Array.from(state.messages.values()) : [])
                     .filter((m) => m && m.from !== myId && m.readBy && !m.readBy.includes(myId))
                     .length;
-                return {
+                return toolResult({
                     myId,
                     nodes,
                     pendingTasks,
                     unreadMessages: unreadCount,
-                };
+                });
             }
             catch (err) {
                 api.logger?.error(`Ansible: status tool error: ${err.message}`);
-                return { error: `Status tool error: ${err.message}` };
+                return toolResult({ error: `Status tool error: ${err.message}` });
             }
         },
         // Backward compatibility for OpenClaw <= 2026.1
-        handler: async () => {
+        async handler() {
             // @ts-ignore
             return this.execute();
         },
@@ -306,17 +318,17 @@ export function registerAnsibleTools(api, config) {
             const doc = getDoc();
             const nodeId = getNodeId();
             if (!doc || !nodeId) {
-                return { error: "Ansible not initialized" };
+                return toolResult({ error: "Ansible not initialized" });
             }
             try {
                 requireAuth(nodeId);
                 const tasks = doc.getMap("tasks");
                 const task = tasks.get(params.taskId);
                 if (!task) {
-                    return { error: "Task not found" };
+                    return toolResult({ error: "Task not found" });
                 }
                 if (task.status !== "pending") {
-                    return { error: `Task is already ${task.status}` };
+                    return toolResult({ error: `Task is already ${task.status}` });
                 }
                 tasks.set(params.taskId, {
                     ...task,
@@ -324,7 +336,7 @@ export function registerAnsibleTools(api, config) {
                     claimedBy: nodeId,
                     claimedAt: Date.now(),
                 });
-                return {
+                return toolResult({
                     success: true,
                     message: `Claimed task: ${task.title}`,
                     task: {
@@ -333,10 +345,10 @@ export function registerAnsibleTools(api, config) {
                         description: task.description,
                         context: task.context,
                     },
-                };
+                });
             }
             catch (err) {
-                return { error: err.message };
+                return toolResult({ error: err.message });
             }
         },
     });
@@ -364,17 +376,17 @@ export function registerAnsibleTools(api, config) {
             const doc = getDoc();
             const nodeId = getNodeId();
             if (!doc || !nodeId) {
-                return { error: "Ansible not initialized" };
+                return toolResult({ error: "Ansible not initialized" });
             }
             try {
                 requireAuth(nodeId);
                 const tasks = doc.getMap("tasks");
                 const task = tasks.get(params.taskId);
                 if (!task) {
-                    return { error: "Task not found" };
+                    return toolResult({ error: "Task not found" });
                 }
                 if (task.claimedBy !== nodeId) {
-                    return { error: "You don't have this task claimed" };
+                    return toolResult({ error: "You don't have this task claimed" });
                 }
                 const result = params.result ? validateString(params.result, VALIDATION_LIMITS.maxResultLength, "result") : undefined;
                 tasks.set(params.taskId, {
@@ -383,13 +395,13 @@ export function registerAnsibleTools(api, config) {
                     completedAt: Date.now(),
                     result,
                 });
-                return {
+                return toolResult({
                     success: true,
                     message: `Completed task: ${task.title}`,
-                };
+                });
             }
             catch (err) {
-                return { error: err.message };
+                return toolResult({ error: err.message });
             }
         },
     });
@@ -419,7 +431,7 @@ export function registerAnsibleTools(api, config) {
             const doc = getDoc();
             const nodeId = getNodeId();
             if (!doc || !nodeId) {
-                return { error: "Ansible not initialized" };
+                return toolResult({ error: "Ansible not initialized" });
             }
             try {
                 requireAuth(nodeId);
@@ -451,14 +463,14 @@ export function registerAnsibleTools(api, config) {
                 }
                 // Sort newest first
                 results.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
-                return {
+                return toolResult({
                     myId: nodeId,
                     messages: results.slice(0, limit),
                     total: results.length,
-                };
+                });
             }
             catch (err) {
-                return { error: err.message };
+                return toolResult({ error: err.message });
             }
         },
     });
@@ -481,7 +493,7 @@ export function registerAnsibleTools(api, config) {
             const doc = getDoc();
             const nodeId = getNodeId();
             if (!doc || !nodeId) {
-                return { error: "Ansible not initialized" };
+                return toolResult({ error: "Ansible not initialized" });
             }
             try {
                 requireAuth(nodeId);
@@ -502,13 +514,13 @@ export function registerAnsibleTools(api, config) {
                     });
                     count++;
                 }
-                return {
+                return toolResult({
                     success: true,
                     message: `Marked ${count} message(s) as read`,
-                };
+                });
             }
             catch (err) {
-                return { error: err.message };
+                return toolResult({ error: err.message });
             }
         },
     });
