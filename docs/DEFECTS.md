@@ -2,22 +2,23 @@
 
 ## Active Bugs
 
-### DEF-001: Gemini provider `.filter()` crash (UPSTREAM)
+### DEF-001: Plugin tool results crash pi-ai providers (FIXED + UPSTREAM)
 
 - **Severity**: High
-- **Status**: Open (upstream bug in `@mariozechner/pi-ai`)
-- **Points**: 1 (fix is trivial, but it's in an upstream dependency)
+- **Status**: Fixed in plugin (fdb0577); upstream pi-ai still lacks null guard
+- **Points**: 3
 - **Discovered**: 2026-02-04
+- **Fixed**: 2026-02-05
 
-**Symptom**: Agent replies to every message with `"⚠️ Agent failed before reply: Cannot read properties of undefined (reading 'filter')"` when using the `google-gemini-cli` provider.
+**Symptom**: Agent replies with `"Cannot read properties of undefined (reading 'filter')"` after any ansible tool call. Affects ALL providers (OpenRouter, Gemini, etc.), not just one.
 
-**Root Cause**: `node_modules/@mariozechner/pi-ai/dist/providers/google-shared.js` line 174 calls `msg.content.filter()` without a null guard. When a `toolResult` message has `undefined` content, this crashes. The error propagates through `agent-runner-execution.ts` which converts it to a reply message.
+**Root Cause (plugin side)**: Plugin tools returned plain objects `{ success: true, ... }` instead of the `AgentToolResult` format expected by pi-agent-core: `{ content: [{type: "text", text: "..."}], details: T }`. This caused the `toolResult` session entry to have no `content` field. When pi-ai built the next LLM request, `toolMsg.content.filter(...)` (`openai-completions.js` line 578) crashed on `undefined`.
 
-**Affected**: Any agent using `google-gemini-cli` with `gemini-3-pro-preview` (or similar) when the session transcript contains a malformed `toolResult` entry.
+**Root Cause (upstream)**: pi-ai's provider code (`openai-completions.js` line 578, `google-shared.js` line 174) calls `.filter()` on `toolMsg.content` without a null guard. Even with the plugin fix, any other tool that returns the wrong format would trigger the same crash.
 
-**Workaround**: Reset the session with `/new` or switch to a non-Gemini provider (e.g., Anthropic Claude).
+**Fix (applied)**: All ansible tool `execute()` methods now return `{ content: [{type: "text", text: JSON.stringify(data)}], details: data }` via the `toolResult()` helper.
 
-**Fix**: Needs a null guard in pi-ai: `(msg.content || []).filter(...)`. Same issue exists on line 177 for image content filtering. Should be reported/PR'd upstream to `@mariozechner/pi-ai`.
+**Remaining upstream**: pi-ai should add `(toolMsg.content || []).filter(...)` guards. Should be reported/PR'd to `@mariozechner/pi-ai`.
 
 ---
 
