@@ -180,14 +180,14 @@ All state is synchronized via Yjs CRDTs:
 
 | Tool | Description |
 |---|---|
-| `ansible.status` | Check who's online, what they're working on, pending tasks |
-| `ansible.delegate_task` | Create a task for another hemisphere |
-| `ansible.claim_task` | Pick up a pending task |
-| `ansible.complete_task` | Mark a claimed task as done |
-| `ansible.send_message` | Send a message (targeted or broadcast) |
-| `ansible.update_context` | Update your current focus, threads, or decisions |
-| `ansible.read_messages` | Read messages (unread by default) |
-| `ansible.mark_read` | Mark messages as read |
+| `ansible_status` | Check who's online, what they're working on, pending tasks |
+| `ansible_delegate_task` | Create a task for another hemisphere |
+| `ansible_claim_task` | Pick up a pending task |
+| `ansible_complete_task` | Mark a claimed task as done |
+| `ansible_send_message` | Send a message (targeted or broadcast) |
+| `ansible_update_context` | Update your current focus, threads, or decisions |
+| `ansible_read_messages` | Read messages (unread by default) |
+| `ansible_mark_read` | Mark messages as read |
 
 ## CLI Commands
 
