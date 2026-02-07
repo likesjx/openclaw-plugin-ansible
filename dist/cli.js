@@ -72,7 +72,7 @@ export function registerAnsibleCli(api, config) {
             .action(async () => {
             let result;
             try {
-                result = await callGateway("ansible.status");
+                result = await callGateway("ansible_status");
             }
             catch (err) {
                 console.log(`✗ ${err.message}`);
@@ -121,7 +121,7 @@ export function registerAnsibleCli(api, config) {
             .action(async () => {
             let result;
             try {
-                result = await callGateway("ansible.status");
+                result = await callGateway("ansible_status");
             }
             catch (err) {
                 console.log(`✗ ${err.message}`);
@@ -160,7 +160,7 @@ export function registerAnsibleCli(api, config) {
             const opts = (args[0] || {});
             let result;
             try {
-                result = await callGateway("ansible.status");
+                result = await callGateway("ansible_status");
             }
             catch (err) {
                 console.log(`✗ ${err.message}`);
@@ -205,7 +205,7 @@ export function registerAnsibleCli(api, config) {
                 toolArgs.limit = parseInt(opts.limit, 10);
             let result;
             try {
-                result = await callGateway("ansible.read_messages", toolArgs);
+                result = await callGateway("ansible_read_messages", toolArgs);
             }
             catch (err) {
                 console.log(`✗ ${err.message}`);
@@ -325,7 +325,7 @@ export function registerAnsibleCli(api, config) {
             }
             let result;
             try {
-                result = await callGateway("ansible.send_message", toolArgs);
+                result = await callGateway("ansible_send_message", toolArgs);
             }
             catch (err) {
                 console.log(`✗ ${err.message}`);

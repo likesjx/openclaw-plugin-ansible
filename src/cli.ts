@@ -108,7 +108,7 @@ export function registerAnsibleCli(
       .action(async () => {
         let result: any;
         try {
-          result = await callGateway("ansible.status");
+          result = await callGateway("ansible_status");
         } catch (err: any) {
           console.log(`✗ ${err.message}`);
           return;
@@ -162,7 +162,7 @@ export function registerAnsibleCli(
       .action(async () => {
         let result: any;
         try {
-          result = await callGateway("ansible.status");
+          result = await callGateway("ansible_status");
         } catch (err: any) {
           console.log(`✗ ${err.message}`);
           return;
@@ -207,7 +207,7 @@ export function registerAnsibleCli(
 
         let result: any;
         try {
-          result = await callGateway("ansible.status");
+          result = await callGateway("ansible_status");
         } catch (err: any) {
           console.log(`✗ ${err.message}`);
           return;
@@ -255,7 +255,7 @@ export function registerAnsibleCli(
 
         let result: any;
         try {
-          result = await callGateway("ansible.read_messages", toolArgs);
+          result = await callGateway("ansible_read_messages", toolArgs);
         } catch (err: any) {
           console.log(`✗ ${err.message}`);
           return;
@@ -393,7 +393,7 @@ export function registerAnsibleCli(
 
         let result: any;
         try {
-          result = await callGateway("ansible.send_message", toolArgs);
+          result = await callGateway("ansible_send_message", toolArgs);
         } catch (err: any) {
           console.log(`✗ ${err.message}`);
           return;

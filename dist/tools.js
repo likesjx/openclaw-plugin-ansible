@@ -34,9 +34,9 @@ function requireAuth(nodeId) {
     }
 }
 export function registerAnsibleTools(api, config) {
-    // === ansible.delegate_task ===
+    // === ansible_delegate_task ===
     api.registerTool({
-        name: "ansible.delegate_task",
+        name: "ansible_delegate_task",
         label: "Ansible Delegate",
         description: "Delegate a task to another hemisphere (body) of Jane. Use when you want another instance to handle work, especially for long-running tasks or tasks requiring specific capabilities.",
         parameters: {
@@ -104,9 +104,9 @@ export function registerAnsibleTools(api, config) {
             }
         },
     });
-    // === ansible.send_message ===
+    // === ansible_send_message ===
     api.registerTool({
-        name: "ansible.send_message",
+        name: "ansible_send_message",
         label: "Ansible Send Message",
         description: "Send a message to other hemispheres of Jane. Use for coordination, status updates, or sharing information.",
         parameters: {
@@ -157,9 +157,9 @@ export function registerAnsibleTools(api, config) {
             }
         },
     });
-    // === ansible.update_context ===
+    // === ansible_update_context ===
     api.registerTool({
-        name: "ansible.update_context",
+        name: "ansible_update_context",
         label: "Ansible Update Context",
         description: "Update your current context (focus, threads, decisions) so other hemispheres know what you're working on.",
         parameters: {
@@ -234,9 +234,9 @@ export function registerAnsibleTools(api, config) {
             }
         },
     });
-    // === ansible.status ===
+    // === ansible_status ===
     api.registerTool({
-        name: "ansible.status",
+        name: "ansible_status",
         label: "Ansible Status",
         description: "Get the current status of all Jane hemispheres, including who's online, what they're working on, and pending tasks.",
         parameters: {
@@ -298,9 +298,9 @@ export function registerAnsibleTools(api, config) {
             return this.execute();
         },
     });
-    // === ansible.claim_task ===
+    // === ansible_claim_task ===
     api.registerTool({
-        name: "ansible.claim_task",
+        name: "ansible_claim_task",
         label: "Ansible Claim Task",
         description: "Claim a pending task to work on it.",
         parameters: {
@@ -352,9 +352,9 @@ export function registerAnsibleTools(api, config) {
             }
         },
     });
-    // === ansible.complete_task ===
+    // === ansible_complete_task ===
     api.registerTool({
-        name: "ansible.complete_task",
+        name: "ansible_complete_task",
         label: "Ansible Complete Task",
         description: "Mark a task as completed with an optional result.",
         parameters: {
@@ -405,9 +405,9 @@ export function registerAnsibleTools(api, config) {
             }
         },
     });
-    // === ansible.read_messages ===
+    // === ansible_read_messages ===
     api.registerTool({
-        name: "ansible.read_messages",
+        name: "ansible_read_messages",
         label: "Ansible Read Messages",
         description: "Read messages from other hemispheres of Jane. Returns message content, sender, and timestamp. By default returns unread messages; use the 'all' flag to include read messages too.",
         parameters: {
@@ -474,9 +474,9 @@ export function registerAnsibleTools(api, config) {
             }
         },
     });
-    // === ansible.mark_read ===
+    // === ansible_mark_read ===
     api.registerTool({
-        name: "ansible.mark_read",
+        name: "ansible_mark_read",
         label: "Ansible Mark Read",
         description: "Mark messages as read.",
         parameters: {
