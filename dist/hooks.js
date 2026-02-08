@@ -11,7 +11,14 @@ export function registerAnsibleHooks(api, config) {
         api.logger?.info("Ansible: context injection disabled (injectContext=false)");
         return;
     }
-    api.on("before_agent_start", async () => {
+    api.on("before_agent_start", async (ctx) => {
+        const agentId = ctx?.agentId ?? ctx?.AgentId ?? ctx?.agent?.id ?? undefined;
+        if (Array.isArray(config.injectContextAgents) && config.injectContextAgents.length > 0) {
+            if (!agentId || !config.injectContextAgents.includes(String(agentId))) {
+                api.logger?.debug?.(`Ansible: skipping context injection for agentId=${String(agentId ?? "unknown")}`);
+                return {};
+            }
+        }
         const state = getAnsibleState();
         const myId = getNodeId();
         if (!state || !myId) {

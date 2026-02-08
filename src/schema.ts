@@ -36,6 +36,17 @@ export interface AnsibleConfig {
   injectContext?: boolean;
 
   /**
+   * Restrict context injection to specific agent IDs.
+   *
+   * When set, only these agents will receive prependContext from ansible.
+   * This is useful when you want hemisphere sync for "Jane" agents but not
+   * for an operator/manager agent like "architect".
+   *
+   * Example: ["mac-jane", "vps-jane"]
+   */
+  injectContextAgents?: string[];
+
+  /**
    * Auto-dispatch inbound ansible messages into the agent loop.
    *
    * Default: true
