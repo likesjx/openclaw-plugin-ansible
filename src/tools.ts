@@ -40,6 +40,37 @@ function requireAuth(nodeId: string): void {
   }
 }
 
+function notifyTaskOwner(
+  doc: ReturnType<typeof getDoc>,
+  fromNodeId: string,
+  task: Task,
+  payload: { kind: "update" | "completed" | "failed"; note?: string; result?: string }
+): string | null {
+  if (!doc) return null;
+  if (!task.createdBy) return null;
+
+  const messages = doc.getMap("messages");
+  const messageId = randomUUID();
+  const lines: string[] = [];
+  lines.push(`[task:${task.id.slice(0, 8)}] ${task.title}`);
+  lines.push(`status: ${task.status}`);
+  if (payload.note) lines.push(`note: ${payload.note}`);
+  const result = payload.result ?? task.result;
+  if (result) lines.push(`result: ${result}`);
+  lines.push(`from: ${fromNodeId}`);
+
+  const message: Message = {
+    id: messageId,
+    from: fromNodeId,
+    to: task.createdBy,
+    content: lines.join("\n"),
+    timestamp: Date.now(),
+    readBy: [fromNodeId],
+  };
+  messages.set(message.id, message);
+  return messageId;
+}
+
 export function registerAnsibleTools(
   api: OpenClawPluginApi,
   config: AnsibleConfig
@@ -100,6 +131,8 @@ export function registerAnsibleTools(
           status: "pending",
           createdBy: nodeId,
           createdAt: Date.now(),
+          updatedAt: Date.now(),
+          updates: [],
           context,
           assignedTo: params.assignedTo as string | undefined,
           requires: params.requires as string[] | undefined,
@@ -385,6 +418,11 @@ export function registerAnsibleTools(
           status: "claimed",
           claimedBy: nodeId,
           claimedAt: Date.now(),
+          updatedAt: Date.now(),
+          updates: [
+            { at: Date.now(), by: nodeId, status: "claimed", note: "claimed" },
+            ...((task.updates as any) || []),
+          ].slice(0, 50),
         });
 
         return toolResult({
@@ -396,6 +434,97 @@ export function registerAnsibleTools(
             description: task.description,
             context: task.context,
           },
+        });
+      } catch (err: any) {
+        return toolResult({ error: err.message });
+      }
+    },
+  });
+
+  // === ansible_update_task ===
+  api.registerTool({
+    name: "ansible_update_task",
+    label: "Ansible Update Task",
+    description:
+      "Update a claimed task's status (in_progress/failed) with an optional note. Optionally notify the task creator.",
+    parameters: {
+      type: "object",
+      properties: {
+        taskId: { type: "string", description: "The task ID to update" },
+        status: {
+          type: "string",
+          description: "New status: in_progress|failed",
+        },
+        note: {
+          type: "string",
+          description: "Short progress note (what changed, what's next)",
+        },
+        notify: {
+          type: "boolean",
+          description: "If true, send an update message to the task creator. Defaults to false.",
+        },
+        result: {
+          type: "string",
+          description: "Optional result text (useful when status=failed).",
+        },
+      },
+      required: ["taskId", "status"],
+    },
+    async execute(_id, params) {
+      api.logger?.info(`Ansible: updating task`);
+      const doc = getDoc();
+      const nodeId = getNodeId();
+
+      if (!doc || !nodeId) {
+        return toolResult({ error: "Ansible not initialized" });
+      }
+
+      try {
+        requireAuth(nodeId);
+
+        const tasks = doc.getMap("tasks");
+        const task = tasks.get(params.taskId as string) as Task | undefined;
+        if (!task) return toolResult({ error: "Task not found" });
+        if (task.claimedBy !== nodeId) {
+          return toolResult({ error: "You don't have this task claimed" });
+        }
+
+        const status = params.status as string;
+        if (status !== "in_progress" && status !== "failed") {
+          return toolResult({ error: "status must be in_progress or failed" });
+        }
+
+        const note = params.note
+          ? validateString(params.note, VALIDATION_LIMITS.maxTitleLength, "note")
+          : undefined;
+
+        const result = params.result
+          ? validateString(params.result, VALIDATION_LIMITS.maxResultLength, "result")
+          : undefined;
+
+        const updated: Task = {
+          ...task,
+          status: status as any,
+          updatedAt: Date.now(),
+          result: result ?? task.result,
+          updates: [
+            { at: Date.now(), by: nodeId, status: status as any, note },
+            ...((task.updates as any) || []),
+          ].slice(0, 50),
+        };
+
+        tasks.set(params.taskId as string, updated);
+
+        const notify = params.notify === true;
+        const notifyMessageId = notify
+          ? notifyTaskOwner(doc, nodeId, updated, { kind: status === "failed" ? "failed" : "update", note, result })
+          : null;
+
+        return toolResult({
+          success: true,
+          message: `Updated task: ${task.title}`,
+          notified: notify,
+          notifyMessageId,
         });
       } catch (err: any) {
         return toolResult({ error: err.message });
@@ -447,16 +576,27 @@ export function registerAnsibleTools(
 
         const result = params.result ? validateString(params.result, VALIDATION_LIMITS.maxResultLength, "result") : undefined;
 
-        tasks.set(params.taskId as string, {
+        const completed: Task = {
           ...task,
           status: "completed",
           completedAt: Date.now(),
           result,
-        });
+          updatedAt: Date.now(),
+          updates: [
+            { at: Date.now(), by: nodeId, status: "completed", note: "completed" },
+            ...((task.updates as any) || []),
+          ].slice(0, 50),
+        };
+
+        tasks.set(params.taskId as string, completed);
+
+        // Always notify the asker on completion.
+        const notifyMessageId = notifyTaskOwner(doc, nodeId, completed, { kind: "completed", result });
 
         return toolResult({
           success: true,
           message: `Completed task: ${task.title}`,
+          notifyMessageId,
         });
       } catch (err: any) {
         return toolResult({ error: err.message });

@@ -98,17 +98,24 @@ function getMyPendingTasks(state, myId, myCapabilities) {
         return [];
     const tasks = [];
     for (const task of state.tasks.values()) {
-        // Skip non-pending tasks
-        if (task.status !== "pending")
+        // Include:
+        // - pending tasks that match assignment/capabilities
+        // - claimed/in_progress tasks that I claimed
+        const isMineInFlight = (task.status === "claimed" || task.status === "in_progress") &&
+            task.claimedBy === myId;
+        const isPending = task.status === "pending";
+        if (!isMineInFlight && !isPending)
             continue;
-        // Check if explicitly assigned to me
-        if (task.assignedTo && task.assignedTo !== myId)
-            continue;
-        // Check capability requirements
-        if (task.requires && Array.isArray(task.requires) && task.requires.length) {
-            const hasAll = task.requires.every((req) => myCapabilities.includes(req));
-            if (!hasAll)
+        if (isPending) {
+            // Check if explicitly assigned to me
+            if (task.assignedTo && task.assignedTo !== myId)
                 continue;
+            // Check capability requirements
+            if (task.requires && Array.isArray(task.requires) && task.requires.length) {
+                const hasAll = task.requires.every((req) => myCapabilities.includes(req));
+                if (!hasAll)
+                    continue;
+            }
         }
         tasks.push(task);
     }

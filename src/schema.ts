@@ -111,6 +111,15 @@ export interface Task {
 
   /** Context transferred for delegation */
   context?: string;
+
+  /** Operational metadata */
+  updatedAt?: number;
+  updates?: Array<{
+    at: number;
+    by: TailscaleId;
+    status: TaskStatus;
+    note?: string;
+  }>;
 }
 
 // ============================================================================
