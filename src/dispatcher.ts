@@ -20,6 +20,11 @@ export function startMessageDispatcher(
   api: OpenClawPluginApi,
   config: AnsibleConfig,
 ): void {
+  if (config.dispatchIncoming === false) {
+    api.logger?.info("Ansible dispatcher: disabled (dispatchIncoming=false)");
+    return;
+  }
+
   const doc = getDoc();
   const myId = getNodeId();
 

@@ -1,12 +1,12 @@
 # OpenClaw Plugin: Ansible
 
-**Distributed coordination layer for OpenClaw — one agent, multiple bodies.**
+**Distributed coordination layer for OpenClaw — one agent, multiple bodies (or one operator, many agents).**
 
 Ansible enables a single agent identity (e.g., "Jane") to operate seamlessly across multiple devices. It synchronizes tasks, messages, and shared context in real-time using CRDTs (Yjs) over a secure mesh network (Tailscale).
 
 ## Key Concepts
 
-### Hemispheres vs. Friends
+### Hemispheres vs. Friends (Default: Friends)
 
 Ansible coordinates **hemispheres** — mirrored instances of the *same* agent identity that share memory, context, and purpose. Think of it like one brain controlling multiple bodies:
 
@@ -18,7 +18,9 @@ Ansible coordinates **hemispheres** — mirrored instances of the *same* agent i
 | **Communication** | Self-to-self (direct, efficient) | Inter-agent (polite, contextual) |
 | **Session** | Shared session state | Independent sessions |
 
-A hemisphere is your agent's presence on another machine. When mac-jane messages vps-jane, it's talking to itself — no pleasantries needed.
+A hemisphere is your agent's presence on another machine.
+
+In many setups, you do *not* want every agent to see cross-node context or have inbound ansible messages routed into the default agent. In those setups, treat nodes as **friends/employees** and centralize ops in a single operator agent (for example, an "Architect").
 
 ### Node Topology
 
@@ -139,6 +141,34 @@ services:
 ```
 
 `backbonePeers` must use Tailscale MagicDNS hostnames or Tailscale IPs. SSH config aliases do NOT work here.
+
+### Architect-Managed (Recommended for Multi-Agent Ops)
+
+If you want ansible to be operated only by a dedicated agent (e.g., Architect), disable:
+- prompt context injection
+- auto-dispatch of inbound ansible messages into the default agent
+
+```jsonc
+{
+  "plugins": {
+    "entries": {
+      "ansible": {
+        "enabled": true,
+        "config": {
+          "tier": "edge",
+          "backbonePeers": ["ws://jane-vps:1235"],
+          "injectContext": false,
+          "dispatchIncoming": false
+        }
+      }
+    }
+  }
+}
+```
+
+In this mode, the operator agent should poll and respond using tools like:
+- `ansible_read_messages`
+- `ansible_send_message`
 
 ### 3. Bootstrap the Network
 

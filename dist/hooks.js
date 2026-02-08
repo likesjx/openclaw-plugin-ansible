@@ -7,6 +7,10 @@
 import { CONTEXT_LIMITS } from "./schema.js";
 import { getAnsibleState, getNodeId } from "./service.js";
 export function registerAnsibleHooks(api, config) {
+    if (config.injectContext === false) {
+        api.logger?.info("Ansible: context injection disabled (injectContext=false)");
+        return;
+    }
     api.on("before_agent_start", async () => {
         const state = getAnsibleState();
         const myId = getNodeId();

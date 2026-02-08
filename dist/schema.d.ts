@@ -14,6 +14,26 @@ export interface AnsibleConfig {
     backbonePeers?: string[];
     /** Capabilities this node provides */
     capabilities?: string[];
+    /**
+     * Inject shared ansible context into the agent prompt via the
+     * `before_agent_start` hook.
+     *
+     * Default: true
+     *
+     * Set false if you want ansible to be "manual only" (e.g., an Architect-managed
+     * ops mesh where other agents should not see cross-node context).
+     */
+    injectContext?: boolean;
+    /**
+     * Auto-dispatch inbound ansible messages into the agent loop.
+     *
+     * Default: true
+     *
+     * Set false to prevent messages from being routed to the default agent.
+     * In this mode, an operator agent should poll with `ansible_read_messages`
+     * and respond with `ansible_send_message`.
+     */
+    dispatchIncoming?: boolean;
 }
 export declare const VALIDATION_LIMITS: {
     readonly maxTitleLength: 200;

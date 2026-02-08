@@ -14,6 +14,11 @@ export function registerAnsibleHooks(
   api: OpenClawPluginApi,
   config: AnsibleConfig
 ) {
+  if (config.injectContext === false) {
+    api.logger?.info("Ansible: context injection disabled (injectContext=false)");
+    return;
+  }
+
   api.on("before_agent_start", async () => {
     const state = getAnsibleState();
     const myId = getNodeId();

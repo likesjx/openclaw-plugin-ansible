@@ -13,6 +13,10 @@ import { getDoc, getNodeId } from "./service.js";
  * messages into the agent loop.
  */
 export function startMessageDispatcher(api, config) {
+    if (config.dispatchIncoming === false) {
+        api.logger?.info("Ansible dispatcher: disabled (dispatchIncoming=false)");
+        return;
+    }
     const doc = getDoc();
     const myId = getNodeId();
     if (!doc || !myId) {
