@@ -189,6 +189,7 @@ What this means today:
 If you want to "completely rely" on Ansible for inter-agent communication, treat **unread messages** as the source of truth. Use auto-dispatch for convenience, but keep a deterministic inbox loop (Architect-managed, or periodic polling).
 
 For a concrete protocol and improvement plan, see `docs/protocol.md`.
+For the practical "how do I add a new agent/gateway" guide, see `docs/setup.md`.
 
 ### 3. Bootstrap the Network
 
