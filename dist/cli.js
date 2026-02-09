@@ -133,6 +133,7 @@ export function registerAnsibleCli(api, config) {
             .description("Provision ansible plugin config + companion skill on this machine (idempotent)")
             .option("--tier <tier>", "Node tier: backbone or edge")
             .option("--backbone <wsUrl>", "Backbone peer WebSocket URL(s). Repeat or comma-separate.")
+            .option("--node-id <id>", "Override this node id for addressing (recommended in Docker; e.g., vps-jane)")
             .option("--capability <cap>", "Capability to advertise (repeatable). Example: local-files, always-on")
             .option("--inject-context <true|false>", "Enable/disable context injection")
             .option("--inject-agent <id>", "Agent id to allow context injection for (repeatable).")
@@ -155,6 +156,7 @@ export function registerAnsibleCli(api, config) {
             const configPath = process.env.OPENCLAW_CONFIG || path.join(openclawDir, "openclaw.json");
             const requestedTier = opts.tier;
             const backbonePeers = parseCsvOrRepeat(opts.backbone);
+            const nodeIdOverride = typeof opts.nodeId === "string" && opts.nodeId.trim() ? opts.nodeId.trim() : undefined;
             const capabilities = parseCsvOrRepeat(opts.capability);
             const injectContext = parseBool(opts.injectContext);
             const dispatchIncoming = parseBool(opts.dispatchIncoming);
@@ -206,6 +208,8 @@ export function registerAnsibleCli(api, config) {
                 return;
             }
             pluginCfg.tier = tier;
+            if (nodeIdOverride)
+                pluginCfg.nodeIdOverride = nodeIdOverride;
             if (tier === "edge") {
                 if (backbonePeers.length > 0) {
                     pluginCfg.backbonePeers = backbonePeers;
@@ -248,6 +252,8 @@ export function registerAnsibleCli(api, config) {
             }
             console.log(`✓ Updated config: ${configPath}`);
             console.log(`  tier=${pluginCfg.tier}`);
+            if (pluginCfg.nodeIdOverride)
+                console.log(`  nodeIdOverride=${String(pluginCfg.nodeIdOverride)}`);
             if (pluginCfg.backbonePeers)
                 console.log(`  backbonePeers=${JSON.stringify(pluginCfg.backbonePeers)}`);
             if (pluginCfg.capabilities)

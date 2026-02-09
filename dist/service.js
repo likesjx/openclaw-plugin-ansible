@@ -100,12 +100,19 @@ export function createAnsibleService(_api, config) {
         id: "ansible-sync",
         async start(ctx) {
             ctx.logger.info("Ansible sync service starting...");
-            // Get our Tailscale node ID
-            nodeId = await detectTailscaleId();
-            if (!nodeId) {
-                ctx.logger.warn("Could not detect Tailscale ID, using hostname");
-                const os = await import("os");
-                nodeId = os.hostname();
+            // Determine node id for mesh addressing.
+            if (config.nodeIdOverride && typeof config.nodeIdOverride === "string") {
+                nodeId = config.nodeIdOverride;
+                ctx.logger.info(`Ansible node ID override: ${nodeId}`);
+            }
+            else {
+                // Get our Tailscale node ID
+                nodeId = await detectTailscaleId();
+                if (!nodeId) {
+                    ctx.logger.warn("Could not detect Tailscale ID, using hostname");
+                    const os = await import("os");
+                    nodeId = os.hostname();
+                }
             }
             ctx.logger.info(`Ansible node ID: ${nodeId}`);
             if (config.tier === "backbone") {

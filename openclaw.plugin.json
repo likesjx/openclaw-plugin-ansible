@@ -11,6 +11,11 @@
         "enum": ["backbone", "edge"],
         "description": "Node tier: backbone (always-on VPS) or edge (intermittent client)"
       },
+      "nodeIdOverride": {
+        "type": "string",
+        "description": "Override the node id for addressing within the mesh (useful in Docker where tailscale isn't available inside the container)",
+        "examples": ["vps-jane", "jane-vps"]
+      },
       "listenPort": {
         "type": "number",
         "default": 1234,
@@ -44,6 +49,11 @@
     "tier": {
       "label": "Node Tier",
       "help": "Backbone nodes are always-on servers that form the sync mesh. Edge nodes connect as clients."
+    },
+    "nodeIdOverride": {
+      "label": "Node ID Override",
+      "help": "Use a stable name for the node id (recommended in Docker).",
+      "advanced": true
     },
     "listenPort": {
       "label": "Listen Port",

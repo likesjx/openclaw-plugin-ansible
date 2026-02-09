@@ -178,6 +178,7 @@ export function registerAnsibleCli(
       .description("Provision ansible plugin config + companion skill on this machine (idempotent)")
       .option("--tier <tier>", "Node tier: backbone or edge")
       .option("--backbone <wsUrl>", "Backbone peer WebSocket URL(s). Repeat or comma-separate.")
+      .option("--node-id <id>", "Override this node id for addressing (recommended in Docker; e.g., vps-jane)")
       .option("--capability <cap>", "Capability to advertise (repeatable). Example: local-files, always-on")
       .option("--inject-context <true|false>", "Enable/disable context injection")
       .option("--inject-agent <id>", "Agent id to allow context injection for (repeatable).")
@@ -191,6 +192,7 @@ export function registerAnsibleCli(
         const opts = (args[0] || {}) as {
           tier?: string;
           backbone?: string;
+          nodeId?: string;
           capability?: string;
           injectContext?: string;
           injectAgent?: string;
@@ -215,6 +217,7 @@ export function registerAnsibleCli(
 
         const requestedTier = opts.tier as "backbone" | "edge" | undefined;
         const backbonePeers = parseCsvOrRepeat(opts.backbone);
+        const nodeIdOverride = typeof opts.nodeId === "string" && opts.nodeId.trim() ? opts.nodeId.trim() : undefined;
         const capabilities = parseCsvOrRepeat(opts.capability);
         const injectContext = parseBool(opts.injectContext);
         const dispatchIncoming = parseBool(opts.dispatchIncoming);
@@ -270,6 +273,7 @@ export function registerAnsibleCli(
           return;
         }
         pluginCfg.tier = tier;
+        if (nodeIdOverride) pluginCfg.nodeIdOverride = nodeIdOverride;
 
         if (tier === "edge") {
           if (backbonePeers.length > 0) {
@@ -312,6 +316,7 @@ export function registerAnsibleCli(
 
         console.log(`✓ Updated config: ${configPath}`);
         console.log(`  tier=${pluginCfg.tier}`);
+        if (pluginCfg.nodeIdOverride) console.log(`  nodeIdOverride=${String(pluginCfg.nodeIdOverride)}`);
         if (pluginCfg.backbonePeers) console.log(`  backbonePeers=${JSON.stringify(pluginCfg.backbonePeers)}`);
         if (pluginCfg.capabilities) console.log(`  capabilities=${JSON.stringify(pluginCfg.capabilities)}`);
         if (pluginCfg.injectContext !== undefined) console.log(`  injectContext=${String(pluginCfg.injectContext)}`);

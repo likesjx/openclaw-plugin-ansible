@@ -12,6 +12,15 @@ export interface AnsibleConfig {
   /** Node tier: backbone (always-on) or edge (intermittent) */
   tier: "backbone" | "edge";
 
+  /**
+   * Override the node id used for addressing within the ansible mesh.
+   *
+   * Use this in environments where tailscale isn't available inside the runtime
+   * (e.g., docker container), so the nodeId would otherwise be a random container
+   * hostname like `a7f3fa01dade`.
+   */
+  nodeIdOverride?: string;
+
   /** WebSocket port for backbone nodes to listen on */
   listenPort?: number;
 
