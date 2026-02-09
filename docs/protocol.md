@@ -42,6 +42,30 @@ Goal: “messages trigger turns automatically” everywhere.
 
 Today this is *best-effort realtime* only. Backlog and retry gaps mean it cannot be your only mechanism if you need strong guarantees.
 
+## Coordinator Role (Preferred Naming)
+
+"Architect-managed" is an instance of a more general concept: a **coordinator** agent/node.
+
+The coordinator is responsible for keeping Ansible humming:
+- polling unread messages deterministically
+- routing requests into tasks
+- chasing stale tasks
+- closing loops (making sure results get back to the requester)
+
+Coordinator selection should be explicit and shared, not implicit.
+
+### Shared Coordinator Config (Current Implementation)
+
+The plugin stores a small shared coordination config in the Yjs map `coordination`:
+- `coordinator`: node id (e.g., `vps-jane`)
+- `sweepEverySeconds`: suggested sweep cadence
+- `pref:<nodeId>`: per-node preference record (`desiredCoordinator`, `desiredSweepEverySeconds`)
+
+Tools:
+- `ansible_get_coordination`
+- `ansible_set_coordination_preference`
+- `ansible_set_coordination` (initial setup or last-resort failover; requires `confirmLastResort=true` when switching)
+
 ## Message Content Convention (Works With Current Schema)
 
 Ansible messages are stored as:
@@ -140,4 +164,3 @@ You should not rely on auto-dispatch as your only mechanism yet:
 
 - Backlog dispatch is skipped on startup.
 - Dispatch failures do not automatically retry.
-

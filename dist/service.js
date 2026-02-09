@@ -63,6 +63,7 @@ export function getAnsibleState() {
         messages: doc.getMap("messages"),
         context: doc.getMap("context"),
         pulse: doc.getMap("pulse"),
+        coordination: doc.getMap("coordination"),
     };
 }
 /**
@@ -127,6 +128,7 @@ export function createAnsibleService(_api, config) {
                 doc.getMap("messages");
                 doc.getMap("context");
                 doc.getMap("pulse");
+                doc.getMap("coordination");
                 // Load persisted state BEFORE starting sync
                 await loadPersistedState(ctx);
                 // Now connect to peers
@@ -144,6 +146,7 @@ export function createAnsibleService(_api, config) {
                 doc.getMap("messages");
                 doc.getMap("context");
                 doc.getMap("pulse");
+                doc.getMap("coordination");
             }
             // Start pulse heartbeat
             startPulseHeartbeat(ctx);

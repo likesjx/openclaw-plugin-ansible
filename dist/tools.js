@@ -28,10 +28,30 @@ function validateString(value, maxLength, fieldName) {
     }
     return value;
 }
+function validateNumber(value, fieldName) {
+    if (typeof value !== "number" || !Number.isFinite(value)) {
+        throw new Error(`${fieldName} must be a finite number`);
+    }
+    return value;
+}
 function requireAuth(nodeId) {
     if (!isNodeAuthorized(nodeId)) {
         throw new Error("Node not authorized. Use 'ansible join' first.");
     }
+}
+function getCoordinationMap(doc) {
+    return doc?.getMap("coordination");
+}
+function readCoordinationState(doc) {
+    const m = getCoordinationMap(doc);
+    if (!m)
+        return null;
+    return {
+        coordinator: m.get("coordinator"),
+        sweepEverySeconds: m.get("sweepEverySeconds"),
+        updatedAt: m.get("updatedAt"),
+        updatedBy: m.get("updatedBy"),
+    };
 }
 function notifyTaskOwner(doc, fromNodeId, task, payload) {
     if (!doc)
@@ -61,6 +81,148 @@ function notifyTaskOwner(doc, fromNodeId, task, payload) {
     return messageId;
 }
 export function registerAnsibleTools(api, config) {
+    // === ansible_get_coordination ===
+    api.registerTool({
+        name: "ansible_get_coordination",
+        label: "Ansible Get Coordination",
+        description: "Get current coordinator configuration (coordinator node id, sweep cadence) and your saved preference (if any).",
+        parameters: {
+            type: "object",
+            properties: {},
+        },
+        async execute() {
+            const doc = getDoc();
+            const nodeId = getNodeId();
+            if (!doc || !nodeId)
+                return toolResult({ error: "Ansible not initialized" });
+            try {
+                requireAuth(nodeId);
+                const state = readCoordinationState(doc) || {};
+                const m = getCoordinationMap(doc);
+                const pref = m?.get(`pref:${nodeId}`) || null;
+                return toolResult({
+                    myId: nodeId,
+                    ...state,
+                    myPreference: pref,
+                });
+            }
+            catch (err) {
+                return toolResult({ error: err.message });
+            }
+        },
+    });
+    // === ansible_set_coordination_preference ===
+    api.registerTool({
+        name: "ansible_set_coordination_preference",
+        label: "Ansible Set Coordination Preference",
+        description: "Record your preferred coordinator and/or sweep cadence. The coordinator may use these preferences when configuring cron and routing.",
+        parameters: {
+            type: "object",
+            properties: {
+                desiredCoordinator: {
+                    type: "string",
+                    description: "Preferred coordinator node id (optional).",
+                },
+                desiredSweepEverySeconds: {
+                    type: "number",
+                    description: "Preferred sweep cadence in seconds (optional).",
+                },
+            },
+        },
+        async execute(_id, params) {
+            const doc = getDoc();
+            const nodeId = getNodeId();
+            if (!doc || !nodeId)
+                return toolResult({ error: "Ansible not initialized" });
+            try {
+                requireAuth(nodeId);
+                const desiredCoordinator = params.desiredCoordinator
+                    ? validateString(params.desiredCoordinator, 200, "desiredCoordinator")
+                    : undefined;
+                const desiredSweepEverySeconds = params.desiredSweepEverySeconds !== undefined
+                    ? validateNumber(params.desiredSweepEverySeconds, "desiredSweepEverySeconds")
+                    : undefined;
+                if (!desiredCoordinator && desiredSweepEverySeconds === undefined) {
+                    return toolResult({ error: "Provide desiredCoordinator and/or desiredSweepEverySeconds" });
+                }
+                const m = getCoordinationMap(doc);
+                if (!m)
+                    return toolResult({ error: "Ansible not initialized" });
+                const pref = {
+                    desiredCoordinator,
+                    desiredSweepEverySeconds,
+                    updatedAt: Date.now(),
+                };
+                m.set(`pref:${nodeId}`, pref);
+                return toolResult({ success: true, myId: nodeId, preference: pref });
+            }
+            catch (err) {
+                return toolResult({ error: err.message });
+            }
+        },
+    });
+    // === ansible_set_coordination ===
+    api.registerTool({
+        name: "ansible_set_coordination",
+        label: "Ansible Set Coordination",
+        description: "Set the coordinator node id and sweep cadence. Use for initial setup or last-resort coordinator failover.",
+        parameters: {
+            type: "object",
+            properties: {
+                coordinator: {
+                    type: "string",
+                    description: "Coordinator node id (e.g., vps-jane).",
+                },
+                sweepEverySeconds: {
+                    type: "number",
+                    description: "Sweep cadence in seconds (e.g., 60).",
+                },
+                confirmLastResort: {
+                    type: "boolean",
+                    description: "Required when changing an existing coordinator to a different node (failover).",
+                },
+            },
+            required: ["coordinator", "sweepEverySeconds"],
+        },
+        async execute(_id, params) {
+            const doc = getDoc();
+            const nodeId = getNodeId();
+            if (!doc || !nodeId)
+                return toolResult({ error: "Ansible not initialized" });
+            try {
+                requireAuth(nodeId);
+                const coordinator = validateString(params.coordinator, 200, "coordinator");
+                const sweepEverySeconds = validateNumber(params.sweepEverySeconds, "sweepEverySeconds");
+                if (sweepEverySeconds < 10 || sweepEverySeconds > 3600) {
+                    return toolResult({ error: "sweepEverySeconds must be between 10 and 3600" });
+                }
+                const m = getCoordinationMap(doc);
+                if (!m)
+                    return toolResult({ error: "Ansible not initialized" });
+                const existing = m.get("coordinator");
+                if (existing && existing !== coordinator) {
+                    if (params.confirmLastResort !== true) {
+                        return toolResult({
+                            error: "Changing coordinator requires confirmLastResort=true (to avoid accidental role moves).",
+                        });
+                    }
+                }
+                m.set("coordinator", coordinator);
+                m.set("sweepEverySeconds", sweepEverySeconds);
+                m.set("updatedAt", Date.now());
+                m.set("updatedBy", nodeId);
+                return toolResult({
+                    success: true,
+                    coordinator,
+                    sweepEverySeconds,
+                    updatedBy: nodeId,
+                });
+            }
+            catch (err) {
+                return toolResult({ error: err.message });
+            }
+        },
+    });
     // === ansible_delegate_task ===
     api.registerTool({
         name: "ansible_delegate_task",

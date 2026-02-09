@@ -125,6 +125,27 @@ export interface PulseData {
     currentTask?: string;
     version?: string;
 }
+export interface CoordinationPreference {
+    desiredCoordinator?: TailscaleId;
+    desiredSweepEverySeconds?: number;
+    updatedAt: number;
+}
+/**
+ * Stored in the shared Yjs doc map `coordination`.
+ *
+ * Keys:
+ * - coordinator: TailscaleId
+ * - sweepEverySeconds: number
+ * - updatedAt: number
+ * - updatedBy: TailscaleId
+ * - pref:<nodeId>: CoordinationPreference
+ */
+export interface CoordinationState {
+    coordinator?: TailscaleId;
+    sweepEverySeconds?: number;
+    updatedAt?: number;
+    updatedBy?: TailscaleId;
+}
 export interface AnsibleState {
     nodes: Map<TailscaleId, NodeInfo>;
     pendingInvites: Map<string, PendingInvite>;
@@ -132,6 +153,7 @@ export interface AnsibleState {
     messages: Map<string, Message>;
     context: Map<TailscaleId, NodeContext>;
     pulse: Map<TailscaleId, PulseData>;
+    coordination: Map<string, unknown>;
 }
 export declare const CONTEXT_LIMITS: {
     readonly activeThreads: 3;

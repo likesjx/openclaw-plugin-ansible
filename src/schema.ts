@@ -180,6 +180,33 @@ export interface PulseData {
 }
 
 // ============================================================================
+// Coordination (Coordinator Role + Preferences)
+// ============================================================================
+
+export interface CoordinationPreference {
+  desiredCoordinator?: TailscaleId;
+  desiredSweepEverySeconds?: number;
+  updatedAt: number;
+}
+
+/**
+ * Stored in the shared Yjs doc map `coordination`.
+ *
+ * Keys:
+ * - coordinator: TailscaleId
+ * - sweepEverySeconds: number
+ * - updatedAt: number
+ * - updatedBy: TailscaleId
+ * - pref:<nodeId>: CoordinationPreference
+ */
+export interface CoordinationState {
+  coordinator?: TailscaleId;
+  sweepEverySeconds?: number;
+  updatedAt?: number;
+  updatedBy?: TailscaleId;
+}
+
+// ============================================================================
 // Full State
 // ============================================================================
 
@@ -190,6 +217,7 @@ export interface AnsibleState {
   messages: Map<string, Message>;
   context: Map<TailscaleId, NodeContext>;
   pulse: Map<TailscaleId, PulseData>;
+  coordination: Map<string, unknown>;
 }
 
 // ============================================================================

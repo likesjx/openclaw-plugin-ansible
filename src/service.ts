@@ -73,6 +73,7 @@ export function getAnsibleState(): AnsibleState | null {
     messages: doc.getMap("messages") as unknown as AnsibleState["messages"],
     context: doc.getMap("context") as unknown as AnsibleState["context"],
     pulse: doc.getMap("pulse") as unknown as AnsibleState["pulse"],
+    coordination: doc.getMap("coordination") as unknown as AnsibleState["coordination"],
   };
 }
 
@@ -145,6 +146,7 @@ export function createAnsibleService(
         doc.getMap("messages");
         doc.getMap("context");
         doc.getMap("pulse");
+        doc.getMap("coordination");
 
         // Load persisted state BEFORE starting sync
         await loadPersistedState(ctx);
@@ -166,6 +168,7 @@ export function createAnsibleService(
         doc.getMap("messages");
         doc.getMap("context");
         doc.getMap("pulse");
+        doc.getMap("coordination");
       }
 
       // Start pulse heartbeat

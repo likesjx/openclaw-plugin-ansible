@@ -240,6 +240,9 @@ All state is synchronized via Yjs CRDTs:
 | `ansible_update_context` | Update your current focus, threads, or decisions |
 | `ansible_read_messages` | Read messages (unread by default) |
 | `ansible_mark_read` | Mark messages as read |
+| `ansible_get_coordination` | Read coordinator configuration (who coordinates, sweep cadence) |
+| `ansible_set_coordination_preference` | Record your preferred coordinator/cadence (per-node preference) |
+| `ansible_set_coordination` | Set coordinator configuration (initial setup or last-resort failover) |
 
 ## CLI Commands
 
