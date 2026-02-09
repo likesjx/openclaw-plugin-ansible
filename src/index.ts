@@ -8,6 +8,7 @@
 import type { OpenClawPluginApi } from "./types.js";
 import { createAnsibleService, onDocReady } from "./service.js";
 import { createLockSweepService } from "./lock-sweep.js";
+import { createAnsibleRetentionService } from "./retention.js";
 import { registerAnsibleHooks } from "./hooks.js";
 import { registerAnsibleTools } from "./tools.js";
 import { registerAnsibleCli } from "./cli.js";
@@ -27,6 +28,9 @@ export function register(api: OpenClawPluginApi) {
 
   // Per-gateway reliability guard (stale session locks)
   api.registerService(createLockSweepService(api, config));
+
+  // Coordinator-only retention / roll-off (prune closed tasks by TTL)
+  api.registerService(createAnsibleRetentionService(api, config));
 
   // Register hooks for context injection
   registerAnsibleHooks(api, config);

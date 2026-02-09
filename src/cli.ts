@@ -368,10 +368,44 @@ export function registerAnsibleCli(
           return;
         }
 
+        // Best-effort: fetch coordination config (includes retention knobs).
+        let coordination: any = null;
+        try {
+          coordination = await callGateway("ansible_get_coordination");
+        } catch {
+          coordination = null;
+        }
+
         console.log("\n=== Ansible Status ===\n");
         console.log(`My ID: ${result.myId}`);
         console.log(`Tier: ${config.tier}`);
         console.log();
+
+        if (coordination && !coordination.error) {
+          const coordinator = coordination.coordinator ? String(coordination.coordinator) : "(unset)";
+          const sweepEvery = coordination.sweepEverySeconds ? String(coordination.sweepEverySeconds) : "(unset)";
+          const retentionDays =
+            typeof coordination.retentionClosedTaskSeconds === "number"
+              ? String(Math.round(coordination.retentionClosedTaskSeconds / 86400))
+              : "(default 7)";
+          const pruneHours =
+            typeof coordination.retentionPruneEverySeconds === "number"
+              ? String(Math.round(coordination.retentionPruneEverySeconds / 3600))
+              : "(default 24)";
+          const lastPrune =
+            typeof coordination.retentionLastPruneAt === "number"
+              ? new Date(coordination.retentionLastPruneAt).toLocaleString()
+              : "(never)";
+
+          console.log("Coordinator:");
+          console.log(`  id: ${coordinator}`);
+          console.log(`  sweepEverySeconds: ${sweepEvery}`);
+          console.log("Retention (coordinator-only roll-off):");
+          console.log(`  closedTaskRetentionDays: ${retentionDays}`);
+          console.log(`  pruneEveryHours: ${pruneHours}`);
+          console.log(`  lastPruneAt: ${lastPrune}`);
+          console.log();
+        }
 
         // Nodes
         console.log("Hemispheres:");
@@ -406,6 +440,39 @@ export function registerAnsibleCli(
 
         // Messages
         console.log(`Unread messages: ${result.unreadMessages || 0}`);
+      });
+
+    // === ansible retention ===
+    const retention = ansible.command("retention").description("Coordinator retention / roll-off") as CliCommand;
+
+    retention
+      .command("set")
+      .description("Set closed task roll-off policy (coordinator-only)")
+      .option("--closed-days <days>", "Delete completed/failed tasks older than N days (default 7)")
+      .option("--every-hours <hours>", "Run prune every N hours (default 24)")
+      .action(async (...args: unknown[]) => {
+        const opts = (args[0] || {}) as { closedDays?: string; everyHours?: string };
+        const toolArgs: Record<string, unknown> = {};
+        if (opts.closedDays) toolArgs.closedTaskRetentionDays = Number(opts.closedDays);
+        if (opts.everyHours) toolArgs.pruneEveryHours = Number(opts.everyHours);
+
+        let out: any;
+        try {
+          out = await callGateway("ansible_set_retention", toolArgs);
+        } catch (err: any) {
+          console.log(`✗ ${err.message}`);
+          return;
+        }
+        if (out.error) {
+          console.log(`✗ ${out.error}`);
+          return;
+        }
+
+        const days = typeof out.retentionClosedTaskSeconds === "number" ? Math.round(out.retentionClosedTaskSeconds / 86400) : "?";
+        const hours = typeof out.retentionPruneEverySeconds === "number" ? Math.round(out.retentionPruneEverySeconds / 3600) : "?";
+        console.log("✓ Updated retention policy");
+        console.log(`  closedTaskRetentionDays=${days}`);
+        console.log(`  pruneEveryHours=${hours}`);
       });
 
     // === ansible nodes ===

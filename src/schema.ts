@@ -253,6 +253,11 @@ export interface CoordinationPreference {
  * - sweepEverySeconds: number
  * - updatedAt: number
  * - updatedBy: TailscaleId
+ * - retentionClosedTaskSeconds: number (default 604800 / 7 days)
+ * - retentionPruneEverySeconds: number (default 86400 / daily)
+ * - retentionLastPruneAt: number (ms epoch)
+ * - retentionUpdatedAt: number (ms epoch)
+ * - retentionUpdatedBy: TailscaleId
  * - pref:<nodeId>: CoordinationPreference
  */
 export interface CoordinationState {

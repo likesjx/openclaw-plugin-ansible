@@ -1,0 +1,1 @@
+{"version":3,"file":"retention.d.ts","sourceRoot":"","sources":["../src/retention.ts"],"names":[],"mappings":"AAAA;;;;;;;;;;;;;;;;;GAiBG;AAEH,OAAO,KAAK,EAAE,iBAAiB,EAAE,cAAc,EAAE,MAAM,YAAY,CAAC;AACpE,OAAO,KAAK,EAAE,aAAa,EAAqB,MAAM,aAAa,CAAC;AAkEpE,wBAAgB,6BAA6B,CAAC,GAAG,EAAE,iBAAiB,EAAE,MAAM,EAAE,aAAa;;eAStE,cAAc;eA2Dd,cAAc;EAqBlC"}

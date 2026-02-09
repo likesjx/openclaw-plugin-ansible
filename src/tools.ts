@@ -58,6 +58,9 @@ function readCoordinationState(doc: ReturnType<typeof getDoc>) {
   return {
     coordinator: m.get("coordinator") as string | undefined,
     sweepEverySeconds: m.get("sweepEverySeconds") as number | undefined,
+    retentionClosedTaskSeconds: m.get("retentionClosedTaskSeconds") as number | undefined,
+    retentionPruneEverySeconds: m.get("retentionPruneEverySeconds") as number | undefined,
+    retentionLastPruneAt: m.get("retentionLastPruneAt") as number | undefined,
     updatedAt: m.get("updatedAt") as number | undefined,
     updatedBy: m.get("updatedBy") as string | undefined,
   };
@@ -356,6 +359,66 @@ export function registerAnsibleTools(
           coordinator,
           sweepEverySeconds,
           updatedBy: nodeId,
+        });
+      } catch (err: any) {
+        return toolResult({ error: err.message });
+      }
+    },
+  });
+
+  // === ansible_set_retention ===
+  api.registerTool({
+    name: "ansible_set_retention",
+    label: "Ansible Set Retention",
+    description:
+      "Configure coordinator roll-off policy: run daily (or configurable) and prune closed tasks older than a TTL. Takes effect on the coordinator backbone node.",
+    parameters: {
+      type: "object",
+      properties: {
+        closedTaskRetentionDays: {
+          type: "number",
+          description: "Delete completed/failed tasks older than this many days. Default 7.",
+        },
+        pruneEveryHours: {
+          type: "number",
+          description: "How often the coordinator runs the prune (hours). Default 24.",
+        },
+      },
+    },
+    async execute(_id, params) {
+      const doc = getDoc();
+      const nodeId = getNodeId();
+      if (!doc || !nodeId) return toolResult({ error: "Ansible not initialized" });
+
+      try {
+        requireAuth(nodeId);
+        const m = getCoordinationMap(doc);
+        if (!m) return toolResult({ error: "Coordination map not initialized" });
+
+        const days =
+          params.closedTaskRetentionDays === undefined
+            ? 7
+            : validateNumber(params.closedTaskRetentionDays, "closedTaskRetentionDays");
+        const hours =
+          params.pruneEveryHours === undefined ? 24 : validateNumber(params.pruneEveryHours, "pruneEveryHours");
+
+        if (days < 1 || days > 90) return toolResult({ error: "closedTaskRetentionDays must be between 1 and 90" });
+        if (hours < 1 || hours > 168) return toolResult({ error: "pruneEveryHours must be between 1 and 168" });
+
+        const closedTaskSeconds = Math.floor(days * 24 * 60 * 60);
+        const pruneEverySeconds = Math.floor(hours * 60 * 60);
+
+        m.set("retentionClosedTaskSeconds", closedTaskSeconds);
+        m.set("retentionPruneEverySeconds", pruneEverySeconds);
+        m.set("retentionUpdatedAt", Date.now());
+        m.set("retentionUpdatedBy", nodeId);
+
+        return toolResult({
+          success: true,
+          retentionClosedTaskSeconds: closedTaskSeconds,
+          retentionPruneEverySeconds: pruneEverySeconds,
+          retentionUpdatedAt: m.get("retentionUpdatedAt"),
+          retentionUpdatedBy: m.get("retentionUpdatedBy"),
         });
       } catch (err: any) {
         return toolResult({ error: err.message });
