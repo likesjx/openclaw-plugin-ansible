@@ -504,9 +504,17 @@ function startMessageCleanup(ctx) {
         let deleted = 0;
         const toDelete = [];
         for (const { id, msg } of allMessages) {
-            // Skip unread messages if configured to keep them
-            if (MESSAGE_RETENTION.keepUnread && Array.isArray(msg.readBy) && !msg.readBy.includes(nodeId)) {
-                continue;
+            // Skip unread messages for *this node* if configured to keep them.
+            //
+            // Important: do NOT "protect" messages addressed to some other node
+            // just because *we* haven't marked them as read. Otherwise, a backbone
+            // node will accumulate phantom unread messages forever and status/sweeps
+            // become untrustworthy.
+            if (MESSAGE_RETENTION.keepUnread && Array.isArray(msg.readBy)) {
+                const addressedToMe = !msg.to || msg.to === nodeId;
+                const unreadForMe = addressedToMe && !msg.readBy.includes(nodeId);
+                if (unreadForMe)
+                    continue;
             }
             // Delete if too old
             if (msg.timestamp < cutoff) {

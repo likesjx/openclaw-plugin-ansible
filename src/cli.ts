@@ -382,8 +382,12 @@ export function registerAnsibleCli(
         for (const node of nodes) {
           const isMe = node.id === result.myId ? " (me)" : "";
           const focus = node.currentFocus ? ` - ${node.currentFocus}` : "";
+          const stale = node.stale === true;
           const icon = node.status === "online" ? "●" : "○";
-          console.log(`  ${icon} ${node.id}${isMe}${focus}`);
+          const staleTag = stale ? " [STALE]" : "";
+          const age = typeof node.ageSeconds === "number" ? ` (${node.ageSeconds}s ago)` : "";
+          console.log(`  ${icon} ${node.id}${isMe}${focus}${staleTag}`);
+          console.log(`    Status: ${node.status}${age}`);
           console.log(`    Last seen: ${new Date(node.lastSeen).toLocaleString()}`);
         }
         console.log();
