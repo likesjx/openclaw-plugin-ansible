@@ -44,6 +44,20 @@ export interface AnsibleConfig {
      * and respond with `ansible_send_message`.
      */
     dispatchIncoming?: boolean;
+    /**
+     * Periodically sweep stale session lock files (per-gateway reliability guard).
+     *
+     * This addresses cases where a crashed/interrupted agent run leaves behind a
+     * `*.jsonl.lock` file that blocks future turns for that session.
+     */
+    lockSweep?: {
+        /** Enable/disable the sweeper. Default: false (opt-in). */
+        enabled?: boolean;
+        /** Sweep interval. Default: 300 seconds. */
+        everySeconds?: number;
+        /** For locks without a PID, treat as stale after this many seconds. Default: 1800. */
+        staleSeconds?: number;
+    };
 }
 export declare const VALIDATION_LIMITS: {
     readonly maxTitleLength: 200;

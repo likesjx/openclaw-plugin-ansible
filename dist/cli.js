@@ -137,6 +137,9 @@ export function registerAnsibleCli(api, config) {
             .option("--inject-context <true|false>", "Enable/disable context injection")
             .option("--inject-agent <id>", "Agent id to allow context injection for (repeatable).")
             .option("--dispatch-incoming <true|false>", "Enable/disable auto-dispatch of inbound messages")
+            .option("--lock-sweep <true|false>", "Enable/disable per-gateway stale session lock sweeper (recommended)")
+            .option("--lock-sweep-every <seconds>", "Lock sweep interval seconds (default 300)")
+            .option("--lock-sweep-stale <seconds>", "Treat pid-less locks as stale after seconds (default 1800)")
             .option("--no-skill", "Skip installing/updating the companion skill repo")
             .option("--no-restart", "Do not restart the gateway service after changes")
             .action(async (...args) => {
@@ -156,6 +159,9 @@ export function registerAnsibleCli(api, config) {
             const injectContext = parseBool(opts.injectContext);
             const dispatchIncoming = parseBool(opts.dispatchIncoming);
             const injectAgents = parseCsvOrRepeat(opts.injectAgent);
+            const lockSweepEnabled = parseBool(opts.lockSweep);
+            const lockSweepEverySeconds = opts.lockSweepEvery ? Number(opts.lockSweepEvery) : undefined;
+            const lockSweepStaleSeconds = opts.lockSweepStale ? Number(opts.lockSweepStale) : undefined;
             if (!fs.existsSync(configPath)) {
                 console.log(`✗ Config not found at ${configPath}`);
                 console.log("  Run `openclaw gateway --dev` (dev) or create ~/.openclaw/openclaw.json first.");
@@ -222,6 +228,16 @@ export function registerAnsibleCli(api, config) {
                 const merged = new Set([...(pluginCfg.injectContextAgents || []), ...injectAgents].map(String));
                 pluginCfg.injectContextAgents = Array.from(merged);
             }
+            // Lock sweeper defaults (opt-in via setup; can still be disabled explicitly)
+            pluginCfg.lockSweep = pluginCfg.lockSweep || {};
+            if (lockSweepEnabled !== undefined)
+                pluginCfg.lockSweep.enabled = lockSweepEnabled;
+            else if (pluginCfg.lockSweep.enabled === undefined)
+                pluginCfg.lockSweep.enabled = true;
+            if (Number.isFinite(lockSweepEverySeconds))
+                pluginCfg.lockSweep.everySeconds = lockSweepEverySeconds;
+            if (Number.isFinite(lockSweepStaleSeconds))
+                pluginCfg.lockSweep.staleSeconds = lockSweepStaleSeconds;
             conf.plugins.entries.ansible.config = pluginCfg;
             try {
                 writeJsonFile(configPath, conf);
@@ -242,6 +258,12 @@ export function registerAnsibleCli(api, config) {
                 console.log(`  injectContextAgents=${JSON.stringify(pluginCfg.injectContextAgents)}`);
             if (pluginCfg.dispatchIncoming !== undefined)
                 console.log(`  dispatchIncoming=${String(pluginCfg.dispatchIncoming)}`);
+            if (pluginCfg.lockSweep?.enabled !== undefined)
+                console.log(`  lockSweep.enabled=${String(pluginCfg.lockSweep.enabled)}`);
+            if (pluginCfg.lockSweep?.everySeconds !== undefined)
+                console.log(`  lockSweep.everySeconds=${String(pluginCfg.lockSweep.everySeconds)}`);
+            if (pluginCfg.lockSweep?.staleSeconds !== undefined)
+                console.log(`  lockSweep.staleSeconds=${String(pluginCfg.lockSweep.staleSeconds)}`);
             // 3) Restart gateway to pick up skill/config changes
             if (opts.restart !== false) {
                 try {

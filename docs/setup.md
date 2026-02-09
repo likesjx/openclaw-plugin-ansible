@@ -83,6 +83,18 @@ Recommended production posture:
   - timeouts / stalled work
   - closes the loop by notifying the requester when done
 
+## Session Lock Sweeper (Per-Gateway)
+
+OpenClaw uses per-session `.jsonl.lock` files to guard session writes. If a run crashes or is interrupted, a stale lock can block future turns for that session.
+
+The plugin includes a small per-gateway sweeper service (`ansible-lock-sweep`) to automatically remove stale locks.
+
+Defaults (safe + pragmatic):
+
+- enabled by default
+- `everySeconds = 60`
+- `staleSeconds = 300` (remove any lock older than 5 minutes, even if the PID is the long-running gateway PID)
+
 ### Coordinator State (Implemented)
 
 Shared config lives in the Yjs `coordination` map:
@@ -126,4 +138,3 @@ This directory is what every listener uses to decide:
 - "who should handle this message/task"
 - "should I self-handle vs delegate"
 - "who do I notify when I’m done"
-

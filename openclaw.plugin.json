@@ -27,6 +27,15 @@
         "items": { "type": "string" },
         "default": [],
         "description": "Capabilities this node provides: always-on, local-files, gpu"
+      },
+      "lockSweep": {
+        "type": "object",
+        "description": "Per-gateway stale session lock sweeper",
+        "properties": {
+          "enabled": { "type": "boolean", "description": "Enable lock sweeping (default true)" },
+          "everySeconds": { "type": "number", "description": "Sweep interval seconds (default 60)", "minimum": 30 },
+          "staleSeconds": { "type": "number", "description": "Treat locks older than this as stale (default 300)", "minimum": 30 }
+        }
       }
     },
     "required": ["tier"]
@@ -48,6 +57,11 @@
     "capabilities": {
       "label": "Capabilities",
       "help": "What this node can do: always-on, local-files, gpu"
+    },
+    "lockSweep": {
+      "label": "Lock Sweep",
+      "help": "Automatically clears stale session lock files that can block agent turns (recommended).",
+      "advanced": true
     }
   }
 }

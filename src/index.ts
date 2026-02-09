@@ -7,6 +7,7 @@
 
 import type { OpenClawPluginApi } from "./types.js";
 import { createAnsibleService, onDocReady } from "./service.js";
+import { createLockSweepService } from "./lock-sweep.js";
 import { registerAnsibleHooks } from "./hooks.js";
 import { registerAnsibleTools } from "./tools.js";
 import { registerAnsibleCli } from "./cli.js";
@@ -23,6 +24,9 @@ export function register(api: OpenClawPluginApi) {
 
   // Register the Yjs sync service
   api.registerService(createAnsibleService(api, config));
+
+  // Per-gateway reliability guard (stale session locks)
+  api.registerService(createLockSweepService(api, config));
 
   // Register hooks for context injection
   registerAnsibleHooks(api, config);
