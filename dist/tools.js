@@ -81,6 +81,27 @@ function notifyTaskOwner(doc, fromNodeId, task, payload) {
     messages.set(message.id, message);
     return messageId;
 }
+function resolveTaskKey(tasks, idOrPrefix) {
+    const needle = String(idOrPrefix || "").trim();
+    if (!needle)
+        return { error: "Task id is required" };
+    // Exact match first.
+    if (tasks.get(needle))
+        return needle;
+    // Prefix match (common when users reference 8-char short ids).
+    const matches = [];
+    for (const k of tasks.keys()) {
+        if (k.startsWith(needle))
+            matches.push(k);
+    }
+    if (matches.length === 0)
+        return { error: "Task not found" };
+    if (matches.length === 1)
+        return matches[0];
+    return {
+        error: `Ambiguous task id prefix '${needle}'. Matches: ${matches.slice(0, 8).join(", ")}${matches.length > 8 ? ", ..." : ""}`,
+    };
+}
 export function registerAnsibleTools(api, config) {
     // === ansible_lock_sweep_status ===
     api.registerTool({
@@ -537,14 +558,17 @@ export function registerAnsibleTools(api, config) {
             try {
                 requireAuth(nodeId);
                 const tasks = doc.getMap("tasks");
-                const task = tasks.get(params.taskId);
+                const resolvedKey = resolveTaskKey(tasks, params.taskId);
+                if (typeof resolvedKey !== "string")
+                    return toolResult(resolvedKey);
+                const task = tasks.get(resolvedKey);
                 if (!task) {
                     return toolResult({ error: "Task not found" });
                 }
                 if (task.status !== "pending") {
                     return toolResult({ error: `Task is already ${task.status}` });
                 }
-                tasks.set(params.taskId, {
+                tasks.set(resolvedKey, {
                     ...task,
                     status: "claimed",
                     claimedBy: nodeId,
@@ -609,7 +633,10 @@ export function registerAnsibleTools(api, config) {
             try {
                 requireAuth(nodeId);
                 const tasks = doc.getMap("tasks");
-                const task = tasks.get(params.taskId);
+                const resolvedKey = resolveTaskKey(tasks, params.taskId);
+                if (typeof resolvedKey !== "string")
+                    return toolResult(resolvedKey);
+                const task = tasks.get(resolvedKey);
                 if (!task)
                     return toolResult({ error: "Task not found" });
                 if (task.claimedBy !== nodeId) {
@@ -635,7 +662,7 @@ export function registerAnsibleTools(api, config) {
                         ...(task.updates || []),
                     ].slice(0, 50),
                 };
-                tasks.set(params.taskId, updated);
+                tasks.set(resolvedKey, updated);
                 const notify = params.notify === true;
                 const notifyMessageId = notify
                     ? notifyTaskOwner(doc, nodeId, updated, { kind: status === "failed" ? "failed" : "update", note, result })
@@ -681,7 +708,10 @@ export function registerAnsibleTools(api, config) {
             try {
                 requireAuth(nodeId);
                 const tasks = doc.getMap("tasks");
-                const task = tasks.get(params.taskId);
+                const resolvedKey = resolveTaskKey(tasks, params.taskId);
+                if (typeof resolvedKey !== "string")
+                    return toolResult(resolvedKey);
+                const task = tasks.get(resolvedKey);
                 if (!task) {
                     return toolResult({ error: "Task not found" });
                 }
@@ -700,7 +730,7 @@ export function registerAnsibleTools(api, config) {
                         ...(task.updates || []),
                     ].slice(0, 50),
                 };
-                tasks.set(params.taskId, completed);
+                tasks.set(resolvedKey, completed);
                 // Always notify the asker on completion.
                 const notifyMessageId = notifyTaskOwner(doc, nodeId, completed, { kind: "completed", result });
                 return toolResult({

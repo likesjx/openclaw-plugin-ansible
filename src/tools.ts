@@ -94,6 +94,30 @@ function notifyTaskOwner(
   return messageId;
 }
 
+function resolveTaskKey(
+  tasks: { get: (k: string) => unknown; keys: () => IterableIterator<string> },
+  idOrPrefix: string,
+): string | { error: string } {
+  const needle = String(idOrPrefix || "").trim();
+  if (!needle) return { error: "Task id is required" };
+
+  // Exact match first.
+  if (tasks.get(needle)) return needle;
+
+  // Prefix match (common when users reference 8-char short ids).
+  const matches: string[] = [];
+  for (const k of tasks.keys()) {
+    if (k.startsWith(needle)) matches.push(k);
+  }
+
+  if (matches.length === 0) return { error: "Task not found" };
+  if (matches.length === 1) return matches[0];
+
+  return {
+    error: `Ambiguous task id prefix '${needle}'. Matches: ${matches.slice(0, 8).join(", ")}${matches.length > 8 ? ", ..." : ""}`,
+  };
+}
+
 export function registerAnsibleTools(
   api: OpenClawPluginApi,
   config: AnsibleConfig
@@ -604,7 +628,9 @@ export function registerAnsibleTools(
         requireAuth(nodeId);
 
         const tasks = doc.getMap("tasks");
-        const task = tasks.get(params.taskId as string) as Task | undefined;
+        const resolvedKey = resolveTaskKey(tasks as any, params.taskId as string);
+        if (typeof resolvedKey !== "string") return toolResult(resolvedKey);
+        const task = tasks.get(resolvedKey) as Task | undefined;
 
         if (!task) {
           return toolResult({ error: "Task not found" });
@@ -614,7 +640,7 @@ export function registerAnsibleTools(
           return toolResult({ error: `Task is already ${task.status}` });
         }
 
-        tasks.set(params.taskId as string, {
+        tasks.set(resolvedKey, {
           ...task,
           status: "claimed",
           claimedBy: nodeId,
@@ -684,7 +710,9 @@ export function registerAnsibleTools(
         requireAuth(nodeId);
 
         const tasks = doc.getMap("tasks");
-        const task = tasks.get(params.taskId as string) as Task | undefined;
+        const resolvedKey = resolveTaskKey(tasks as any, params.taskId as string);
+        if (typeof resolvedKey !== "string") return toolResult(resolvedKey);
+        const task = tasks.get(resolvedKey) as Task | undefined;
         if (!task) return toolResult({ error: "Task not found" });
         if (task.claimedBy !== nodeId) {
           return toolResult({ error: "You don't have this task claimed" });
@@ -714,7 +742,7 @@ export function registerAnsibleTools(
           ].slice(0, 50),
         };
 
-        tasks.set(params.taskId as string, updated);
+        tasks.set(resolvedKey, updated);
 
         const notify = params.notify === true;
         const notifyMessageId = notify
@@ -765,7 +793,9 @@ export function registerAnsibleTools(
         requireAuth(nodeId);
 
         const tasks = doc.getMap("tasks");
-        const task = tasks.get(params.taskId as string) as Task | undefined;
+        const resolvedKey = resolveTaskKey(tasks as any, params.taskId as string);
+        if (typeof resolvedKey !== "string") return toolResult(resolvedKey);
+        const task = tasks.get(resolvedKey) as Task | undefined;
 
         if (!task) {
           return toolResult({ error: "Task not found" });
@@ -789,7 +819,7 @@ export function registerAnsibleTools(
           ].slice(0, 50),
         };
 
-        tasks.set(params.taskId as string, completed);
+        tasks.set(resolvedKey, completed);
 
         // Always notify the asker on completion.
         const notifyMessageId = notifyTaskOwner(doc, nodeId, completed, { kind: "completed", result });
