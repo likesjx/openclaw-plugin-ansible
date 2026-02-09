@@ -30,6 +30,7 @@ let cleanupInterval: ReturnType<typeof setInterval> | null = null;
 let isBackboneMode = false;
 let docReady = false;
 let docReadyCallbacks: Array<() => void> = [];
+let syncCallbacks: Array<(synced: boolean, peer?: string) => void> = [];
 
 const HEARTBEAT_INTERVAL_MS = 30_000;
 const CLEANUP_INTERVAL_MS = 60_000; // Run cleanup every minute
@@ -89,6 +90,15 @@ export function onDocReady(cb: () => void): void {
   }
 }
 
+/**
+ * Register a callback for provider sync events (edge) and startup sync (backbone).
+ *
+ * This is used by the dispatcher to reconcile backlog on reconnect.
+ */
+export function onSync(cb: (synced: boolean, peer?: string) => void): void {
+  syncCallbacks.push(cb);
+}
+
 function fireDocReady(): void {
   if (docReady) return;
   docReady = true;
@@ -100,6 +110,16 @@ function fireDocReady(): void {
     }
   }
   docReadyCallbacks = [];
+}
+
+function fireSync(synced: boolean, peer?: string): void {
+  for (const cb of syncCallbacks) {
+    try {
+      cb(synced, peer);
+    } catch {
+      // Swallow — individual callbacks shouldn't break sync loop
+    }
+  }
 }
 
 /**
@@ -192,6 +212,8 @@ export function createAnsibleService(
       // For edge mode, wait until the first sync completes (see connectToPeer).
       if (config.tier === "backbone") {
         fireDocReady();
+        // Treat backbone startup as "synced" for consumers that want to reconcile.
+        fireSync(true, "backbone");
       }
     },
 
@@ -237,6 +259,7 @@ export function createAnsibleService(
       nodeId = null;
       docReady = false;
       docReadyCallbacks = [];
+      syncCallbacks = [];
 
       ctx.logger.info("Ansible sync service stopped");
     },
@@ -387,6 +410,7 @@ function connectToPeer(url: string, ctx: ServiceContext) {
 
     provider.on("sync", (synced: boolean) => {
       ctx.logger.info(`Sync event for ${url}: synced=${synced}`);
+      fireSync(synced, url);
       if (synced) {
         ctx.logger.info(`Successfully synced with ${url}`);
         // Fire doc-ready on first successful sync (edge mode)

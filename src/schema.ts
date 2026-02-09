@@ -122,6 +122,26 @@ export interface PendingInvite {
 
 export type TaskStatus = "pending" | "claimed" | "in_progress" | "completed" | "failed";
 
+// ============================================================================
+// Delivery / Dispatch Tracking
+// ============================================================================
+
+/**
+ * Tracks whether a specific node has had an item injected into its agent loop.
+ *
+ * We keep this in shared state so reconnect/restart reconciliation can be
+ * idempotent (avoid duplicates) and can retry after transient failures.
+ */
+export type DeliveryState = "attempted" | "delivered";
+
+export interface DeliveryRecord {
+  state: DeliveryState;
+  at: number;
+  by: TailscaleId;
+  attempts?: number;
+  lastError?: string;
+}
+
 export interface Task {
   id: string;
   title: string;
@@ -155,6 +175,12 @@ export interface Task {
     status: TaskStatus;
     note?: string;
   }>;
+
+  /**
+   * Per-node dispatch tracking so reconnect reconciliation can be deterministic
+   * and idempotent. Keyed by receiver nodeId.
+   */
+  delivery?: Record<TailscaleId, DeliveryRecord>;
 }
 
 // ============================================================================
@@ -168,6 +194,12 @@ export interface Message {
   content: string;
   timestamp: number;
   readBy: TailscaleId[];
+
+  /**
+   * Per-node dispatch tracking so reconnect reconciliation can be deterministic
+   * and idempotent. Keyed by receiver nodeId.
+   */
+  delivery?: Record<TailscaleId, DeliveryRecord>;
 }
 
 // ============================================================================

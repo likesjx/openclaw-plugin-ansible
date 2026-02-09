@@ -177,16 +177,17 @@ In this mode, the operator agent should poll and respond using tools like:
 Ansible has two distinct mechanisms:
 
 1. **Durable state replication**: messages/tasks/context are written into the shared Yjs document and replicated across nodes.
-2. **Auto-dispatch (optional)**: when a node observes a *new* inbound message added to the Yjs `messages` map, it can inject that message into the agent loop as a normal inbound turn.
+2. **Auto-dispatch (optional)**: when a node observes inbound work (messages, and explicitly-assigned tasks) in the shared Yjs doc, it can inject that work into the agent loop as a normal inbound turn.
 
 What this means today:
 
 - **Messages are durable** (persist in the Yjs doc; readable via `ansible_read_messages`; visible in context injection if enabled).
-- **Auto-dispatch is best-effort realtime**:
-  - It triggers only for *new* messages observed after the dispatcher starts, not backlog that existed before the node came online.
-  - It does not currently retry dispatch after an error in the dispatch pipeline.
+- **Auto-dispatch is best-effort realtime + reconnect-safe**:
+  - New messages dispatch immediately while connected.
+  - On reconnect (provider `sync=true`), the dispatcher reconciles backlog deterministically (timestamp order) and injects any undelivered items.
+  - Dispatch failures are retried with exponential backoff (with jitter) instead of being "seen forever".
 
-If you want to "completely rely" on Ansible for inter-agent communication, treat **unread messages** as the source of truth. Use auto-dispatch for convenience, but keep a deterministic inbox loop (Architect-managed, or periodic polling).
+If you want to "completely rely" on Ansible for inter-agent communication, treat the shared Yjs doc as the source of truth and the dispatcher as the delivery worker. You can still keep manual tools (`ansible_read_messages`, `ansible_find_task`) as an operator backstop.
 
 For a concrete protocol and improvement plan, see `docs/protocol.md`.
 For the practical "how do I add a new agent/gateway" guide, see `docs/setup.md`.
@@ -215,7 +216,7 @@ When one hemisphere sends a message, the ansible dispatcher automatically inject
 
 Replies are delivered back through the Yjs document automatically.
 
-Important: auto-dispatch triggers on observed *new additions* after startup. Backlog is durable (readable + injectable as context), but it may not trigger an immediate agent turn.
+Important: backlog is durable and will also be delivered on reconnect via reconciliation; this is what makes restarts/offline edges reliable.
 
 ### Session Isolation
 

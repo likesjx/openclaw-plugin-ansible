@@ -1,16 +1,16 @@
 /**
- * Ansible Message Dispatcher
+ * Ansible Dispatcher (Messages + Assigned Tasks)
  *
- * Observes the Yjs messages map for new inbound messages and dispatches
- * them into the agent loop using the same pattern as built-in extensions
- * (Telegram, Twitch, Zalo): build a MsgContext, finalize it, record the
- * session, and call dispatchReplyWithBufferedBlockDispatcher.
+ * Guarantees:
+ * - Live dispatch: new inbound messages are injected into the agent loop.
+ * - Reconnect reconciliation: when sync completes, scan for backlog and deliver
+ *   deterministically (timestamp order) without duplicates.
+ * - Retry: failed dispatches are retried with exponential backoff + jitter.
  */
 import type { OpenClawPluginApi } from "./types.js";
 import type { AnsibleConfig } from "./schema.js";
 /**
- * Start observing the Yjs messages map and dispatching new inbound
- * messages into the agent loop.
+ * Start observing the Yjs state and dispatching inbound work into the agent loop.
  */
 export declare function startMessageDispatcher(api: OpenClawPluginApi, config: AnsibleConfig): void;
 //# sourceMappingURL=dispatcher.d.ts.map

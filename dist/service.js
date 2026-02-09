@@ -23,6 +23,7 @@ let cleanupInterval = null;
 let isBackboneMode = false;
 let docReady = false;
 let docReadyCallbacks = [];
+let syncCallbacks = [];
 const HEARTBEAT_INTERVAL_MS = 30_000;
 const CLEANUP_INTERVAL_MS = 60_000; // Run cleanup every minute
 const STATE_FILE = "ansible-state.yjs";
@@ -78,6 +79,14 @@ export function onDocReady(cb) {
         docReadyCallbacks.push(cb);
     }
 }
+/**
+ * Register a callback for provider sync events (edge) and startup sync (backbone).
+ *
+ * This is used by the dispatcher to reconcile backlog on reconnect.
+ */
+export function onSync(cb) {
+    syncCallbacks.push(cb);
+}
 function fireDocReady() {
     if (docReady)
         return;
@@ -91,6 +100,16 @@ function fireDocReady() {
         }
     }
     docReadyCallbacks = [];
+}
+function fireSync(synced, peer) {
+    for (const cb of syncCallbacks) {
+        try {
+            cb(synced, peer);
+        }
+        catch {
+            // Swallow — individual callbacks shouldn't break sync loop
+        }
+    }
 }
 /**
  * Create the Ansible sync service
@@ -166,6 +185,8 @@ export function createAnsibleService(_api, config) {
             // For edge mode, wait until the first sync completes (see connectToPeer).
             if (config.tier === "backbone") {
                 fireDocReady();
+                // Treat backbone startup as "synced" for consumers that want to reconcile.
+                fireSync(true, "backbone");
             }
         },
         async stop(ctx) {
@@ -203,6 +224,7 @@ export function createAnsibleService(_api, config) {
             nodeId = null;
             docReady = false;
             docReadyCallbacks = [];
+            syncCallbacks = [];
             ctx.logger.info("Ansible sync service stopped");
         },
     };
@@ -327,6 +349,7 @@ function connectToPeer(url, ctx) {
         });
         provider.on("sync", (synced) => {
             ctx.logger.info(`Sync event for ${url}: synced=${synced}`);
+            fireSync(synced, url);
             if (synced) {
                 ctx.logger.info(`Successfully synced with ${url}`);
                 // Fire doc-ready on first successful sync (edge mode)

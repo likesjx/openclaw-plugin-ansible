@@ -29,6 +29,12 @@ export declare function getAnsibleState(): AnsibleState | null;
  */
 export declare function onDocReady(cb: () => void): void;
 /**
+ * Register a callback for provider sync events (edge) and startup sync (backbone).
+ *
+ * This is used by the dispatcher to reconcile backlog on reconnect.
+ */
+export declare function onSync(cb: (synced: boolean, peer?: string) => void): void;
+/**
  * Create the Ansible sync service
  */
 export declare function createAnsibleService(_api: OpenClawPluginApi, config: AnsibleConfig): {
