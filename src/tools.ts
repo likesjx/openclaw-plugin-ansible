@@ -95,19 +95,27 @@ function notifyTaskOwner(
 }
 
 function resolveTaskKey(
-  tasks: { get: (k: string) => unknown; keys: () => IterableIterator<string> },
+  tasks: { get: (k: string) => unknown; keys: () => IterableIterator<string>; entries?: () => IterableIterator<[string, unknown]> },
   idOrPrefix: string,
 ): string | { error: string } {
   const needle = String(idOrPrefix || "").trim();
   if (!needle) return { error: "Task id is required" };
 
   // Exact match first.
-  if (tasks.get(needle)) return needle;
+  if (tasks.get(needle) !== undefined) return needle;
 
   // Prefix match (common when users reference 8-char short ids).
   const matches: string[] = [];
   for (const k of tasks.keys()) {
     if (k.startsWith(needle)) matches.push(k);
+  }
+
+  // Fallback: match by value.id prefix (handles legacy/odd states where task.id != key).
+  if (matches.length === 0 && typeof tasks.entries === "function") {
+    for (const [k, v] of tasks.entries()) {
+      const id = v && typeof v === "object" && "id" in (v as any) ? String((v as any).id || "") : "";
+      if (id && id.startsWith(needle)) matches.push(k);
+    }
   }
 
   if (matches.length === 0) return { error: "Task not found" };
@@ -122,6 +130,61 @@ export function registerAnsibleTools(
   api: OpenClawPluginApi,
   config: AnsibleConfig
 ) {
+  // === ansible_find_task ===
+  api.registerTool({
+    name: "ansible_find_task",
+    label: "Ansible Find Task",
+    description:
+      "Find tasks by id prefix or title substring. Returns both the Yjs map key and the task.id (they should match).",
+    parameters: {
+      type: "object",
+      properties: {
+        idPrefix: { type: "string", description: "Task id prefix (often 8 chars from ansible_status)" },
+        titleContains: { type: "string", description: "Case-insensitive substring match on task title" },
+        status: { type: "string", description: "Filter by status (pending|claimed|in_progress|completed|failed)" },
+        limit: { type: "number", description: "Max results to return (default 10)" },
+      },
+    },
+    async execute(_id, params) {
+      const doc = getDoc();
+      const nodeId = getNodeId();
+      if (!doc || !nodeId) return toolResult({ error: "Ansible not initialized" });
+
+      try {
+        requireAuth(nodeId);
+        const tasks = doc.getMap("tasks");
+        const idPrefix = params.idPrefix ? String(params.idPrefix).trim() : "";
+        const titleContains = params.titleContains ? String(params.titleContains).trim().toLowerCase() : "";
+        const status = params.status ? String(params.status).trim() : "";
+        const limit = typeof params.limit === "number" && Number.isFinite(params.limit) ? Math.max(1, Math.min(50, params.limit)) : 10;
+
+        const out: any[] = [];
+        for (const [k, v] of (tasks as any).entries()) {
+          const t = v as Task;
+          if (!t) continue;
+          if (status && t.status !== status) continue;
+          if (idPrefix && !(String(k).startsWith(idPrefix) || String(t.id || "").startsWith(idPrefix))) continue;
+          if (titleContains && !String(t.title || "").toLowerCase().includes(titleContains)) continue;
+          out.push({
+            key: k,
+            id: t.id,
+            title: t.title,
+            status: t.status,
+            assignedTo: t.assignedTo,
+            createdBy: t.createdBy,
+            claimedBy: t.claimedBy,
+            updatedAt: t.updatedAt,
+          });
+        }
+
+        out.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+        return toolResult({ matches: out.slice(0, limit), total: out.length });
+      } catch (err: any) {
+        return toolResult({ error: err.message });
+      }
+    },
+  });
+
   // === ansible_lock_sweep_status ===
   api.registerTool({
     name: "ansible_lock_sweep_status",
