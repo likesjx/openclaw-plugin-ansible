@@ -36,6 +36,31 @@
 
 ---
 
+### DEF-003: Auto-dispatch is not backlog-safe and not retry-safe (DESIGN GAP)
+
+- **Severity**: High (reliability)
+- **Status**: Open
+- **Points**: 5
+
+**Symptom**:
+- Messages that arrive while a node is offline do not trigger a turn when the node comes online (unless a separate turn happens for another reason).
+- If the dispatch pipeline errors, the message may remain unread but will not be automatically retried.
+
+**Root cause**:
+- The dispatcher seeds a `seen` set with all existing message IDs on startup, so it intentionally skips backlog.
+- The dispatcher also suppresses re-processing of message IDs once `seen`, even if the dispatch failed.
+
+**Impact**:
+Best-effort realtime auto-dispatch is convenient, but it cannot be treated as a sole transport if you need “always reliable” inter-agent communication without a polling operator.
+
+**Workaround (recommended today)**:
+Use the **Architect-managed inbox** operating model:
+- `dispatchIncoming=false` on worker nodes.
+- Operator agent polls `ansible_read_messages` and replies via `ansible_send_message`.
+
+**Fix (planned)**:
+Implement startup backlog dispatch + retry semantics, as specified in `docs/protocol.md`.
+
 ## Technical Debt
 
 ### TD-001: Type stubs vs. real OpenClaw SDK types

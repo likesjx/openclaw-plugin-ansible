@@ -3,6 +3,7 @@
 ## Architecture & Design
 
 - **[architecture.md](architecture.md)** — System overview, component descriptions, data flow diagrams, port architecture, session key strategy, and the OpenClaw plugin API surface
+- **[protocol.md](protocol.md)** — Inter-agent messaging conventions, delivery semantics, current limitations, and the concrete reliability improvement plan
 
 ## Platform Knowledge
 

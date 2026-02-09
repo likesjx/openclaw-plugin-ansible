@@ -4,6 +4,8 @@
 
 Ansible enables a single agent identity (e.g., "Jane") to operate seamlessly across multiple devices. It synchronizes tasks, messages, and shared context in real-time using CRDTs (Yjs) over a secure mesh network (Tailscale).
 
+This repo also documents a pragmatic way to use Ansible as a reliable inter-agent communication substrate today: treat the shared Yjs document as the durable inbox, and treat auto-dispatch as an optimization (not the only delivery mechanism).
+
 ## Key Concepts
 
 ### Hemispheres vs. Friends (Default: Friends)
@@ -170,6 +172,24 @@ In this mode, the operator agent should poll and respond using tools like:
 - `ansible_read_messages`
 - `ansible_send_message`
 
+## Reliability & Delivery Semantics (If You Want To Rely On It)
+
+Ansible has two distinct mechanisms:
+
+1. **Durable state replication**: messages/tasks/context are written into the shared Yjs document and replicated across nodes.
+2. **Auto-dispatch (optional)**: when a node observes a *new* inbound message added to the Yjs `messages` map, it can inject that message into the agent loop as a normal inbound turn.
+
+What this means today:
+
+- **Messages are durable** (persist in the Yjs doc; readable via `ansible_read_messages`; visible in context injection if enabled).
+- **Auto-dispatch is best-effort realtime**:
+  - It triggers only for *new* messages observed after the dispatcher starts, not backlog that existed before the node came online.
+  - It does not currently retry dispatch after an error in the dispatch pipeline.
+
+If you want to "completely rely" on Ansible for inter-agent communication, treat **unread messages** as the source of truth. Use auto-dispatch for convenience, but keep a deterministic inbox loop (Architect-managed, or periodic polling).
+
+For a concrete protocol and improvement plan, see `docs/protocol.md`.
+
 ### 3. Bootstrap the Network
 
 1. **Start the backbone**: Restart OpenClaw on the VPS
@@ -193,6 +213,8 @@ In this mode, the operator agent should poll and respond using tools like:
 When one hemisphere sends a message, the ansible dispatcher automatically injects it into the receiving hemisphere's agent loop — just like a Telegram or Twitch message would. The agent processes it as a full turn and can reply, call tools, or delegate tasks.
 
 Replies are delivered back through the Yjs document automatically.
+
+Important: auto-dispatch triggers on observed *new additions* after startup. Backlog is durable (readable + injectable as context), but it may not trigger an immediate agent turn.
 
 ### Session Isolation
 
@@ -230,6 +252,24 @@ openclaw ansible bootstrap           # Initialize as first node
 openclaw ansible invite --tier edge  # Generate invite token
 openclaw ansible join --token <tok>  # Join with invite token
 ```
+
+## Updating (Maintainers + Users)
+
+### Maintainers (this repo)
+
+This plugin is typically installed from GitHub, so **`dist/` must be committed**.
+
+1. Make changes in `src/` and/or docs.
+2. Build: `npm ci && npm run build`
+3. Verify `dist/` changed as expected.
+4. Commit both `src/` and `dist/` (plus docs), then push.
+
+### Users (machines running OpenClaw)
+
+After updating the plugin:
+
+1. Update the plugin checkout (either via `openclaw plugins update ansible` if you have an install record, or by re-running `openclaw plugins install likesjx/openclaw-plugin-ansible`).
+2. Restart the gateway (`openclaw gateway restart`, or your supervisor).
 
 ## Troubleshooting
 
