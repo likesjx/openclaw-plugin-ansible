@@ -91,7 +91,14 @@ async function callGateway(
     throw new Error(json.error.message || JSON.stringify(json.error));
   }
 
-  return json.result ?? json;
+  // Newer gateways wrap tool results as an AgentToolResult:
+  //   { content: [...], details: {...} }
+  // Older gateways may return the raw object directly.
+  const result = json.result ?? json;
+  if (result && typeof result === "object" && "details" in result) {
+    return (result as any).details;
+  }
+  return result;
 }
 
 // ---------------------------------------------------------------------------
