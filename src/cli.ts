@@ -11,6 +11,7 @@
 
 import * as fs from "fs";
 import * as path from "path";
+import { execFileSync } from "child_process";
 import type { OpenClawPluginApi, CliProgram, CliCommand } from "./types.js";
 import type { AnsibleConfig } from "./schema.js";
 import { getNodeId } from "./service.js";
@@ -93,6 +94,69 @@ async function callGateway(
   return json.result ?? json;
 }
 
+// ---------------------------------------------------------------------------
+// Setup helpers (idempotent local provisioning)
+// ---------------------------------------------------------------------------
+
+function mkdirp(dir: string): void {
+  fs.mkdirSync(dir, { recursive: true });
+}
+
+function runCmd(bin: string, args: string[], opts?: { cwd?: string }): void {
+  execFileSync(bin, args, {
+    cwd: opts?.cwd,
+    stdio: "inherit",
+    env: process.env,
+  });
+}
+
+function ensureGitRepo(params: { dir: string; url: string; name: string }): void {
+  const { dir, url, name } = params;
+
+  if (!fs.existsSync(dir)) {
+    mkdirp(path.dirname(dir));
+    console.log(`- Cloning ${name}: ${url} -> ${dir}`);
+    runCmd("git", ["clone", url, dir]);
+    return;
+  }
+
+  const gitDir = path.join(dir, ".git");
+  if (!fs.existsSync(gitDir)) {
+    throw new Error(
+      `${name} exists at ${dir} but is not a git repo (missing .git). Move it aside or remove it.`,
+    );
+  }
+
+  console.log(`- Updating ${name}: ${dir}`);
+  runCmd("git", ["-C", dir, "fetch", "origin"]);
+  runCmd("git", ["-C", dir, "pull", "--ff-only"]);
+}
+
+function readJsonFile(filePath: string): any {
+  const raw = fs.readFileSync(filePath, "utf-8");
+  return JSON.parse(raw);
+}
+
+function writeJsonFile(filePath: string, obj: any): void {
+  const out = JSON.stringify(obj, null, 2) + "\n";
+  fs.writeFileSync(filePath, out, "utf-8");
+}
+
+function parseCsvOrRepeat(value: unknown): string[] {
+  if (typeof value !== "string") return [];
+  return value
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+function parseBool(value: unknown): boolean | undefined {
+  if (typeof value !== "string") return undefined;
+  if (value === "true") return true;
+  if (value === "false") return false;
+  return undefined;
+}
+
 export function registerAnsibleCli(
   api: OpenClawPluginApi,
   config: AnsibleConfig
@@ -100,6 +164,160 @@ export function registerAnsibleCli(
   api.registerCli?.(
     ({ program }: { program: CliProgram }) => {
       const ansible = program.command("ansible").description("Ansible coordination layer") as CliCommand;
+
+    // === ansible setup ===
+    ansible
+      .command("setup")
+      .description("Provision ansible plugin config + companion skill on this machine (idempotent)")
+      .option("--tier <tier>", "Node tier: backbone or edge")
+      .option("--backbone <wsUrl>", "Backbone peer WebSocket URL(s). Repeat or comma-separate.")
+      .option("--capability <cap>", "Capability to advertise (repeatable). Example: local-files, always-on")
+      .option("--inject-context <true|false>", "Enable/disable context injection")
+      .option("--inject-agent <id>", "Agent id to allow context injection for (repeatable).")
+      .option("--dispatch-incoming <true|false>", "Enable/disable auto-dispatch of inbound messages")
+      .option("--no-skill", "Skip installing/updating the companion skill repo")
+      .option("--no-restart", "Do not restart the gateway service after changes")
+      .action(async (...args: unknown[]) => {
+        const opts = (args[0] || {}) as {
+          tier?: string;
+          backbone?: string;
+          capability?: string;
+          injectContext?: string;
+          injectAgent?: string;
+          dispatchIncoming?: string;
+          skill?: boolean;
+          restart?: boolean;
+        };
+
+        const home = process.env.HOME || process.env.USERPROFILE;
+        if (!home) {
+          console.log("✗ Cannot resolve HOME; set $HOME and retry.");
+          return;
+        }
+
+        const openclawDir = path.join(home, ".openclaw");
+        const workspaceDir = path.join(openclawDir, "workspace");
+        const skillsDir = path.join(workspaceDir, "skills");
+        const configPath = process.env.OPENCLAW_CONFIG || path.join(openclawDir, "openclaw.json");
+
+        const requestedTier = opts.tier as "backbone" | "edge" | undefined;
+        const backbonePeers = parseCsvOrRepeat(opts.backbone);
+        const capabilities = parseCsvOrRepeat(opts.capability);
+        const injectContext = parseBool(opts.injectContext);
+        const dispatchIncoming = parseBool(opts.dispatchIncoming);
+        const injectAgents = parseCsvOrRepeat(opts.injectAgent);
+
+        if (!fs.existsSync(configPath)) {
+          console.log(`✗ Config not found at ${configPath}`);
+          console.log("  Run `openclaw gateway --dev` (dev) or create ~/.openclaw/openclaw.json first.");
+          return;
+        }
+
+        console.log("\n=== Ansible Setup ===\n");
+
+        // 1) Ensure companion skill installed
+        if (opts.skill !== false) {
+          try {
+            ensureGitRepo({
+              dir: path.join(skillsDir, "ansible"),
+              url: "https://github.com/likesjx/openclaw-skill-ansible.git",
+              name: "ansible skill",
+            });
+          } catch (err: any) {
+            console.log(`✗ Skill setup failed: ${String(err?.message || err)}`);
+            return;
+          }
+        } else {
+          console.log("- Skipping skill install/update (--no-skill)");
+        }
+
+        // 2) Patch config
+        let conf: any;
+        try {
+          conf = readJsonFile(configPath);
+        } catch (err: any) {
+          console.log(`✗ Failed to read config: ${String(err?.message || err)}`);
+          return;
+        }
+
+        conf.plugins = conf.plugins || {};
+        conf.plugins.entries = conf.plugins.entries || {};
+        conf.plugins.entries.ansible = conf.plugins.entries.ansible || { enabled: true, config: {} };
+        conf.plugins.entries.ansible.enabled = true;
+
+        const pluginCfg: any = conf.plugins.entries.ansible.config || {};
+
+        // Tier + backbone peers
+        const tier = requestedTier || pluginCfg.tier || config.tier;
+        if (!tier) {
+          console.log("✗ tier not set. Use: openclaw ansible setup --tier edge|backbone");
+          return;
+        }
+        pluginCfg.tier = tier;
+
+        if (tier === "edge") {
+          if (backbonePeers.length > 0) {
+            pluginCfg.backbonePeers = backbonePeers;
+          } else if (!Array.isArray(pluginCfg.backbonePeers) || pluginCfg.backbonePeers.length === 0) {
+            console.log("✗ edge nodes require --backbone ws://<host>:1235 (or backbonePeers already set in config).");
+            return;
+          }
+        }
+
+        if (capabilities.length > 0) {
+          // Merge + de-dupe
+          const merged = new Set<string>([...(pluginCfg.capabilities || []), ...capabilities].map(String));
+          pluginCfg.capabilities = Array.from(merged);
+        }
+
+        if (injectContext !== undefined) pluginCfg.injectContext = injectContext;
+        if (dispatchIncoming !== undefined) pluginCfg.dispatchIncoming = dispatchIncoming;
+
+        if (injectAgents.length > 0) {
+          const merged = new Set<string>([...(pluginCfg.injectContextAgents || []), ...injectAgents].map(String));
+          pluginCfg.injectContextAgents = Array.from(merged);
+        }
+
+        conf.plugins.entries.ansible.config = pluginCfg;
+
+        try {
+          writeJsonFile(configPath, conf);
+        } catch (err: any) {
+          console.log(`✗ Failed to write config: ${String(err?.message || err)}`);
+          return;
+        }
+
+        console.log(`✓ Updated config: ${configPath}`);
+        console.log(`  tier=${pluginCfg.tier}`);
+        if (pluginCfg.backbonePeers) console.log(`  backbonePeers=${JSON.stringify(pluginCfg.backbonePeers)}`);
+        if (pluginCfg.capabilities) console.log(`  capabilities=${JSON.stringify(pluginCfg.capabilities)}`);
+        if (pluginCfg.injectContext !== undefined) console.log(`  injectContext=${String(pluginCfg.injectContext)}`);
+        if (pluginCfg.injectContextAgents) console.log(`  injectContextAgents=${JSON.stringify(pluginCfg.injectContextAgents)}`);
+        if (pluginCfg.dispatchIncoming !== undefined) console.log(`  dispatchIncoming=${String(pluginCfg.dispatchIncoming)}`);
+
+        // 3) Restart gateway to pick up skill/config changes
+        if (opts.restart !== false) {
+          try {
+            console.log("\n- Restarting gateway...");
+            runCmd("openclaw", ["gateway", "restart"]);
+            console.log("✓ Gateway restarted");
+          } catch (err: any) {
+            console.log(`✗ Gateway restart failed: ${String(err?.message || err)}`);
+            console.log("  You can restart manually: openclaw gateway restart");
+            return;
+          }
+        } else {
+          console.log("\n- Skipping gateway restart (--no-restart)");
+        }
+
+        console.log("\nNext steps:");
+        if (pluginCfg.tier === "backbone") {
+          console.log("  openclaw ansible bootstrap");
+          console.log("  openclaw ansible invite --tier edge");
+        } else {
+          console.log("  openclaw ansible join --token <token-from-backbone>");
+        }
+      });
 
     // === ansible status ===
     ansible
