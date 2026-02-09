@@ -519,9 +519,15 @@ function setupAutoPersist(ctx: ServiceContext) {
  * Using nested Y.Maps means field updates (e.g. lastSeen) are in-place
  * mutations rather than full replacements, avoiding CRDT tombstone buildup.
  */
+function isYMapLike(value: unknown): value is Y.Map<unknown> {
+  return !!value && typeof value === "object" &&
+    typeof (value as any).get === "function" &&
+    typeof (value as any).set === "function";
+}
+
 function getOrCreatePulseMap(pulseRoot: Y.Map<unknown>, id: string): Y.Map<unknown> {
   let entry = pulseRoot.get(id);
-  if (!(entry instanceof Y.Map)) {
+  if (!isYMapLike(entry)) {
     const m = new Y.Map<unknown>();
     pulseRoot.set(id, m);
     entry = m;
@@ -530,26 +536,18 @@ function getOrCreatePulseMap(pulseRoot: Y.Map<unknown>, id: string): Y.Map<unkno
 }
 
 function startPulseHeartbeat(ctx: ServiceContext) {
-  let pulseMap: Y.Map<unknown> | null = null;
-
   const updatePulse = () => {
     if (!doc || !nodeId) return;
 
-    // Create the nested Y.Map once, then reuse it
-    if (!pulseMap) {
-      const pulse = doc.getMap("pulse");
-      const existing = pulse.get(nodeId);
-      if (existing instanceof Y.Map) {
-        pulseMap = existing as Y.Map<unknown>;
-      } else {
-        pulseMap = new Y.Map<unknown>();
-        pulseMap.set("status", "online");
-        pulseMap.set("version", "0.1.0");
-        pulse.set(nodeId, pulseMap);
-      }
-    }
+    const pulse = doc.getMap("pulse");
+    const pulseMap = getOrCreatePulseMap(pulse, nodeId);
 
-    // Only update lastSeen — single field mutation per heartbeat
+    // Always set status online on heartbeat. We set offline on shutdown; on restart
+    // we must flip back to online or presence will look "dead but ticking".
+    pulseMap.set("status", "online");
+    pulseMap.set("version", "0.1.0");
+
+    // Update lastSeen — single field mutation per heartbeat
     pulseMap.set("lastSeen", Date.now());
   };
 
