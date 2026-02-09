@@ -540,9 +540,18 @@ export function registerAnsibleTools(api, config) {
         description: "Get the current status of all Jane hemispheres, including who's online, what they're working on, and pending tasks.",
         parameters: {
             type: "object",
-            properties: {},
+            properties: {
+                /**
+                 * Consider a node "stale" if its lastSeen is older than this many seconds.
+                 * Stale nodes will never be reported as online/busy.
+                 */
+                staleAfterSeconds: {
+                    type: "number",
+                    description: "Mark nodes stale if lastSeen is older than this many seconds (default: 300).",
+                },
+            },
         },
-        async execute() {
+        async execute(_id, params) {
             try {
                 api.logger?.debug("Ansible: checking status");
                 const state = getAnsibleState();
@@ -551,6 +560,12 @@ export function registerAnsibleTools(api, config) {
                     api.logger?.warn("Ansible: status failed - not initialized");
                     return toolResult({ error: "Ansible not initialized" });
                 }
+                const now = Date.now();
+                const staleAfterSecondsRaw = params?.staleAfterSeconds;
+                const staleAfterSeconds = typeof staleAfterSecondsRaw === "number" && Number.isFinite(staleAfterSecondsRaw)
+                    ? Math.max(30, Math.floor(staleAfterSecondsRaw))
+                    : 300;
+                const staleAfterMs = staleAfterSeconds * 1000;
                 const nodes = [];
                 if (state.pulse) {
                     for (const [id, pulse] of state.pulse.entries()) {
@@ -561,11 +576,19 @@ export function registerAnsibleTools(api, config) {
                         const p = pulse instanceof Map || pulse.get
                             ? { status: pulse.get("status"), lastSeen: pulse.get("lastSeen"), currentTask: pulse.get("currentTask") }
                             : pulse;
+                        const lastSeenMs = typeof p.lastSeen === "number" && Number.isFinite(p.lastSeen) ? p.lastSeen : now;
+                        const ageMs = Math.max(0, now - lastSeenMs);
+                        const stale = ageMs > staleAfterMs;
+                        // Never claim "online/busy" if lastSeen is stale.
+                        const rawStatus = (p.status || "unknown");
+                        const normalizedStatus = stale && (rawStatus === "online" || rawStatus === "busy") ? "offline" : rawStatus;
                         nodes.push({
                             id,
-                            status: p.status || "unknown",
-                            lastSeen: new Date(p.lastSeen || Date.now()).toISOString(),
+                            status: normalizedStatus,
+                            lastSeen: new Date(lastSeenMs).toISOString(),
                             currentFocus: context?.currentFocus,
+                            stale: stale ? true : undefined,
+                            ageSeconds: Math.floor(ageMs / 1000),
                         });
                     }
                 }
@@ -577,13 +600,24 @@ export function registerAnsibleTools(api, config) {
                     assignedTo: t.assignedTo || "anyone",
                 }));
                 const unreadCount = (state.messages ? Array.from(state.messages.values()) : [])
-                    .filter((m) => m && m.from !== myId && m.readBy && !m.readBy.includes(myId))
-                    .length;
+                    .filter((m) => {
+                    if (!m)
+                        return false;
+                    if (m.from === myId)
+                        return false;
+                    // Only count messages addressed to me or broadcast (matches ansible_read_messages).
+                    if (m.to && m.to !== myId)
+                        return false;
+                    if (!Array.isArray(m.readBy))
+                        return false;
+                    return !m.readBy.includes(myId);
+                }).length;
                 return toolResult({
                     myId,
                     nodes,
                     pendingTasks,
                     unreadMessages: unreadCount,
+                    staleAfterSeconds,
                 });
             }
             catch (err) {
