@@ -15,9 +15,31 @@
  */
 import type { OpenClawPluginApi, ServiceContext } from "./types.js";
 import type { AnsibleConfig } from "./schema.js";
+declare let lastStatus: {
+    at: number;
+    rootDir: string;
+    everySeconds: number;
+    staleSeconds: number;
+    found: number;
+    removed: number;
+    kept: number;
+    errors: number;
+} | null;
+declare let totals: {
+    runs: number;
+    found: number;
+    removed: number;
+    kept: number;
+    errors: number;
+};
+export declare function getLockSweepStatus(): {
+    lastStatus: typeof lastStatus;
+    totals: typeof totals;
+};
 export declare function createLockSweepService(_api: OpenClawPluginApi, config: AnsibleConfig): {
     id: string;
     start(ctx: ServiceContext): Promise<void>;
     stop(ctx: ServiceContext): Promise<void>;
 };
+export {};
 //# sourceMappingURL=lock-sweep.d.ts.map

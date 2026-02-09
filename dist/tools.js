@@ -7,6 +7,7 @@ import { randomUUID } from "crypto";
 import { VALIDATION_LIMITS } from "./schema.js";
 import { getDoc, getNodeId, getAnsibleState } from "./service.js";
 import { isNodeAuthorized } from "./auth.js";
+import { getLockSweepStatus } from "./lock-sweep.js";
 /**
  * Wrap a tool result in the AgentToolResult format expected by pi-agent-core.
  * Tools must return { content: [{type: "text", text: "..."}], details: T }
@@ -81,6 +82,28 @@ function notifyTaskOwner(doc, fromNodeId, task, payload) {
     return messageId;
 }
 export function registerAnsibleTools(api, config) {
+    // === ansible_lock_sweep_status ===
+    api.registerTool({
+        name: "ansible_lock_sweep_status",
+        label: "Ansible Lock Sweep Status",
+        description: "Get the per-gateway session lock sweeper status (last run + totals). Helps diagnose stuck 'session file locked' issues.",
+        parameters: {
+            type: "object",
+            properties: {},
+        },
+        async execute() {
+            const enabled = config.lockSweep?.enabled ?? true;
+            const everySeconds = Math.max(30, Math.floor(config.lockSweep?.everySeconds ?? 60));
+            const staleSeconds = Math.max(30, Math.floor(config.lockSweep?.staleSeconds ?? 300));
+            const status = getLockSweepStatus();
+            return toolResult({
+                enabled,
+                config: { everySeconds, staleSeconds },
+                lastStatus: status.lastStatus,
+                totals: status.totals,
+            });
+        },
+    });
     // === ansible_get_coordination ===
     api.registerTool({
         name: "ansible_get_coordination",

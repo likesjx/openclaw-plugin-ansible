@@ -20,6 +20,31 @@ import type { OpenClawPluginApi, ServiceContext } from "./types.js";
 import type { AnsibleConfig } from "./schema.js";
 
 let timer: ReturnType<typeof setInterval> | null = null;
+let lastStatus: {
+  at: number;
+  rootDir: string;
+  everySeconds: number;
+  staleSeconds: number;
+  found: number;
+  removed: number;
+  kept: number;
+  errors: number;
+} | null = null;
+
+let totals = {
+  runs: 0,
+  found: 0,
+  removed: 0,
+  kept: 0,
+  errors: 0,
+};
+
+export function getLockSweepStatus(): {
+  lastStatus: typeof lastStatus;
+  totals: typeof totals;
+} {
+  return { lastStatus, totals };
+}
 
 function isPidRunning(pid: number): boolean {
   if (!Number.isFinite(pid) || pid <= 0) return false;
@@ -155,6 +180,22 @@ export function createLockSweepService(
       const runOnce = async () => {
         try {
           const res = await sweepLocks({ ctx, rootDir, staleSeconds });
+          totals.runs += 1;
+          totals.found += res.found;
+          totals.removed += res.removed;
+          totals.kept += res.kept;
+          totals.errors += res.errors;
+
+          lastStatus = {
+            at: Date.now(),
+            rootDir,
+            everySeconds,
+            staleSeconds,
+            found: res.found,
+            removed: res.removed,
+            kept: res.kept,
+            errors: res.errors,
+          };
           if (res.removed > 0 || res.errors > 0) {
             ctx.logger.warn(`lock-sweep: done found=${res.found} removed=${res.removed} kept=${res.kept} errors=${res.errors}`);
           } else {
