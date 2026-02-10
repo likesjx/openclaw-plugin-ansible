@@ -102,12 +102,23 @@ Shared config lives in the Yjs `coordination` map:
 - `coordinator`: node id (string)
 - `sweepEverySeconds`: integer
 - `pref:<nodeId>`: per-node preferences (`desiredCoordinator`, `desiredSweepEverySeconds`)
+- Retention / roll-off (coordinator-only):
+  - `retentionClosedTaskSeconds` (default: 604800 = 7 days)
+  - `retentionPruneEverySeconds` (default: 86400 = daily)
+  - `retentionLastPruneAt` (ms epoch; informational)
 
 Tools:
 
 - `ansible_get_coordination`
 - `ansible_set_coordination_preference`
 - `ansible_set_coordination` (requires `confirmLastResort=true` when switching coordinators)
+- `ansible_set_retention` (set closed-task roll-off policy)
+
+CLI:
+
+```bash
+openclaw ansible retention set --closed-days 7 --every-hours 24
+```
 
 ### Initial Policy (What We’re Doing Now)
 

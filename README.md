@@ -305,7 +305,7 @@ After updating the plugin:
 
 ## Architecture
 
-See [docs/architecture.md](docs/architecture.md) for detailed technical architecture.
+See [docs/architecture.md](docs/architecture.md) and [docs/openclaw-integration.md](docs/openclaw-integration.md) for detailed technical architecture.
 
 ## License
 

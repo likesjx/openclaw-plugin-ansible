@@ -33,6 +33,8 @@ Registers all plugin components with the OpenClaw plugin API:
 - Hooks (before_agent_start context injection)
 - CLI commands
 - Message dispatcher
+- Per-gateway lock sweeper service
+- Coordinator-only retention / roll-off service
 
 ### Sync Service (`src/service.ts`)
 
@@ -55,6 +57,12 @@ Observes the Yjs messages map for new inbound messages and dispatches them into 
 7. Deliver callback writes the reply as a new Yjs message
 8. Mark the original message as read
 
+Dispatcher also supports:
+
+- reconnect reconciliation (on `sync=true`) to scan backlog deterministically
+- per-node delivery state (`delivery[receiver]`) to avoid duplicates
+- retries with exponential backoff for transient dispatch failures
+
 ### Hooks (`src/hooks.ts`)
 
 Registers a `before_agent_start` hook that injects shared ansible context into every agent prompt:
@@ -66,6 +74,21 @@ Registers a `before_agent_start` hook that injects shared ansible context into e
 ### Tools (`src/tools.ts`)
 
 Agent-facing tools for inter-hemisphere coordination. Registered via `api.registerTool()`. All tools operate on the shared Yjs document.
+
+### Lock Sweeper (`src/lock-sweep.ts`)
+
+Per-gateway reliability guard: periodically removes stale session `.jsonl.lock` files so a crashed/aborted run cannot permanently wedge future turns.
+
+### Retention / Roll-Off (`src/retention.ts`)
+
+Coordinator-only service that prunes old closed tasks to keep the shared state trustworthy.
+
+Defaults:
+
+- runs daily
+- removes tasks with status `completed` or `failed` once older than 7 days
+
+Configuration is stored in the shared `coordination` map and can be updated via the `ansible_set_retention` tool (or `openclaw ansible retention set`).
 
 ### Auth (`src/auth.ts`)
 
