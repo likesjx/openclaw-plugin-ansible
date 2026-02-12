@@ -4,6 +4,8 @@
 
 - **[architecture.md](architecture.md)** — System overview, component descriptions, data flow diagrams, port architecture, session key strategy, and the OpenClaw plugin API surface
 - **[openclaw-integration.md](openclaw-integration.md)** — How the ansible plugin + companion skill integrate with OpenClaw (one-page mental model)
+- **[delegation-directory.md](delegation-directory.md)** — Delegation table standard for `IDENTITY.md`, coordinator distribution protocol, ACK model, and SLA enforcement rules
+- **[identity-delegation-template.md](identity-delegation-template.md)** — Copy/paste template section for each agent `IDENTITY.md`
 - **[protocol.md](protocol.md)** — Inter-agent messaging conventions, delivery semantics, current limitations, and the concrete reliability improvement plan
 - **[setup.md](setup.md)** — Practical setup and operations guide (new agent, new gateway, coordinator sweep)
 

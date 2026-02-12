@@ -119,6 +119,17 @@ The coordinator is expected to:
 - detect and close operational loops (stuck tasks, undelivered items)
 - keep reporting non-noisy (only actionable DEGRADED events)
 - perform retention roll-off (daily prune closed tasks older than TTL)
+- publish and enforce Delegation Directory policy (versioned + ACKed)
+
+### Delegation Directory (Identity.md Distribution)
+
+Delegation should be controlled by a versioned policy:
+
+- canonical: shared `coordination` state (`delegationPolicyVersion`, checksum, markdown)
+- published: each agent `IDENTITY.md` section `## Delegation Directory`
+- transport: coordinator sends policy update messages and records ACKs
+
+This ensures every agent delegates with the same routing/SLA rules and gives you a clear audit trail when policy changes.
 
 ### Retention / Roll-Off
 
@@ -154,4 +165,3 @@ Therefore, for this plugin:
 - `dist/` is committed build output used by OpenClaw at runtime
 
 Maintainers must commit both when changing code.
-

@@ -149,3 +149,19 @@ This directory is what every listener uses to decide:
 - "who should handle this message/task"
 - "should I self-handle vs delegate"
 - "who do I notify when I’m done"
+
+Implemented documentation standard:
+
+- `docs/delegation-directory.md`
+- `docs/identity-delegation-template.md`
+
+### Rollout Checklist (All Agents)
+
+1. Add `## Delegation Directory` section to each agent `IDENTITY.md` from template.
+2. Coordinator publishes `delegationPolicyVersion` + `delegationPolicyChecksum` in shared state.
+3. Coordinator sends `policy_update` messages to each active agent.
+4. Each agent applies update and replies `policy_ack` (same version/checksum).
+5. Coordinator sweep flags only actionable exceptions:
+   - missing ACK after threshold
+   - checksum mismatch
+   - invalid routing row
