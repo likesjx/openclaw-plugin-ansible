@@ -3,7 +3,7 @@
  *
  * Tools available to the agent for inter-hemisphere coordination.
  */
-import { randomUUID } from "crypto";
+import { createHash, randomUUID } from "crypto";
 import { VALIDATION_LIMITS } from "./schema.js";
 import { getDoc, getNodeId, getAnsibleState } from "./service.js";
 import { isNodeAuthorized } from "./auth.js";
@@ -53,9 +53,37 @@ function readCoordinationState(doc) {
         retentionClosedTaskSeconds: m.get("retentionClosedTaskSeconds"),
         retentionPruneEverySeconds: m.get("retentionPruneEverySeconds"),
         retentionLastPruneAt: m.get("retentionLastPruneAt"),
+        delegationPolicyVersion: m.get("delegationPolicyVersion"),
+        delegationPolicyChecksum: m.get("delegationPolicyChecksum"),
+        delegationPolicyUpdatedAt: m.get("delegationPolicyUpdatedAt"),
+        delegationPolicyUpdatedBy: m.get("delegationPolicyUpdatedBy"),
         updatedAt: m.get("updatedAt"),
         updatedBy: m.get("updatedBy"),
     };
+}
+function computeSha256(text) {
+    return `sha256:${createHash("sha256").update(text).digest("hex")}`;
+}
+function readDelegationAcks(m) {
+    const out = {};
+    for (const [k, v] of m.entries()) {
+        const key = String(k);
+        if (!key.startsWith("delegationAck:"))
+            continue;
+        const parts = key.split(":");
+        if (parts.length < 3)
+            continue;
+        const agentId = parts[1];
+        const field = parts[2];
+        out[agentId] = out[agentId] || {};
+        if (field === "version")
+            out[agentId].version = typeof v === "string" ? v : undefined;
+        if (field === "checksum")
+            out[agentId].checksum = typeof v === "string" ? v : undefined;
+        if (field === "at")
+            out[agentId].at = typeof v === "number" ? v : undefined;
+    }
+    return out;
 }
 function notifyTaskOwner(doc, fromNodeId, task, payload) {
     if (!doc)
@@ -382,6 +410,194 @@ export function registerAnsibleTools(api, config) {
                     retentionPruneEverySeconds: pruneEverySeconds,
                     retentionUpdatedAt: m.get("retentionUpdatedAt"),
                     retentionUpdatedBy: m.get("retentionUpdatedBy"),
+                });
+            }
+            catch (err) {
+                return toolResult({ error: err.message });
+            }
+        },
+    });
+    // === ansible_get_delegation_policy ===
+    api.registerTool({
+        name: "ansible_get_delegation_policy",
+        label: "Ansible Get Delegation Policy",
+        description: "Read the shared delegation policy (version/checksum/markdown) and ack status by agent.",
+        parameters: {
+            type: "object",
+            properties: {
+                includeAcks: {
+                    type: "boolean",
+                    description: "Include delegation ACK records by agent (default true).",
+                },
+            },
+        },
+        async execute(_id, params) {
+            const doc = getDoc();
+            const nodeId = getNodeId();
+            if (!doc || !nodeId)
+                return toolResult({ error: "Ansible not initialized" });
+            try {
+                requireAuth(nodeId);
+                const m = getCoordinationMap(doc);
+                if (!m)
+                    return toolResult({ error: "Coordination map not initialized" });
+                const includeAcks = params.includeAcks !== false;
+                const out = {
+                    delegationPolicyVersion: m.get("delegationPolicyVersion"),
+                    delegationPolicyChecksum: m.get("delegationPolicyChecksum"),
+                    delegationPolicyMarkdown: m.get("delegationPolicyMarkdown"),
+                    delegationPolicyUpdatedAt: m.get("delegationPolicyUpdatedAt"),
+                    delegationPolicyUpdatedBy: m.get("delegationPolicyUpdatedBy"),
+                };
+                if (includeAcks)
+                    out.acks = readDelegationAcks(m);
+                return toolResult(out);
+            }
+            catch (err) {
+                return toolResult({ error: err.message });
+            }
+        },
+    });
+    // === ansible_set_delegation_policy ===
+    api.registerTool({
+        name: "ansible_set_delegation_policy",
+        label: "Ansible Set Delegation Policy",
+        description: "Coordinator-only: publish delegation policy markdown + version/checksum and optionally send policy update messages to target agents.",
+        parameters: {
+            type: "object",
+            properties: {
+                policyMarkdown: {
+                    type: "string",
+                    description: "Canonical policy markdown (table + metadata).",
+                },
+                version: {
+                    type: "string",
+                    description: "Policy version string (e.g., 2026-02-12.1).",
+                },
+                checksum: {
+                    type: "string",
+                    description: "Optional checksum; if omitted, computed as sha256(policyMarkdown).",
+                },
+                notifyAgents: {
+                    type: "array",
+                    items: { type: "string" },
+                    description: "Optional list of agent/node ids to notify with a policy_update message.",
+                },
+            },
+            required: ["policyMarkdown", "version"],
+        },
+        async execute(_id, params) {
+            const doc = getDoc();
+            const nodeId = getNodeId();
+            if (!doc || !nodeId)
+                return toolResult({ error: "Ansible not initialized" });
+            try {
+                requireAuth(nodeId);
+                const m = getCoordinationMap(doc);
+                if (!m)
+                    return toolResult({ error: "Coordination map not initialized" });
+                const coordinator = m.get("coordinator");
+                if (!coordinator)
+                    return toolResult({ error: "Coordinator not configured. Set with ansible_set_coordination first." });
+                if (coordinator !== nodeId)
+                    return toolResult({ error: `Only coordinator (${coordinator}) can publish delegation policy` });
+                const policyMarkdown = validateString(params.policyMarkdown, 200_000, "policyMarkdown");
+                const version = validateString(params.version, 120, "version");
+                const checksum = params.checksum
+                    ? validateString(params.checksum, 200, "checksum")
+                    : computeSha256(policyMarkdown);
+                m.set("delegationPolicyVersion", version);
+                m.set("delegationPolicyChecksum", checksum);
+                m.set("delegationPolicyMarkdown", policyMarkdown);
+                m.set("delegationPolicyUpdatedAt", Date.now());
+                m.set("delegationPolicyUpdatedBy", nodeId);
+                const notified = [];
+                const rawNotify = Array.isArray(params.notifyAgents) ? params.notifyAgents : [];
+                const notifyAgents = rawNotify
+                    .filter((x) => typeof x === "string" && String(x).trim().length > 0)
+                    .map((x) => String(x).trim());
+                if (notifyAgents.length > 0) {
+                    const messages = doc.getMap("messages");
+                    for (const to of notifyAgents) {
+                        const message = {
+                            id: randomUUID(),
+                            from: nodeId,
+                            to,
+                            timestamp: Date.now(),
+                            readBy: [nodeId],
+                            content: [
+                                "kind: policy_update",
+                                `policyVersion: ${version}`,
+                                `policyChecksum: ${checksum}`,
+                                "",
+                                "Apply this Delegation Directory policy to your IDENTITY.md and ACK with ansible_ack_delegation_policy.",
+                            ].join("\n"),
+                        };
+                        messages.set(message.id, message);
+                        notified.push(to);
+                    }
+                }
+                return toolResult({
+                    success: true,
+                    delegationPolicyVersion: version,
+                    delegationPolicyChecksum: checksum,
+                    delegationPolicyUpdatedAt: m.get("delegationPolicyUpdatedAt"),
+                    delegationPolicyUpdatedBy: m.get("delegationPolicyUpdatedBy"),
+                    notifiedAgents: notified,
+                });
+            }
+            catch (err) {
+                return toolResult({ error: err.message });
+            }
+        },
+    });
+    // === ansible_ack_delegation_policy ===
+    api.registerTool({
+        name: "ansible_ack_delegation_policy",
+        label: "Ansible Ack Delegation Policy",
+        description: "Record this agent's acknowledgement of the current (or provided) delegation policy version/checksum.",
+        parameters: {
+            type: "object",
+            properties: {
+                version: {
+                    type: "string",
+                    description: "Acknowledged policy version. Defaults to current shared version.",
+                },
+                checksum: {
+                    type: "string",
+                    description: "Acknowledged policy checksum. Defaults to current shared checksum.",
+                },
+            },
+        },
+        async execute(_id, params) {
+            const doc = getDoc();
+            const nodeId = getNodeId();
+            if (!doc || !nodeId)
+                return toolResult({ error: "Ansible not initialized" });
+            try {
+                requireAuth(nodeId);
+                const m = getCoordinationMap(doc);
+                if (!m)
+                    return toolResult({ error: "Coordination map not initialized" });
+                const version = params.version
+                    ? validateString(params.version, 120, "version")
+                    : m.get("delegationPolicyVersion");
+                const checksum = params.checksum
+                    ? validateString(params.checksum, 200, "checksum")
+                    : m.get("delegationPolicyChecksum");
+                if (!version || !checksum) {
+                    return toolResult({ error: "No shared delegation policy is published yet" });
+                }
+                const now = Date.now();
+                m.set(`delegationAck:${nodeId}:version`, version);
+                m.set(`delegationAck:${nodeId}:checksum`, checksum);
+                m.set(`delegationAck:${nodeId}:at`, now);
+                return toolResult({
+                    success: true,
+                    agentId: nodeId,
+                    version,
+                    checksum,
+                    ackAt: now,
                 });
             }
             catch (err) {

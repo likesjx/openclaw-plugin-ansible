@@ -246,6 +246,9 @@ All state is synchronized via Yjs CRDTs:
 | `ansible_set_coordination_preference` | Record your preferred coordinator/cadence (per-node preference) |
 | `ansible_set_coordination` | Set coordinator configuration (initial setup or last-resort failover) |
 | `ansible_set_retention` | Configure coordinator roll-off (daily prune of closed tasks by TTL) |
+| `ansible_get_delegation_policy` | Read shared delegation policy + per-agent ACK records |
+| `ansible_set_delegation_policy` | Coordinator-only publish/update delegation policy (+ optional notify) |
+| `ansible_ack_delegation_policy` | Record this agent's ACK for the current policy version/checksum |
 
 ## CLI Commands
 
@@ -255,6 +258,9 @@ openclaw ansible nodes               # List authorized nodes
 openclaw ansible tasks               # View shared task list
 openclaw ansible send --message "hi" # Send a manual message
 openclaw ansible retention set       # Configure closed-task roll-off (coordinator-only service)
+openclaw ansible delegation show     # Show policy + ACK status
+openclaw ansible delegation set      # Publish policy from markdown file (coordinator-only)
+openclaw ansible delegation ack      # ACK current policy
 openclaw ansible bootstrap           # Initialize as first node
 openclaw ansible invite --tier edge  # Generate invite token
 openclaw ansible join --token <tok>  # Join with invite token
@@ -305,7 +311,7 @@ After updating the plugin:
 
 ## Architecture
 
-See [docs/architecture.md](docs/architecture.md) and [docs/openclaw-integration.md](docs/openclaw-integration.md) for detailed technical architecture.
+See [docs/architecture.md](docs/architecture.md) for detailed technical architecture.
 
 ## License
 

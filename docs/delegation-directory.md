@@ -102,6 +102,12 @@ Per-agent ACK keys:
    - checksum/version mismatch
    - invalid table row detected
 
+Implemented tooling:
+
+- `ansible_set_delegation_policy` (coordinator-only publish)
+- `ansible_get_delegation_policy` (inspect policy + acks)
+- `ansible_ack_delegation_policy` (agent ACK writeback)
+
 ## Coordinator Sweep Validation Rules
 
 Run during normal sweep cadence:
@@ -139,4 +145,3 @@ Only report:
 3. Coordinator publishes version `YYYY-MM-DD.N`.
 4. Verify ACKs from all active agents.
 5. Start strict sweep enforcement for SLA and close-the-loop.
-

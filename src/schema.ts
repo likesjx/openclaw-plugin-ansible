@@ -258,6 +258,14 @@ export interface CoordinationPreference {
  * - retentionLastPruneAt: number (ms epoch)
  * - retentionUpdatedAt: number (ms epoch)
  * - retentionUpdatedBy: TailscaleId
+ * - delegationPolicyVersion: string
+ * - delegationPolicyChecksum: string
+ * - delegationPolicyMarkdown: string
+ * - delegationPolicyUpdatedAt: number (ms epoch)
+ * - delegationPolicyUpdatedBy: TailscaleId
+ * - delegationAck:<nodeId>:version: string
+ * - delegationAck:<nodeId>:checksum: string
+ * - delegationAck:<nodeId>:at: number (ms epoch)
  * - pref:<nodeId>: CoordinationPreference
  */
 export interface CoordinationState {
@@ -265,6 +273,11 @@ export interface CoordinationState {
   sweepEverySeconds?: number;
   updatedAt?: number;
   updatedBy?: TailscaleId;
+  delegationPolicyVersion?: string;
+  delegationPolicyChecksum?: string;
+  delegationPolicyMarkdown?: string;
+  delegationPolicyUpdatedAt?: number;
+  delegationPolicyUpdatedBy?: TailscaleId;
 }
 
 // ============================================================================
