@@ -688,16 +688,28 @@ export function registerAnsibleCli(
     // === ansible messages ===
     ansible
       .command("messages")
-      .description("Read messages from other hemispheres")
+      .description("Read messages from other agents")
       .option("-a, --all", "Show all messages (not just unread)")
-      .option("-f, --from <nodeId>", "Filter by sender")
+      .option("-f, --from <agentId>", "Filter by sender agent")
+      .option("--agent <agentId>", "Read as this agent (for external agents polling their inbox)")
+      .option("--conversation-id <id>", "Filter by conversation ID")
       .option("-n, --limit <count>", "Max messages to show", "20")
+      .option("--format <fmt>", "Output format: text (default) or json")
       .action(async (...args: unknown[]) => {
-        const opts = (args[0] || {}) as { all?: boolean; from?: string; limit?: string };
+        const opts = (args[0] || {}) as {
+          all?: boolean;
+          from?: string;
+          agent?: string;
+          conversationId?: string;
+          limit?: string;
+          format?: string;
+        };
 
         const toolArgs: Record<string, unknown> = {};
         if (opts.all) toolArgs.all = true;
         if (opts.from) toolArgs.from = opts.from;
+        if (opts.agent) toolArgs.agent = opts.agent;
+        if (opts.conversationId) toolArgs.conversation_id = opts.conversationId;
         if (opts.limit) toolArgs.limit = parseInt(opts.limit, 10);
 
         let result: any;
@@ -713,6 +725,11 @@ export function registerAnsibleCli(
           return;
         }
 
+        if (opts.format === "json") {
+          console.log(JSON.stringify(result, null, 2));
+          return;
+        }
+
         const messages = result.messages || [];
         console.log(`\n=== Messages (${messages.length} of ${result.total}) ===\n`);
 
@@ -723,10 +740,14 @@ export function registerAnsibleCli(
 
         for (const msg of messages) {
           const unread = msg.unread ? " [UNREAD]" : "";
-          const to = msg.to ? ` → ${msg.to}` : " (broadcast)";
-          console.log(`${msg.from}${to}${unread}`);
+          const to = msg.to?.length ? ` → ${msg.to.join(", ")}` : " (broadcast)";
+          const meta = msg.metadata ? ` [${msg.metadata.kind || ""}${msg.metadata.conversation_id ? ` conv:${msg.metadata.conversation_id}` : ""}]` : "";
+          console.log(`${msg.from}${to}${unread}${meta}`);
           console.log(`  ${new Date(msg.timestamp).toLocaleString()}`);
           console.log(`  ${msg.content}`);
+          if (msg.metadata && Object.keys(msg.metadata).length > 0) {
+            console.log(`  metadata: ${JSON.stringify(msg.metadata)}`);
+          }
           console.log();
         }
       });
@@ -822,21 +843,60 @@ export function registerAnsibleCli(
     // === ansible send ===
     ansible
       .command("send")
-      .description("Send a message to other hemispheres")
+      .description("Send a message to one or more agents (broadcast if no --to given)")
       .option("-m, --message <message>", "Message content")
-      .option("-t, --to <nodeId>", "Send to specific node (broadcast if omitted)")
+      .option("-t, --to <agentId>", "Target agent (repeatable for multiple recipients)")
+      .option("--from <agentId>", "Send as this agent (required for external agents)")
+      .option("--conversation-id <id>", "Conversation thread ID (required for threading)")
+      .option("--kind <kind>", "Message kind: proposal, status, result, alert, decision")
+      .option("--metadata <json>", "Additional metadata as JSON object")
+      .option("--broadcast", "Explicitly broadcast to all agents (same as omitting --to)")
       .action(async (...args: unknown[]) => {
-        const opts = (args[0] || {}) as { message?: string; to?: string };
+        const opts = (args[0] || {}) as {
+          message?: string;
+          to?: string | string[];
+          from?: string;
+          conversationId?: string;
+          kind?: string;
+          metadata?: string;
+          broadcast?: boolean;
+        };
 
         if (!opts.message) {
           console.log("✗ Message required. Use: openclaw ansible send --message 'your message'");
           return;
         }
 
-        const toolArgs: Record<string, unknown> = { content: opts.message };
-        if (opts.to) {
-          toolArgs.to = opts.to;
+        // Build to_agents array (--to is repeatable)
+        const toAgents: string[] = opts.broadcast
+          ? []
+          : Array.isArray(opts.to)
+          ? opts.to
+          : opts.to
+          ? [opts.to]
+          : [];
+
+        // Build metadata
+        let extraMeta: Record<string, unknown> = {};
+        if (opts.metadata) {
+          try {
+            extraMeta = JSON.parse(opts.metadata);
+          } catch {
+            console.log("✗ --metadata must be valid JSON");
+            return;
+          }
         }
+
+        const metadata: Record<string, unknown> = {
+          ...(opts.conversationId ? { conversation_id: opts.conversationId } : {}),
+          ...(opts.kind ? { kind: opts.kind } : {}),
+          ...extraMeta,
+        };
+
+        const toolArgs: Record<string, unknown> = { content: opts.message };
+        if (toAgents.length > 0) toolArgs.to = toAgents.join(",");
+        if (opts.from) toolArgs.from_agent = opts.from;
+        if (Object.keys(metadata).length > 0) toolArgs.metadata = metadata;
 
         let result: any;
         try {
@@ -851,10 +911,67 @@ export function registerAnsibleCli(
           return;
         }
 
-        if (opts.to) {
-          console.log(`✓ Message sent to ${opts.to}`);
+        if (toAgents.length > 0) {
+          console.log(`✓ Message sent to ${toAgents.join(", ")}`);
         } else {
-          console.log("✓ Message broadcast to all hemispheres");
+          console.log("✓ Message broadcast to all agents");
+        }
+      });
+
+    // === ansible agent ===
+    const agentCmd = ansible.command("agent").description("Manage agent registry");
+
+    agentCmd
+      .command("register")
+      .description("Register an external agent in the ansible network")
+      .option("--id <agentId>", "Agent ID (e.g., claude, codex)")
+      .option("--name <name>", "Display name (e.g., Claude)")
+      .action(async (...args: unknown[]) => {
+        const opts = (args[0] || {}) as { id?: string; name?: string };
+
+        if (!opts.id) {
+          console.log("✗ Agent ID required. Use: openclaw ansible agent register --id claude");
+          return;
+        }
+
+        const result = await callGateway("ansible_register_agent", {
+          agent_id: opts.id,
+          name: opts.name,
+          type: "external",
+        });
+
+        if ((result as any).error) {
+          console.log(`✗ ${(result as any).error}`);
+          return;
+        }
+
+        console.log(`✓ Agent "${opts.id}" registered as external${opts.name ? ` (${opts.name})` : ""}`);
+        console.log(`  Pull inbox: openclaw ansible messages --agent ${opts.id} --unread`);
+        console.log(`  Send:       openclaw ansible send --from ${opts.id} --to <target> --message "..."`);
+      });
+
+    agentCmd
+      .command("list")
+      .description("List all registered agents")
+      .action(async () => {
+        const result = await callGateway("ansible_list_agents", {});
+
+        if ((result as any).error) {
+          console.log(`✗ ${(result as any).error}`);
+          return;
+        }
+
+        const agents = (result as any).agents || [];
+        console.log(`\n=== Registered Agents (${agents.length}) ===\n`);
+
+        if (agents.length === 0) {
+          console.log("No agents registered.");
+          return;
+        }
+
+        for (const a of agents) {
+          const location = a.gateway ? `gateway:${a.gateway}` : "external/cli";
+          console.log(`  ${a.id} [${a.type}] — ${a.name || a.id} (${location})`);
         }
       });
     },

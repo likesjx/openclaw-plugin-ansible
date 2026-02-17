@@ -10,7 +10,7 @@
 
 import { randomUUID } from "crypto";
 import type { OpenClawPluginApi } from "./types.js";
-import type { AnsibleConfig, DeliveryRecord, Message, Task, TailscaleId } from "./schema.js";
+import type { AnsibleConfig, DeliveryRecord, Message, Task, TailscaleId, AgentId } from "./schema.js";
 import { getDoc, getNodeId, onSync } from "./service.js";
 
 const RETRY_BASE_MS = 2_000;
@@ -37,8 +37,8 @@ function getDelivery(item: { delivery?: Record<string, DeliveryRecord> }, myId: 
 function isDeliveredMessage(msg: Message, myId: string): boolean {
   const d = getDelivery(msg, myId);
   if (d?.state === "delivered") return true;
-  // Back-compat: older versions used readBy only.
-  return Array.isArray(msg.readBy) && msg.readBy.includes(myId);
+  // Back-compat: older versions used readBy_agents only.
+  return Array.isArray(msg.readBy_agents) && msg.readBy_agents.includes(myId);
 }
 
 function isDeliveredTask(task: Task, myId: string): boolean {
@@ -115,8 +115,8 @@ export function startMessageDispatcher(api: OpenClawPluginApi, config: AnsibleCo
     for (const [id, value] of msgs.entries()) {
       const msg = value as Message;
       if (!msg || typeof msg !== "object") continue;
-      if (msg.from === myId) continue;
-      if (msg.to && msg.to !== myId) continue;
+      if (msg.from_agent === myId) continue;
+      if (msg.to_agents?.length && !msg.to_agents.includes(myId)) continue;
       if (isDeliveredMessage(msg, myId)) continue;
       // If a retry is already scheduled for this message, wait for the timer.
       if (scheduled.has(`msg:${id}`)) continue;
@@ -134,10 +134,10 @@ export function startMessageDispatcher(api: OpenClawPluginApi, config: AnsibleCo
     for (const [id, value] of tasks.entries()) {
       const task = value as Task;
       if (!task || typeof task !== "object") continue;
-      if (task.createdBy === myId) continue;
-      if (task.assignedTo !== myId) continue; // only explicit assignments
+      if (task.createdBy_agent === myId) continue;
+      if (task.assignedTo_agent !== myId) continue; // only explicit assignments
       if (task.status !== "pending" && task.status !== "claimed" && task.status !== "in_progress") continue;
-      if (task.claimedBy && task.claimedBy !== myId) continue;
+      if (task.claimedBy_agent && task.claimedBy_agent !== myId) continue;
       if (isDeliveredTask(task, myId)) continue;
       if (scheduled.has(`task:${id}`)) continue;
       pendingTasks.push({ id: id as string, task });
@@ -206,7 +206,7 @@ export function startMessageDispatcher(api: OpenClawPluginApi, config: AnsibleCo
 function markAttemptedMessage(
   messages: any,
   messageId: string,
-  myId: TailscaleId,
+  myId: AgentId,
   lastError?: string,
 ): number {
   const current = messages.get(messageId) as Message | undefined;
@@ -230,7 +230,7 @@ function markAttemptedMessage(
   return attempts;
 }
 
-function markAttemptErrorMessage(messages: any, messageId: string, myId: TailscaleId, lastError: string): number {
+function markAttemptErrorMessage(messages: any, messageId: string, myId: AgentId, lastError: string): number {
   const current = messages.get(messageId) as Message | undefined;
   if (!current) return 1;
 
@@ -252,7 +252,7 @@ function markAttemptErrorMessage(messages: any, messageId: string, myId: Tailsca
   return attempts;
 }
 
-function markDeliveredMessage(messages: any, messageId: string, myId: TailscaleId, attempts: number): void {
+function markDeliveredMessage(messages: any, messageId: string, myId: AgentId, attempts: number): void {
   const current = messages.get(messageId) as Message | undefined;
   if (!current) return;
 
@@ -263,17 +263,17 @@ function markDeliveredMessage(messages: any, messageId: string, myId: TailscaleI
     attempts,
   };
 
-  const readBy = Array.isArray(current.readBy) ? current.readBy : [];
-  const nextReadBy = readBy.includes(myId) ? readBy : [...readBy, myId];
+  const readBy_agents = Array.isArray(current.readBy_agents) ? current.readBy_agents : [];
+  const nextReadBy_agents = readBy_agents.includes(myId) ? readBy_agents : [...readBy_agents, myId];
 
   messages.set(messageId, {
     ...current,
-    readBy: nextReadBy,
+    readBy_agents: nextReadBy_agents,
     delivery: { ...(current.delivery || {}), [myId]: updated },
   } satisfies Message);
 }
 
-function markAttemptedTask(tasks: any, taskId: string, myId: TailscaleId, lastError?: string): number {
+function markAttemptedTask(tasks: any, taskId: string, myId: AgentId, lastError?: string): number {
   const current = tasks.get(taskId) as Task | undefined;
   if (!current) return 1;
 
@@ -295,7 +295,7 @@ function markAttemptedTask(tasks: any, taskId: string, myId: TailscaleId, lastEr
   return attempts;
 }
 
-function markAttemptErrorTask(tasks: any, taskId: string, myId: TailscaleId, lastError: string): number {
+function markAttemptErrorTask(tasks: any, taskId: string, myId: AgentId, lastError: string): number {
   const current = tasks.get(taskId) as Task | undefined;
   if (!current) return 1;
 
@@ -317,7 +317,7 @@ function markAttemptErrorTask(tasks: any, taskId: string, myId: TailscaleId, las
   return attempts;
 }
 
-function markDeliveredTask(tasks: any, taskId: string, myId: TailscaleId, attempts: number): void {
+function markDeliveredTask(tasks: any, taskId: string, myId: AgentId, attempts: number): void {
   const current = tasks.get(taskId) as Task | undefined;
   if (!current) return;
 
@@ -343,7 +343,7 @@ async function dispatchAnsibleMessage(
   messageId: string,
   msg: Message,
 ): Promise<void> {
-  const senderName = msg.from;
+  const senderName = msg.from_agent;
   const rawBody = msg.content;
 
   // 1. Format the agent envelope
@@ -357,22 +357,22 @@ async function dispatchAnsibleMessage(
   });
 
   // 2. Build and finalize the message context
-  const sessionKey = `ansible:${msg.from}`;
+  const sessionKey = `ansible:${msg.from_agent}`;
   const ctx = reply.finalizeInboundContext({
     Body: body,
     RawBody: rawBody,
     CommandBody: rawBody,
-    From: `ansible:${msg.from}`,
+    From: `ansible:${msg.from_agent}`,
     To: `ansible:${myId}`,
     SessionKey: sessionKey,
     Provider: "ansible",
     Surface: "ansible",
     ChatType: "direct",
     SenderName: senderName,
-    SenderId: msg.from,
+    SenderId: msg.from_agent,
     MessageSid: messageId,
     OriginatingChannel: "ansible",
-    OriginatingTo: `ansible:${msg.from}`,
+    OriginatingTo: `ansible:${msg.from_agent}`,
   });
 
   // 3. Record session metadata (if available)
@@ -405,15 +405,16 @@ async function dispatchAnsibleMessage(
         const replyId = randomUUID();
         messagesMap.set(replyId, {
           id: replyId,
-          from: myId,
-          to: msg.from,
+          from_agent: myId,
+          from_node: myId,
+          to_agents: [msg.from_agent],
           content: payload.text,
           timestamp: Date.now(),
-          readBy: [myId],
+          readBy_agents: [myId],
         } satisfies Message);
 
         api.logger?.info(
-          `Ansible dispatcher: reply ${replyId.slice(0, 8)} sent to ${msg.from}`,
+          `Ansible dispatcher: reply ${replyId.slice(0, 8)} sent to ${msg.from_agent}`,
         );
       },
       onError: (err: unknown, info: { kind: string }) => {
@@ -422,7 +423,7 @@ async function dispatchAnsibleMessage(
     },
   });
 
-  api.logger?.info(`Ansible dispatcher: delivered message ${messageId.slice(0, 8)} from ${msg.from}`);
+  api.logger?.info(`Ansible dispatcher: delivered message ${messageId.slice(0, 8)} from ${msg.from_agent}`);
 }
 
 async function dispatchAnsibleTask(
@@ -434,12 +435,12 @@ async function dispatchAnsibleTask(
   taskId: string,
   task: Task,
 ): Promise<void> {
-  const senderName = task.createdBy;
+  const senderName = task.createdBy_agent;
   const rawBody = [
     `[Ansible Task] ${task.title}`,
     `taskId: ${taskId}`,
     `status: ${task.status}`,
-    `assignedTo: ${task.assignedTo || ""}`,
+    `assignedTo: ${task.assignedTo_agent || ""}`,
     "",
     task.description,
     task.context ? `\n\nContext:\n${task.context}` : "",
@@ -465,17 +466,17 @@ async function dispatchAnsibleTask(
     Body: body,
     RawBody: rawBody,
     CommandBody: rawBody,
-    From: `ansible:${task.createdBy}`,
+    From: `ansible:${task.createdBy_agent}`,
     To: `ansible:${myId}`,
     SessionKey: sessionKey,
     Provider: "ansible",
     Surface: "ansible",
     ChatType: "direct",
     SenderName: senderName,
-    SenderId: task.createdBy,
+    SenderId: task.createdBy_agent,
     MessageSid: `task:${taskId}`,
     OriginatingChannel: "ansible",
-    OriginatingTo: `ansible:${task.createdBy}`,
+    OriginatingTo: `ansible:${task.createdBy_agent}`,
   });
 
   if (session?.recordInboundSession) {
@@ -506,15 +507,16 @@ async function dispatchAnsibleTask(
         const replyId = randomUUID();
         messagesMap.set(replyId, {
           id: replyId,
-          from: myId,
-          to: task.createdBy,
+          from_agent: myId,
+          from_node: myId,
+          to_agents: [task.createdBy_agent],
           content: payload.text,
           timestamp: Date.now(),
-          readBy: [myId],
+          readBy_agents: [myId],
         } satisfies Message);
 
         api.logger?.info(
-          `Ansible dispatcher: task reply ${replyId.slice(0, 8)} sent to ${task.createdBy}`,
+          `Ansible dispatcher: task reply ${replyId.slice(0, 8)} sent to ${task.createdBy_agent}`,
         );
       },
       onError: (err: unknown, info: { kind: string }) => {
@@ -523,5 +525,5 @@ async function dispatchAnsibleTask(
     },
   });
 
-  api.logger?.info(`Ansible dispatcher: delivered task ${taskId.slice(0, 8)} from ${task.createdBy}`);
+  api.logger?.info(`Ansible dispatcher: delivered task ${taskId.slice(0, 8)} from ${task.createdBy_agent}`);
 }

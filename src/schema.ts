@@ -99,8 +99,11 @@ export const VALIDATION_LIMITS = {
 // Node Identity
 // ============================================================================
 
-/** Tailscale node ID (e.g., "vps-jane", "macbook-air") */
+/** Tailscale node ID (e.g., "vps-jane", "macbook-air") - Gateway/infrastructure level */
 export type TailscaleId = string;
+
+/** Agent ID (e.g., "architect", "claude", "mac-jane") - Coordination endpoint */
+export type AgentId = string;
 
 export interface NodeInfo {
   name: string;
@@ -114,6 +117,51 @@ export interface PendingInvite {
   tier: "backbone" | "edge";
   expiresAt: number;
   createdBy: TailscaleId;
+}
+
+// ============================================================================
+// Agent Registry
+// ============================================================================
+
+/**
+ * Represents a coordination endpoint — the addressable actor in ansible.
+ * Internal agents run on a gateway and receive messages via auto-dispatch.
+ * External agents (e.g., claude, codex) poll via the CLI.
+ */
+export interface AgentRecord {
+  /** Display name (e.g., "Aria", "Beacon", "Astrid") */
+  name?: string;
+
+  /** Gateway that hosts this agent. null for external agents. */
+  gateway: TailscaleId | null;
+
+  /** internal = auto-dispatch into agent session; external = CLI poll only */
+  type: "internal" | "external";
+
+  /** When the agent was registered */
+  registeredAt: number;
+
+  /** Who registered this agent */
+  registeredBy: TailscaleId;
+}
+
+// ============================================================================
+// Core Metadata
+// ============================================================================
+
+/**
+ * Core metadata fields required for all ansible coordination messages/tasks.
+ * Skills can extend this with additional fields.
+ */
+export interface CoreMetadata {
+  /** Conversation thread identifier for tracking related messages/tasks */
+  conversation_id: string;
+
+  /** Correlation ID for request/reply pairs (optional) */
+  corr?: string;
+
+  /** Message/task kind hint (proposal, status, result, alert, decision, etc.) */
+  kind?: string;
 }
 
 // ============================================================================
@@ -147,17 +195,23 @@ export interface Task {
   title: string;
   description: string;
   status: TaskStatus;
-  createdBy: TailscaleId;
+
+  /** Agent that created this task (e.g., "architect", "claude") */
+  createdBy_agent: AgentId;
+  /** Gateway node the task was created from (informational) */
+  createdBy_node?: TailscaleId;
   createdAt: number;
 
-  /** Explicit assignment to a specific node */
-  assignedTo?: TailscaleId;
+  /** Explicit assignment to a specific agent */
+  assignedTo_agent?: AgentId;
 
   /** Capability requirements for claiming */
   requires?: string[];
 
-  /** Who claimed/is working on the task */
-  claimedBy?: TailscaleId;
+  /** Agent that claimed/is working on this task */
+  claimedBy_agent?: AgentId;
+  /** Gateway node that claimed the task (informational) */
+  claimedBy_node?: TailscaleId;
   claimedAt?: number;
 
   /** Completion info */
@@ -167,20 +221,23 @@ export interface Task {
   /** Context transferred for delegation */
   context?: string;
 
-  /** Operational metadata */
+  /** Structured metadata. Should include CoreMetadata fields; skills add their own. */
+  metadata?: Record<string, unknown>;
+
+  /** Operational tracking */
   updatedAt?: number;
   updates?: Array<{
     at: number;
-    by: TailscaleId;
+    by_agent: AgentId;
     status: TaskStatus;
     note?: string;
   }>;
 
   /**
-   * Per-node dispatch tracking so reconnect reconciliation can be deterministic
-   * and idempotent. Keyed by receiver nodeId.
+   * Per-agent dispatch tracking so reconnect reconciliation can be deterministic
+   * and idempotent. Keyed by agent ID.
    */
-  delivery?: Record<TailscaleId, DeliveryRecord>;
+  delivery?: Record<AgentId, DeliveryRecord>;
 }
 
 // ============================================================================
@@ -189,17 +246,32 @@ export interface Task {
 
 export interface Message {
   id: string;
-  from: TailscaleId;
-  to?: TailscaleId; // Broadcast if omitted
-  content: string;
-  timestamp: number;
-  readBy: TailscaleId[];
+
+  /** Agent that sent this message (e.g., "architect", "claude", "codex") */
+  from_agent: AgentId;
+  /** Gateway node the message was sent from (informational) */
+  from_node?: TailscaleId;
 
   /**
-   * Per-node dispatch tracking so reconnect reconciliation can be deterministic
-   * and idempotent. Keyed by receiver nodeId.
+   * Target agents. Broadcast to all authorized agents if omitted.
+   * Multiple recipients share one message record; delivery tracked per agent.
    */
-  delivery?: Record<TailscaleId, DeliveryRecord>;
+  to_agents?: AgentId[];
+
+  content: string;
+  timestamp: number;
+
+  /** Agents that have read this message */
+  readBy_agents: AgentId[];
+
+  /** Structured metadata. Should include CoreMetadata fields; skills add their own. */
+  metadata?: Record<string, unknown>;
+
+  /**
+   * Per-agent dispatch tracking so reconnect reconciliation can be deterministic
+   * and idempotent. Keyed by agent ID.
+   */
+  delivery?: Record<AgentId, DeliveryRecord>;
 }
 
 // ============================================================================
@@ -286,6 +358,7 @@ export interface CoordinationState {
 
 export interface AnsibleState {
   nodes: Map<TailscaleId, NodeInfo>;
+  agents: Map<AgentId, AgentRecord>;
   pendingInvites: Map<string, PendingInvite>;
   tasks: Map<string, Task>;
   messages: Map<string, Message>;

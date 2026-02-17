@@ -98,7 +98,7 @@ function notifyTaskOwner(
   payload: { kind: "update" | "completed" | "failed"; note?: string; result?: string }
 ): string | null {
   if (!doc) return null;
-  if (!task.createdBy) return null;
+  if (!task.createdBy_agent) return null;
 
   const messages = doc.getMap("messages");
   const messageId = randomUUID();
@@ -112,11 +112,12 @@ function notifyTaskOwner(
 
   const message: Message = {
     id: messageId,
-    from: fromNodeId,
-    to: task.createdBy,
+    from_agent: fromNodeId,
+    from_node: fromNodeId,
+    to_agents: [task.createdBy_agent],
     content: lines.join("\n"),
     timestamp: Date.now(),
-    readBy: [fromNodeId],
+    readBy_agents: [fromNodeId],
   };
   messages.set(message.id, message);
   return messageId;
@@ -198,9 +199,9 @@ export function registerAnsibleTools(
             id: t.id,
             title: t.title,
             status: t.status,
-            assignedTo: t.assignedTo,
-            createdBy: t.createdBy,
-            claimedBy: t.claimedBy,
+            assignedTo: t.assignedTo_agent,
+            createdBy: t.createdBy_agent,
+            claimedBy: t.claimedBy_agent,
             updatedAt: t.updatedAt,
           });
         }
@@ -558,10 +559,11 @@ export function registerAnsibleTools(
           for (const to of notifyAgents) {
             const message: Message = {
               id: randomUUID(),
-              from: nodeId,
-              to,
+              from_agent: nodeId,
+              from_node: nodeId,
+              to_agents: [to],
               timestamp: Date.now(),
-              readBy: [nodeId],
+              readBy_agents: [nodeId],
               content:
                 [
                   "kind: policy_update",
@@ -678,6 +680,10 @@ export function registerAnsibleTools(
           items: { type: "string" },
           description: "Required capabilities: 'always-on', 'local-files', 'gpu'",
         },
+        metadata: {
+          type: "object",
+          description: "Optional structured metadata (e.g., CoreMetadata fields like conversation_id, corr, kind).",
+        },
       },
       required: ["title", "description"],
     },
@@ -702,13 +708,15 @@ export function registerAnsibleTools(
           title,
           description,
           status: "pending",
-          createdBy: nodeId,
+          createdBy_agent: nodeId,
+          createdBy_node: nodeId,
           createdAt: Date.now(),
           updatedAt: Date.now(),
           updates: [],
           context,
-          assignedTo: params.assignedTo as string | undefined,
+          assignedTo_agent: params.assignedTo as string | undefined,
           requires: params.requires as string[] | undefined,
+          metadata: params.metadata as Record<string, unknown> | undefined,
         };
 
         const tasks = doc.getMap("tasks");
@@ -742,7 +750,11 @@ export function registerAnsibleTools(
         },
         to: {
           type: "string",
-          description: "Specific node to send to. If omitted, broadcasts to all hemispheres.",
+          description: "Specific agent to send to (single agent id or comma-separated). If omitted, broadcasts to all.",
+        },
+        metadata: {
+          type: "object",
+          description: "Optional structured metadata (e.g., CoreMetadata fields like conversation_id, corr, kind).",
         },
       },
       required: ["content"],
@@ -761,13 +773,19 @@ export function registerAnsibleTools(
         requireAuth(nodeId);
         const content = validateString(params.content, VALIDATION_LIMITS.maxMessageLength, "content");
 
+        const toAgents: string[] = params.to
+          ? (Array.isArray(params.to) ? params.to : [params.to as string])
+          : [];
+
         const message: Message = {
           id: randomUUID(),
-          from: nodeId,
-          to: params.to as string | undefined,
+          from_agent: nodeId,
+          from_node: nodeId,
+          to_agents: toAgents.length > 0 ? toAgents : undefined,
           content,
           timestamp: Date.now(),
-          readBy: [nodeId],
+          readBy_agents: [nodeId],
+          metadata: params.metadata as Record<string, unknown> | undefined,
         };
 
         const messages = doc.getMap("messages");
@@ -776,8 +794,8 @@ export function registerAnsibleTools(
         return toolResult({
           success: true,
           messageId: message.id,
-          message: params.to
-            ? `Message sent to ${params.to}`
+          message: toAgents.length > 0
+            ? `Message sent to ${toAgents.join(", ")}`
             : "Message broadcast to all hemispheres",
         });
       } catch (err: any) {
@@ -954,17 +972,17 @@ export function registerAnsibleTools(
           .map((t) => ({
             id: t.id ? t.id.slice(0, 8) : "unknown",
             title: t.title || "Untitled",
-            assignedTo: t.assignedTo || "anyone",
+            assignedTo: t.assignedTo_agent || "anyone",
           }));
 
         const unreadCount = (state.messages ? Array.from(state.messages.values()) : [])
           .filter((m) => {
             if (!m) return false;
-            if (m.from === myId) return false;
+            if (m.from_agent === myId) return false;
             // Only count messages addressed to me or broadcast (matches ansible_read_messages).
-            if (m.to && m.to !== myId) return false;
-            if (!Array.isArray(m.readBy)) return false;
-            return !m.readBy.includes(myId);
+            if (m.to_agents?.length && !m.to_agents.includes(myId)) return false;
+            if (!Array.isArray(m.readBy_agents)) return false;
+            return !m.readBy_agents.includes(myId);
           }).length;
 
         return toolResult({
@@ -1029,11 +1047,12 @@ export function registerAnsibleTools(
         tasks.set(resolvedKey, {
           ...task,
           status: "claimed",
-          claimedBy: nodeId,
+          claimedBy_agent: nodeId,
+          claimedBy_node: nodeId,
           claimedAt: Date.now(),
           updatedAt: Date.now(),
           updates: [
-            { at: Date.now(), by: nodeId, status: "claimed", note: "claimed" },
+            { at: Date.now(), by_agent: nodeId, status: "claimed", note: "claimed" },
             ...((task.updates as any) || []),
           ].slice(0, 50),
         });
@@ -1100,7 +1119,7 @@ export function registerAnsibleTools(
         if (typeof resolvedKey !== "string") return toolResult(resolvedKey);
         const task = tasks.get(resolvedKey) as Task | undefined;
         if (!task) return toolResult({ error: "Task not found" });
-        if (task.claimedBy !== nodeId) {
+        if (task.claimedBy_agent !== nodeId) {
           return toolResult({ error: "You don't have this task claimed" });
         }
 
@@ -1123,7 +1142,7 @@ export function registerAnsibleTools(
           updatedAt: Date.now(),
           result: result ?? task.result,
           updates: [
-            { at: Date.now(), by: nodeId, status: status as any, note },
+            { at: Date.now(), by_agent: nodeId, status: status as any, note },
             ...((task.updates as any) || []),
           ].slice(0, 50),
         };
@@ -1187,7 +1206,7 @@ export function registerAnsibleTools(
           return toolResult({ error: "Task not found" });
         }
 
-        if (task.claimedBy !== nodeId) {
+        if (task.claimedBy_agent !== nodeId) {
           return toolResult({ error: "You don't have this task claimed" });
         }
 
@@ -1200,7 +1219,7 @@ export function registerAnsibleTools(
           result,
           updatedAt: Date.now(),
           updates: [
-            { at: Date.now(), by: nodeId, status: "completed", note: "completed" },
+            { at: Date.now(), by_agent: nodeId, status: "completed", note: "completed" },
             ...((task.updates as any) || []),
           ].slice(0, 50),
         };
@@ -1263,7 +1282,7 @@ export function registerAnsibleTools(
         const results: Array<{
           id: string;
           from: string;
-          to?: string;
+          to?: string[];
           content: string;
           timestamp: string;
           unread: boolean;
@@ -1273,20 +1292,20 @@ export function registerAnsibleTools(
           const message = msg as Message;
 
           // Skip messages not addressed to us (unless broadcast)
-          if (message.to && message.to !== nodeId) continue;
+          if (message.to_agents?.length && !message.to_agents.includes(nodeId)) continue;
 
-          const unread = !message.readBy.includes(nodeId);
+          const unread = !message.readBy_agents.includes(nodeId);
 
           // By default only show unread
           if (!showAll && !unread) continue;
 
           // Apply from filter
-          if (fromFilter && message.from !== fromFilter) continue;
+          if (fromFilter && message.from_agent !== fromFilter) continue;
 
           results.push({
             id,
-            from: message.from,
-            to: message.to,
+            from: message.from_agent,
+            to: message.to_agents,
             content: message.content,
             timestamp: new Date(message.timestamp).toISOString(),
             unread,
@@ -1341,12 +1360,12 @@ export function registerAnsibleTools(
           const message = msg as Message;
 
           if (messageIds && !messageIds.includes(id)) continue;
-          if (message.readBy.includes(nodeId)) continue;
-          if (message.to && message.to !== nodeId) continue;
+          if (message.readBy_agents.includes(nodeId)) continue;
+          if (message.to_agents?.length && !message.to_agents.includes(nodeId)) continue;
 
           messages.set(id, {
             ...message,
-            readBy: [...message.readBy, nodeId],
+            readBy_agents: [...message.readBy_agents, nodeId],
           });
           count++;
         }
@@ -1358,6 +1377,87 @@ export function registerAnsibleTools(
       } catch (err: any) {
         return toolResult({ error: err.message });
       }
+    },
+  });
+
+  // === ansible_register_agent ===
+  api.registerTool({
+    name: "ansible_register_agent",
+    label: "Ansible Register Agent",
+    description:
+      "Register an agent (internal or external) in the ansible agent registry. External agents (e.g., claude, codex) use this to get an addressable inbox they can poll via the CLI.",
+    parameters: {
+      type: "object",
+      properties: {
+        agent_id: {
+          type: "string",
+          description: "Unique agent identifier (e.g., 'claude', 'codex')",
+        },
+        name: {
+          type: "string",
+          description: "Optional display name (e.g., 'Claude', 'Codex')",
+        },
+        type: {
+          type: "string",
+          enum: ["internal", "external"],
+          description: "internal = auto-dispatch via gateway; external = CLI poll only",
+        },
+        gateway: {
+          type: "string",
+          description: "Gateway node hosting this agent (only for internal agents; omit for external)",
+        },
+      },
+      required: ["agent_id"],
+    },
+    async execute(_id, params) {
+      const doc = getDoc();
+      const nodeId = getNodeId();
+      if (!doc || !nodeId) return toolResult({ error: "Ansible not initialized" });
+
+      try {
+        const agentId = validateString(params.agent_id, 100, "agent_id");
+        const agentType = (params.type as "internal" | "external") ?? "external";
+        const agents = doc.getMap("agents");
+
+        const record = {
+          name: typeof params.name === "string" ? params.name : undefined,
+          gateway: agentType === "internal" ? (typeof params.gateway === "string" ? params.gateway : nodeId) : null,
+          type: agentType,
+          registeredAt: Date.now(),
+          registeredBy: nodeId,
+        };
+
+        agents.set(agentId, record);
+
+        return toolResult({ success: true, agent_id: agentId, record });
+      } catch (err: any) {
+        return toolResult({ error: err.message });
+      }
+    },
+  });
+
+  // === ansible_list_agents ===
+  api.registerTool({
+    name: "ansible_list_agents",
+    label: "Ansible List Agents",
+    description: "List all registered agents in the ansible network (internal and external).",
+    parameters: {
+      type: "object",
+      properties: {},
+    },
+    async execute() {
+      const doc = getDoc();
+      if (!doc) return toolResult({ error: "Ansible not initialized" });
+
+      const agents = doc.getMap("agents");
+      const result: Array<Record<string, unknown>> = [];
+
+      for (const [id, record] of agents.entries()) {
+        const r = record as Record<string, unknown>;
+        result.push({ id, ...r });
+      }
+
+      return toolResult({ agents: result, total: result.length });
     },
   });
 }

@@ -69,6 +69,7 @@ export function getAnsibleState(): AnsibleState | null {
 
   return {
     nodes: doc.getMap("nodes") as unknown as Map<TailscaleId, AnsibleState["nodes"] extends Map<string, infer V> ? V : never>,
+    agents: doc.getMap("agents") as unknown as AnsibleState["agents"],
     pendingInvites: doc.getMap("pendingInvites") as unknown as AnsibleState["pendingInvites"],
     tasks: doc.getMap("tasks") as unknown as AnsibleState["tasks"],
     messages: doc.getMap("messages") as unknown as AnsibleState["messages"],
@@ -167,6 +168,7 @@ export function createAnsibleService(
 
         // Initialize Yjs maps BEFORE loading state or connecting
         doc.getMap("nodes");
+        doc.getMap("agents");
         doc.getMap("pendingInvites");
         doc.getMap("tasks");
         doc.getMap("messages");
@@ -189,6 +191,7 @@ export function createAnsibleService(
       // Initialize Yjs maps for backbone mode (edge already did this above)
       if (config.tier === "backbone") {
         doc.getMap("nodes");
+        doc.getMap("agents");
         doc.getMap("pendingInvites");
         doc.getMap("tasks");
         doc.getMap("messages");
@@ -196,6 +199,9 @@ export function createAnsibleService(
         doc.getMap("pulse");
         doc.getMap("coordination");
       }
+
+      // Auto-register internal agents from config
+      registerInternalAgents(config, nodeId!, doc);
 
       // Start pulse heartbeat
       startPulseHeartbeat(ctx);
@@ -495,6 +501,34 @@ async function persistState(ctx: ServiceContext) {
   }
 }
 
+/**
+ * Auto-register internal agents from the ansible config's injectContextAgents list.
+ * This seeds the Yjs agents map so all gateways know which agents are local to each node.
+ * External agents (claude, codex) are registered separately via the CLI or tool.
+ */
+function registerInternalAgents(config: AnsibleConfig, nodeId: string, yjsDoc: Y.Doc): void {
+  const agents = yjsDoc.getMap("agents");
+  const agentIds: string[] = Array.isArray(config.injectContextAgents)
+    ? (config.injectContextAgents as string[])
+    : [];
+
+  // Always include the node itself as an internal agent
+  const allAgentIds = Array.from(new Set([nodeId, ...agentIds]));
+
+  for (const agentId of allAgentIds) {
+    // Don't overwrite external agents registered by operators
+    const existing = agents.get(agentId) as Record<string, unknown> | undefined;
+    if (existing?.type === "external") continue;
+
+    agents.set(agentId, {
+      gateway: nodeId,
+      type: "internal",
+      registeredAt: existing?.registeredAt ?? Date.now(),
+      registeredBy: nodeId,
+    });
+  }
+}
+
 function setupAutoPersist(ctx: ServiceContext) {
   if (!doc) return;
 
@@ -590,9 +624,9 @@ function startMessageCleanup(ctx: ServiceContext) {
       // just because *we* haven't marked them as read. Otherwise, a backbone
       // node will accumulate phantom unread messages forever and status/sweeps
       // become untrustworthy.
-      if (MESSAGE_RETENTION.keepUnread && Array.isArray(msg.readBy)) {
-        const addressedToMe = !msg.to || msg.to === nodeId;
-        const unreadForMe = addressedToMe && !msg.readBy.includes(nodeId);
+      if (MESSAGE_RETENTION.keepUnread && Array.isArray(msg.readBy_agents)) {
+        const addressedToMe = !msg.to_agents?.length || msg.to_agents.includes(nodeId);
+        const unreadForMe = addressedToMe && !msg.readBy_agents.includes(nodeId);
         if (unreadForMe) continue;
       }
 
