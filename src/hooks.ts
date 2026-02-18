@@ -33,6 +33,13 @@ export function registerAnsibleHooks(
       return undefined;
     })();
 
+    // Diagnostic: log ctx shape when agentId can't be resolved so we can fix
+    if (!agentId && ctx !== undefined) {
+      api.logger?.info(
+        `Ansible: ctx keys=${Object.keys(ctx || {}).join(",") || "(empty)"} vals=${JSON.stringify(ctx).slice(0, 300)}`
+      );
+    }
+
     if (Array.isArray(config.injectContextAgents) && config.injectContextAgents.length > 0) {
       if (!agentId || !config.injectContextAgents.includes(agentId)) {
         api.logger?.debug?.(
