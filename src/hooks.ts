@@ -23,6 +23,7 @@ export function registerAnsibleHooks(
     // Resolve agent ID — try all known field names across gateway versions,
     // then fall back to parsing the session key (format: "agent:<agentId>:<session>")
     const agentId: string | undefined = (() => {
+      if (ctx === undefined || ctx === null) return undefined;
       const direct = ctx?.agentId ?? ctx?.AgentId ?? ctx?.agent?.id ?? ctx?.agentName ?? ctx?.name;
       if (direct) return String(direct);
       const sk = ctx?.SessionKey ?? ctx?.sessionKey ?? ctx?.session_key;
@@ -33,17 +34,13 @@ export function registerAnsibleHooks(
       return undefined;
     })();
 
-    // Diagnostic: log ctx shape when agentId can't be resolved so we can fix
-    if (!agentId && ctx !== undefined) {
-      api.logger?.info(
-        `Ansible: ctx keys=${Object.keys(ctx || {}).join(",") || "(empty)"} vals=${JSON.stringify(ctx).slice(0, 300)}`
-      );
-    }
-
-    if (Array.isArray(config.injectContextAgents) && config.injectContextAgents.length > 0) {
-      if (!agentId || !config.injectContextAgents.includes(agentId)) {
+    // Filter by injectContextAgents — but only when we can actually identify the agent.
+    // If ctx is unavailable (agentId unresolvable), inject for all rather than block:
+    // the list is best-effort filtering, not a security gate.
+    if (agentId && Array.isArray(config.injectContextAgents) && config.injectContextAgents.length > 0) {
+      if (!config.injectContextAgents.includes(agentId)) {
         api.logger?.debug?.(
-          `Ansible: skipping context injection for agentId=${agentId ?? "unknown"}`,
+          `Ansible: skipping context injection for agentId=${agentId}`,
         );
         return {};
       }
