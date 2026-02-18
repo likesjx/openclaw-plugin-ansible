@@ -368,10 +368,55 @@ export function registerAnsibleCli(
           return;
         }
 
+        // Best-effort: fetch coordination config (includes retention knobs).
+        let coordination: any = null;
+        try {
+          coordination = await callGateway("ansible_get_coordination");
+        } catch {
+          coordination = null;
+        }
+
         console.log("\n=== Ansible Status ===\n");
         console.log(`My ID: ${result.myId}`);
         console.log(`Tier: ${config.tier}`);
         console.log();
+
+        if (coordination && !coordination.error) {
+          const coordinator = coordination.coordinator ? String(coordination.coordinator) : "(unset)";
+          const sweepEvery = coordination.sweepEverySeconds ? String(coordination.sweepEverySeconds) : "(unset)";
+          const retentionDays =
+            typeof coordination.retentionClosedTaskSeconds === "number"
+              ? String(Math.round(coordination.retentionClosedTaskSeconds / 86400))
+              : "(default 7)";
+          const pruneHours =
+            typeof coordination.retentionPruneEverySeconds === "number"
+              ? String(Math.round(coordination.retentionPruneEverySeconds / 3600))
+              : "(default 24)";
+          const lastPrune =
+            typeof coordination.retentionLastPruneAt === "number"
+              ? new Date(coordination.retentionLastPruneAt).toLocaleString()
+              : "(never)";
+          const delegationVersion =
+            typeof coordination.delegationPolicyVersion === "string"
+              ? coordination.delegationPolicyVersion
+              : "(unset)";
+          const delegationChecksum =
+            typeof coordination.delegationPolicyChecksum === "string"
+              ? coordination.delegationPolicyChecksum
+              : "(unset)";
+
+          console.log("Coordinator:");
+          console.log(`  id: ${coordinator}`);
+          console.log(`  sweepEverySeconds: ${sweepEvery}`);
+          console.log("Delegation Policy:");
+          console.log(`  version: ${delegationVersion}`);
+          console.log(`  checksum: ${delegationChecksum}`);
+          console.log("Retention (coordinator-only roll-off):");
+          console.log(`  closedTaskRetentionDays: ${retentionDays}`);
+          console.log(`  pruneEveryHours: ${pruneHours}`);
+          console.log(`  lastPruneAt: ${lastPrune}`);
+          console.log();
+        }
 
         // Nodes
         console.log("Hemispheres:");
@@ -406,6 +451,155 @@ export function registerAnsibleCli(
 
         // Messages
         console.log(`Unread messages: ${result.unreadMessages || 0}`);
+      });
+
+    // === ansible retention ===
+    const retention = ansible.command("retention").description("Coordinator retention / roll-off") as CliCommand;
+
+    retention
+      .command("set")
+      .description("Set closed task roll-off policy (coordinator-only)")
+      .option("--closed-days <days>", "Delete completed/failed tasks older than N days (default 7)")
+      .option("--every-hours <hours>", "Run prune every N hours (default 24)")
+      .action(async (...args: unknown[]) => {
+        const opts = (args[0] || {}) as { closedDays?: string; everyHours?: string };
+        const toolArgs: Record<string, unknown> = {};
+        if (opts.closedDays) toolArgs.closedTaskRetentionDays = Number(opts.closedDays);
+        if (opts.everyHours) toolArgs.pruneEveryHours = Number(opts.everyHours);
+
+        let out: any;
+        try {
+          out = await callGateway("ansible_set_retention", toolArgs);
+        } catch (err: any) {
+          console.log(`✗ ${err.message}`);
+          return;
+        }
+        if (out.error) {
+          console.log(`✗ ${out.error}`);
+          return;
+        }
+
+        const days = typeof out.retentionClosedTaskSeconds === "number" ? Math.round(out.retentionClosedTaskSeconds / 86400) : "?";
+        const hours = typeof out.retentionPruneEverySeconds === "number" ? Math.round(out.retentionPruneEverySeconds / 3600) : "?";
+        console.log("✓ Updated retention policy");
+        console.log(`  closedTaskRetentionDays=${days}`);
+        console.log(`  pruneEveryHours=${hours}`);
+      });
+
+    // === ansible delegation ===
+    const delegation = ansible.command("delegation").description("Delegation policy distribution + ACK") as CliCommand;
+
+    delegation
+      .command("show")
+      .description("Show current shared delegation policy and ACK status")
+      .action(async () => {
+        let out: any;
+        try {
+          out = await callGateway("ansible_get_delegation_policy");
+        } catch (err: any) {
+          console.log(`✗ ${err.message}`);
+          return;
+        }
+        if (out.error) {
+          console.log(`✗ ${out.error}`);
+          return;
+        }
+
+        console.log("\n=== Delegation Policy ===\n");
+        console.log(`Version: ${out.delegationPolicyVersion || "(unset)"}`);
+        console.log(`Checksum: ${out.delegationPolicyChecksum || "(unset)"}`);
+        if (out.delegationPolicyUpdatedAt) {
+          console.log(`Updated: ${new Date(out.delegationPolicyUpdatedAt).toLocaleString()} by ${out.delegationPolicyUpdatedBy || "unknown"}`);
+        }
+        const acks = out.acks || {};
+        const ids = Object.keys(acks);
+        console.log(`ACKs: ${ids.length}`);
+        for (const id of ids.sort()) {
+          const r: any = acks[id] || {};
+          const at = typeof r.at === "number" ? new Date(r.at).toLocaleString() : "unknown";
+          console.log(`  - ${id}: ${r.version || "?"} ${r.checksum || "?"} @ ${at}`);
+        }
+      });
+
+    delegation
+      .command("set")
+      .description("Publish delegation policy markdown (coordinator-only)")
+      .option("--file <path>", "Path to policy markdown file")
+      .option("--version <ver>", "Policy version, e.g. 2026-02-12.1")
+      .option("--checksum <sum>", "Optional checksum (otherwise computed)")
+      .option("--notify <agents>", "Comma-separated target agent ids to notify")
+      .action(async (...args: unknown[]) => {
+        const opts = (args[0] || {}) as {
+          file?: string;
+          version?: string;
+          checksum?: string;
+          notify?: string;
+        };
+
+        if (!opts.file || !opts.version) {
+          console.log("✗ --file and --version are required");
+          return;
+        }
+
+        let policyMarkdown: string;
+        try {
+          policyMarkdown = fs.readFileSync(String(opts.file), "utf-8");
+        } catch (err: any) {
+          console.log(`✗ Failed to read file: ${String(err?.message || err)}`);
+          return;
+        }
+
+        const toolArgs: Record<string, unknown> = {
+          policyMarkdown,
+          version: opts.version,
+        };
+        if (opts.checksum) toolArgs.checksum = opts.checksum;
+        if (opts.notify) toolArgs.notifyAgents = parseCsvOrRepeat(opts.notify);
+
+        let out: any;
+        try {
+          out = await callGateway("ansible_set_delegation_policy", toolArgs);
+        } catch (err: any) {
+          console.log(`✗ ${err.message}`);
+          return;
+        }
+        if (out.error) {
+          console.log(`✗ ${out.error}`);
+          return;
+        }
+        console.log("✓ Delegation policy published");
+        console.log(`  version=${out.delegationPolicyVersion}`);
+        console.log(`  checksum=${out.delegationPolicyChecksum}`);
+        const notified = Array.isArray(out.notifiedAgents) ? out.notifiedAgents : [];
+        if (notified.length > 0) console.log(`  notified=${notified.join(",")}`);
+      });
+
+    delegation
+      .command("ack")
+      .description("Acknowledge the current (or provided) delegation policy")
+      .option("--version <ver>", "Optional version override")
+      .option("--checksum <sum>", "Optional checksum override")
+      .action(async (...args: unknown[]) => {
+        const opts = (args[0] || {}) as { version?: string; checksum?: string };
+        const toolArgs: Record<string, unknown> = {};
+        if (opts.version) toolArgs.version = opts.version;
+        if (opts.checksum) toolArgs.checksum = opts.checksum;
+
+        let out: any;
+        try {
+          out = await callGateway("ansible_ack_delegation_policy", toolArgs);
+        } catch (err: any) {
+          console.log(`✗ ${err.message}`);
+          return;
+        }
+        if (out.error) {
+          console.log(`✗ ${out.error}`);
+          return;
+        }
+        console.log("✓ Delegation policy acknowledged");
+        console.log(`  agent=${out.agentId}`);
+        console.log(`  version=${out.version}`);
+        console.log(`  checksum=${out.checksum}`);
       });
 
     // === ansible nodes ===

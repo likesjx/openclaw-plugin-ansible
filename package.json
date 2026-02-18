@@ -4,6 +4,12 @@
   "description": "Distributed coordination layer for OpenClaw - one agent, multiple bodies",
   "type": "module",
   "main": "dist/index.js",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
   "types": "dist/index.d.ts",
   "files": [
     "dist/",
@@ -44,6 +50,6 @@
     "openclaw": "*"
   },
   "engines": {
-    "node": ">=20.0.0"
+    "node": ">=22.22.0"
   }
 }

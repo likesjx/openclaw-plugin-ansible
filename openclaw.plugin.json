@@ -21,6 +21,10 @@
         "default": 1234,
         "description": "WebSocket port for backbone nodes to listen on"
       },
+      "listenHost": {
+        "type": "string",
+        "description": "Host/IP for backbone WebSocket bind; defaults to detected Tailscale IP or 127.0.0.1"
+      },
       "backbonePeers": {
         "type": "array",
         "items": { "type": "string" },
@@ -32,6 +36,21 @@
         "items": { "type": "string" },
         "default": [],
         "description": "Capabilities this node provides: always-on, local-files, gpu"
+      },
+      "injectContext": {
+        "type": "boolean",
+        "default": true,
+        "description": "Inject shared ansible context into agent prompts"
+      },
+      "injectContextAgents": {
+        "type": "array",
+        "items": { "type": "string" },
+        "description": "Optional allowlist of agent IDs that receive ansible context injection"
+      },
+      "dispatchIncoming": {
+        "type": "boolean",
+        "default": true,
+        "description": "Auto-dispatch inbound ansible messages into agent turns"
       },
       "lockSweep": {
         "type": "object",
@@ -60,6 +79,11 @@
       "help": "Port for the WebSocket server (backbone only)",
       "advanced": true
     },
+    "listenHost": {
+      "label": "Listen Host",
+      "help": "Bind host/IP for backbone WebSocket listener (advanced)",
+      "advanced": true
+    },
     "backbonePeers": {
       "label": "Backbone Peers",
       "help": "WebSocket URLs of backbone nodes to sync with"
@@ -67,6 +91,21 @@
     "capabilities": {
       "label": "Capabilities",
       "help": "What this node can do: always-on, local-files, gpu"
+    },
+    "injectContext": {
+      "label": "Inject Context",
+      "help": "Include ansible shared context in prompts before agent start",
+      "advanced": true
+    },
+    "injectContextAgents": {
+      "label": "Inject Context Agents",
+      "help": "Restrict ansible context injection to specific agent IDs",
+      "advanced": true
+    },
+    "dispatchIncoming": {
+      "label": "Dispatch Incoming",
+      "help": "Auto-route inbound ansible messages into agent turns",
+      "advanced": true
     },
     "lockSweep": {
       "label": "Lock Sweep",

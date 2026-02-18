@@ -102,12 +102,23 @@ Shared config lives in the Yjs `coordination` map:
 - `coordinator`: node id (string)
 - `sweepEverySeconds`: integer
 - `pref:<nodeId>`: per-node preferences (`desiredCoordinator`, `desiredSweepEverySeconds`)
+- Retention / roll-off (coordinator-only):
+  - `retentionClosedTaskSeconds` (default: 604800 = 7 days)
+  - `retentionPruneEverySeconds` (default: 86400 = daily)
+  - `retentionLastPruneAt` (ms epoch; informational)
 
 Tools:
 
 - `ansible_get_coordination`
 - `ansible_set_coordination_preference`
 - `ansible_set_coordination` (requires `confirmLastResort=true` when switching coordinators)
+- `ansible_set_retention` (set closed-task roll-off policy)
+
+CLI:
+
+```bash
+openclaw ansible retention set --closed-days 7 --every-hours 24
+```
 
 ### Initial Policy (What We’re Doing Now)
 
@@ -138,3 +149,19 @@ This directory is what every listener uses to decide:
 - "who should handle this message/task"
 - "should I self-handle vs delegate"
 - "who do I notify when I’m done"
+
+Implemented documentation standard:
+
+- `docs/delegation-directory.md`
+- `docs/identity-delegation-template.md`
+
+### Rollout Checklist (All Agents)
+
+1. Add `## Delegation Directory` section to each agent `IDENTITY.md` from template.
+2. Coordinator publishes `delegationPolicyVersion` + `delegationPolicyChecksum` in shared state.
+3. Coordinator sends `policy_update` messages to each active agent.
+4. Each agent applies update and replies `policy_ack` (same version/checksum).
+5. Coordinator sweep flags only actionable exceptions:
+   - missing ACK after threshold
+   - checksum mismatch
+   - invalid routing row

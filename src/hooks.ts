@@ -64,15 +64,19 @@ function buildContextInjection(
   // === What Jane is Working On ===
   const focusLines: string[] = [];
   const myContext = state.context.get(myId);
-  if (myContext?.currentFocus) {
-    focusLines.push(`- **${myId}** (me): ${myContext.currentFocus}`);
+  if (myContext?.currentFocus || myContext?.skills?.length) {
+    const parts: string[] = [];
+    if (myContext.currentFocus) parts.push(myContext.currentFocus);
+    if (myContext.skills?.length) parts.push(`[skills: ${myContext.skills.join(", ")}]`);
+    focusLines.push(`- **${myId}** (me): ${parts.join(" ")}`);
   }
 
   for (const [nodeId, ctx] of state.context.entries()) {
     if (nodeId === myId) continue;
-    if (ctx.currentFocus) {
-      focusLines.push(`- **${nodeId}**: ${ctx.currentFocus}`);
-    }
+    const parts: string[] = [];
+    if (ctx.currentFocus) parts.push(ctx.currentFocus);
+    if (ctx.skills && ctx.skills.length > 0) parts.push(`[skills: ${ctx.skills.join(", ")}]`);
+    if (parts.length > 0) focusLines.push(`- **${nodeId}**: ${parts.join(" ")}`);
   }
 
   if (focusLines.length > 0) {
@@ -140,6 +144,7 @@ function getMyPendingTasks(
 ): Task[] {
   if (!state) return [];
 
+  const myContext = state.context?.get(myId);
   const tasks: Task[] = [];
 
   for (const task of state.tasks.values()) {
@@ -160,6 +165,12 @@ function getMyPendingTasks(
       if (task.requires && Array.isArray(task.requires) && task.requires.length) {
         const hasAll = task.requires.every((req) => myCapabilities.includes(req));
         if (!hasAll) continue;
+      }
+
+      // Check skill requirements
+      if (task.skillRequired) {
+        const mySkills = myContext?.skills ?? [];
+        if (!mySkills.includes(task.skillRequired)) continue;
       }
     }
 

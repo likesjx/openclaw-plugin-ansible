@@ -11,11 +11,12 @@
 import { randomUUID } from "crypto";
 import type { OpenClawPluginApi } from "./types.js";
 import type { AnsibleConfig, DeliveryRecord, Message, Task, TailscaleId } from "./schema.js";
-import { getDoc, getNodeId, onSync } from "./service.js";
+import { getDoc, getNodeId, getAnsibleState, onSync } from "./service.js";
 
 const RETRY_BASE_MS = 2_000;
 const RETRY_MAX_MS = 5 * 60_000;
 const RETRY_JITTER = 0.2;
+const MAX_DELIVERY_ATTEMPTS = 15;
 
 function safeErr(err: unknown): string {
   if (err instanceof Error) return err.stack || err.message;
@@ -108,6 +109,8 @@ export function startMessageDispatcher(api: OpenClawPluginApi, config: AnsibleCo
     const myId = getNodeId();
     if (!doc || !myId) return;
 
+    const mySkills: string[] = getAnsibleState()?.context.get(myId)?.skills ?? [];
+
     const msgs = doc.getMap("messages");
     const tasks = doc.getMap("tasks");
 
@@ -118,6 +121,13 @@ export function startMessageDispatcher(api: OpenClawPluginApi, config: AnsibleCo
       if (msg.from === myId) continue;
       if (msg.to && msg.to !== myId) continue;
       if (isDeliveredMessage(msg, myId)) continue;
+      const msgAttempts = msg.delivery?.[myId]?.attempts ?? 0;
+      if (msgAttempts >= MAX_DELIVERY_ATTEMPTS) {
+        api.logger?.warn(
+          `Ansible dispatcher: message ${id.slice(0, 8)} from ${msg.from} has exceeded ${MAX_DELIVERY_ATTEMPTS} delivery attempts — skipping. Manual intervention may be needed.`
+        );
+        continue;
+      }
       // If a retry is already scheduled for this message, wait for the timer.
       if (scheduled.has(`msg:${id}`)) continue;
       pendingMessages.push({ id: id as string, msg });
@@ -139,6 +149,21 @@ export function startMessageDispatcher(api: OpenClawPluginApi, config: AnsibleCo
       if (task.status !== "pending" && task.status !== "claimed" && task.status !== "in_progress") continue;
       if (task.claimedBy && task.claimedBy !== myId) continue;
       if (isDeliveredTask(task, myId)) continue;
+      const taskAttempts = task.delivery?.[myId]?.attempts ?? 0;
+      if (taskAttempts >= MAX_DELIVERY_ATTEMPTS) {
+        api.logger?.warn(
+          `Ansible dispatcher: task ${id.slice(0, 8)} "${task.title}" has exceeded ${MAX_DELIVERY_ATTEMPTS} delivery attempts — skipping.`
+        );
+        continue;
+      }
+      if (task.skillRequired) {
+        if (!mySkills.includes(task.skillRequired)) {
+          api.logger?.debug(
+            `Ansible dispatcher: skipping task ${id.slice(0, 8)} — requires skill '${task.skillRequired}', not available on this node (have: [${mySkills.join(", ")}])`
+          );
+          continue;
+        }
+      }
       if (scheduled.has(`task:${id}`)) continue;
       pendingTasks.push({ id: id as string, task });
     }

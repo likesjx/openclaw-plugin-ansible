@@ -66,6 +66,21 @@ Tools:
 - `ansible_set_coordination_preference`
 - `ansible_set_coordination` (initial setup or last-resort failover; requires `confirmLastResort=true` when switching)
 
+## Delegation Directory (Identity.md + Shared Policy)
+
+For delegation to happen consistently across the entire mesh, use the Delegation Directory standard:
+
+- Canonical policy lives in shared ansible state (`coordination` map).
+- Each agent keeps a local published copy in `IDENTITY.md` under `## Delegation Directory`.
+- Coordinator distributes policy updates and tracks ACKs (version + checksum).
+
+Reference:
+
+- `docs/delegation-directory.md`
+- `docs/identity-delegation-template.md`
+
+This gives a deterministic routing contract while keeping local identity files human-auditable.
+
 ## Message Content Convention (Works With Current Schema)
 
 Ansible messages are stored as:

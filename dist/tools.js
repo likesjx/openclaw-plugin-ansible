@@ -3,7 +3,7 @@
  *
  * Tools available to the agent for inter-hemisphere coordination.
  */
-import { randomUUID } from "crypto";
+import { createHash, randomUUID } from "crypto";
 import { VALIDATION_LIMITS } from "./schema.js";
 import { getDoc, getNodeId, getAnsibleState } from "./service.js";
 import { isNodeAuthorized } from "./auth.js";
@@ -50,9 +50,40 @@ function readCoordinationState(doc) {
     return {
         coordinator: m.get("coordinator"),
         sweepEverySeconds: m.get("sweepEverySeconds"),
+        retentionClosedTaskSeconds: m.get("retentionClosedTaskSeconds"),
+        retentionPruneEverySeconds: m.get("retentionPruneEverySeconds"),
+        retentionLastPruneAt: m.get("retentionLastPruneAt"),
+        delegationPolicyVersion: m.get("delegationPolicyVersion"),
+        delegationPolicyChecksum: m.get("delegationPolicyChecksum"),
+        delegationPolicyUpdatedAt: m.get("delegationPolicyUpdatedAt"),
+        delegationPolicyUpdatedBy: m.get("delegationPolicyUpdatedBy"),
         updatedAt: m.get("updatedAt"),
         updatedBy: m.get("updatedBy"),
     };
+}
+function computeSha256(text) {
+    return `sha256:${createHash("sha256").update(text).digest("hex")}`;
+}
+function readDelegationAcks(m) {
+    const out = {};
+    for (const [k, v] of m.entries()) {
+        const key = String(k);
+        if (!key.startsWith("delegationAck:"))
+            continue;
+        const parts = key.split(":");
+        if (parts.length < 3)
+            continue;
+        const agentId = parts[1];
+        const field = parts[2];
+        out[agentId] = out[agentId] || {};
+        if (field === "version")
+            out[agentId].version = typeof v === "string" ? v : undefined;
+        if (field === "checksum")
+            out[agentId].checksum = typeof v === "string" ? v : undefined;
+        if (field === "at")
+            out[agentId].at = typeof v === "number" ? v : undefined;
+    }
+    return out;
 }
 function notifyTaskOwner(doc, fromNodeId, task, payload) {
     if (!doc)
@@ -331,6 +362,249 @@ export function registerAnsibleTools(api, config) {
             }
         },
     });
+    // === ansible_set_retention ===
+    api.registerTool({
+        name: "ansible_set_retention",
+        label: "Ansible Set Retention",
+        description: "Configure coordinator roll-off policy: run daily (or configurable) and prune closed tasks older than a TTL. Takes effect on the coordinator backbone node.",
+        parameters: {
+            type: "object",
+            properties: {
+                closedTaskRetentionDays: {
+                    type: "number",
+                    description: "Delete completed/failed tasks older than this many days. Default 7.",
+                },
+                pruneEveryHours: {
+                    type: "number",
+                    description: "How often the coordinator runs the prune (hours). Default 24.",
+                },
+            },
+        },
+        async execute(_id, params) {
+            const doc = getDoc();
+            const nodeId = getNodeId();
+            if (!doc || !nodeId)
+                return toolResult({ error: "Ansible not initialized" });
+            try {
+                requireAuth(nodeId);
+                const m = getCoordinationMap(doc);
+                if (!m)
+                    return toolResult({ error: "Coordination map not initialized" });
+                const days = params.closedTaskRetentionDays === undefined
+                    ? 7
+                    : validateNumber(params.closedTaskRetentionDays, "closedTaskRetentionDays");
+                const hours = params.pruneEveryHours === undefined ? 24 : validateNumber(params.pruneEveryHours, "pruneEveryHours");
+                if (days < 1 || days > 90)
+                    return toolResult({ error: "closedTaskRetentionDays must be between 1 and 90" });
+                if (hours < 1 || hours > 168)
+                    return toolResult({ error: "pruneEveryHours must be between 1 and 168" });
+                const closedTaskSeconds = Math.floor(days * 24 * 60 * 60);
+                const pruneEverySeconds = Math.floor(hours * 60 * 60);
+                m.set("retentionClosedTaskSeconds", closedTaskSeconds);
+                m.set("retentionPruneEverySeconds", pruneEverySeconds);
+                m.set("retentionUpdatedAt", Date.now());
+                m.set("retentionUpdatedBy", nodeId);
+                return toolResult({
+                    success: true,
+                    retentionClosedTaskSeconds: closedTaskSeconds,
+                    retentionPruneEverySeconds: pruneEverySeconds,
+                    retentionUpdatedAt: m.get("retentionUpdatedAt"),
+                    retentionUpdatedBy: m.get("retentionUpdatedBy"),
+                });
+            }
+            catch (err) {
+                return toolResult({ error: err.message });
+            }
+        },
+    });
+    // === ansible_get_delegation_policy ===
+    api.registerTool({
+        name: "ansible_get_delegation_policy",
+        label: "Ansible Get Delegation Policy",
+        description: "Read the shared delegation policy (version/checksum/markdown) and ack status by agent.",
+        parameters: {
+            type: "object",
+            properties: {
+                includeAcks: {
+                    type: "boolean",
+                    description: "Include delegation ACK records by agent (default true).",
+                },
+            },
+        },
+        async execute(_id, params) {
+            const doc = getDoc();
+            const nodeId = getNodeId();
+            if (!doc || !nodeId)
+                return toolResult({ error: "Ansible not initialized" });
+            try {
+                requireAuth(nodeId);
+                const m = getCoordinationMap(doc);
+                if (!m)
+                    return toolResult({ error: "Coordination map not initialized" });
+                const includeAcks = params.includeAcks !== false;
+                const out = {
+                    delegationPolicyVersion: m.get("delegationPolicyVersion"),
+                    delegationPolicyChecksum: m.get("delegationPolicyChecksum"),
+                    delegationPolicyMarkdown: m.get("delegationPolicyMarkdown"),
+                    delegationPolicyUpdatedAt: m.get("delegationPolicyUpdatedAt"),
+                    delegationPolicyUpdatedBy: m.get("delegationPolicyUpdatedBy"),
+                };
+                if (includeAcks)
+                    out.acks = readDelegationAcks(m);
+                return toolResult(out);
+            }
+            catch (err) {
+                return toolResult({ error: err.message });
+            }
+        },
+    });
+    // === ansible_set_delegation_policy ===
+    api.registerTool({
+        name: "ansible_set_delegation_policy",
+        label: "Ansible Set Delegation Policy",
+        description: "Coordinator-only: publish delegation policy markdown + version/checksum and optionally send policy update messages to target agents.",
+        parameters: {
+            type: "object",
+            properties: {
+                policyMarkdown: {
+                    type: "string",
+                    description: "Canonical policy markdown (table + metadata).",
+                },
+                version: {
+                    type: "string",
+                    description: "Policy version string (e.g., 2026-02-12.1).",
+                },
+                checksum: {
+                    type: "string",
+                    description: "Optional checksum; if omitted, computed as sha256(policyMarkdown).",
+                },
+                notifyAgents: {
+                    type: "array",
+                    items: { type: "string" },
+                    description: "Optional list of agent/node ids to notify with a policy_update message.",
+                },
+            },
+            required: ["policyMarkdown", "version"],
+        },
+        async execute(_id, params) {
+            const doc = getDoc();
+            const nodeId = getNodeId();
+            if (!doc || !nodeId)
+                return toolResult({ error: "Ansible not initialized" });
+            try {
+                requireAuth(nodeId);
+                const m = getCoordinationMap(doc);
+                if (!m)
+                    return toolResult({ error: "Coordination map not initialized" });
+                const coordinator = m.get("coordinator");
+                if (!coordinator)
+                    return toolResult({ error: "Coordinator not configured. Set with ansible_set_coordination first." });
+                if (coordinator !== nodeId)
+                    return toolResult({ error: `Only coordinator (${coordinator}) can publish delegation policy` });
+                const policyMarkdown = validateString(params.policyMarkdown, 200_000, "policyMarkdown");
+                const version = validateString(params.version, 120, "version");
+                const checksum = params.checksum
+                    ? validateString(params.checksum, 200, "checksum")
+                    : computeSha256(policyMarkdown);
+                m.set("delegationPolicyVersion", version);
+                m.set("delegationPolicyChecksum", checksum);
+                m.set("delegationPolicyMarkdown", policyMarkdown);
+                m.set("delegationPolicyUpdatedAt", Date.now());
+                m.set("delegationPolicyUpdatedBy", nodeId);
+                const notified = [];
+                const rawNotify = Array.isArray(params.notifyAgents) ? params.notifyAgents : [];
+                const notifyAgents = rawNotify
+                    .filter((x) => typeof x === "string" && String(x).trim().length > 0)
+                    .map((x) => String(x).trim());
+                if (notifyAgents.length > 0) {
+                    const messages = doc.getMap("messages");
+                    for (const to of notifyAgents) {
+                        const message = {
+                            id: randomUUID(),
+                            from: nodeId,
+                            to,
+                            timestamp: Date.now(),
+                            readBy: [nodeId],
+                            content: [
+                                "kind: policy_update",
+                                `policyVersion: ${version}`,
+                                `policyChecksum: ${checksum}`,
+                                "",
+                                "Apply this Delegation Directory policy to your IDENTITY.md and ACK with ansible_ack_delegation_policy.",
+                            ].join("\n"),
+                        };
+                        messages.set(message.id, message);
+                        notified.push(to);
+                    }
+                }
+                return toolResult({
+                    success: true,
+                    delegationPolicyVersion: version,
+                    delegationPolicyChecksum: checksum,
+                    delegationPolicyUpdatedAt: m.get("delegationPolicyUpdatedAt"),
+                    delegationPolicyUpdatedBy: m.get("delegationPolicyUpdatedBy"),
+                    notifiedAgents: notified,
+                });
+            }
+            catch (err) {
+                return toolResult({ error: err.message });
+            }
+        },
+    });
+    // === ansible_ack_delegation_policy ===
+    api.registerTool({
+        name: "ansible_ack_delegation_policy",
+        label: "Ansible Ack Delegation Policy",
+        description: "Record this agent's acknowledgement of the current (or provided) delegation policy version/checksum.",
+        parameters: {
+            type: "object",
+            properties: {
+                version: {
+                    type: "string",
+                    description: "Acknowledged policy version. Defaults to current shared version.",
+                },
+                checksum: {
+                    type: "string",
+                    description: "Acknowledged policy checksum. Defaults to current shared checksum.",
+                },
+            },
+        },
+        async execute(_id, params) {
+            const doc = getDoc();
+            const nodeId = getNodeId();
+            if (!doc || !nodeId)
+                return toolResult({ error: "Ansible not initialized" });
+            try {
+                requireAuth(nodeId);
+                const m = getCoordinationMap(doc);
+                if (!m)
+                    return toolResult({ error: "Coordination map not initialized" });
+                const version = params.version
+                    ? validateString(params.version, 120, "version")
+                    : m.get("delegationPolicyVersion");
+                const checksum = params.checksum
+                    ? validateString(params.checksum, 200, "checksum")
+                    : m.get("delegationPolicyChecksum");
+                if (!version || !checksum) {
+                    return toolResult({ error: "No shared delegation policy is published yet" });
+                }
+                const now = Date.now();
+                m.set(`delegationAck:${nodeId}:version`, version);
+                m.set(`delegationAck:${nodeId}:checksum`, checksum);
+                m.set(`delegationAck:${nodeId}:at`, now);
+                return toolResult({
+                    success: true,
+                    agentId: nodeId,
+                    version,
+                    checksum,
+                    ackAt: now,
+                });
+            }
+            catch (err) {
+                return toolResult({ error: err.message });
+            }
+        },
+    });
     // === ansible_delegate_task ===
     api.registerTool({
         name: "ansible_delegate_task",
@@ -360,6 +634,14 @@ export function registerAnsibleTools(api, config) {
                     items: { type: "string" },
                     description: "Required capabilities: 'always-on', 'local-files', 'gpu'",
                 },
+                intent: {
+                    type: "string",
+                    description: "Semantic type for this task (e.g., 'skill-setup', 'delegation', 'maintenance')",
+                },
+                skillRequired: {
+                    type: "string",
+                    description: "If set, only nodes that have advertised this skill will auto-dispatch this task.",
+                },
             },
             required: ["title", "description"],
         },
@@ -388,6 +670,8 @@ export function registerAnsibleTools(api, config) {
                     context,
                     assignedTo: params.assignedTo,
                     requires: params.requires,
+                    intent: params.intent,
+                    skillRequired: params.skillRequired,
                 };
                 const tasks = doc.getMap("tasks");
                 tasks.set(task.id, task);
@@ -449,6 +733,145 @@ export function registerAnsibleTools(api, config) {
                     message: params.to
                         ? `Message sent to ${params.to}`
                         : "Message broadcast to all hemispheres",
+                });
+            }
+            catch (err) {
+                return toolResult({ error: err.message });
+            }
+        },
+    });
+    // === ansible_advertise_skills ===
+    api.registerTool({
+        name: "ansible_advertise_skills",
+        label: "Ansible Advertise Skills",
+        description: "Publish this node's available skills to the mesh so other nodes and the coordinator know what you can handle. Also broadcasts a skill-advertised message so all agents are notified. Call this after instantiating a new skill.",
+        parameters: {
+            type: "object",
+            properties: {
+                skills: {
+                    type: "array",
+                    items: { type: "string" },
+                    description: "List of skill names this node now handles (e.g., ['caldav-calendar', 'ansible-executor'])",
+                },
+            },
+            required: ["skills"],
+        },
+        async execute(_id, params) {
+            const doc = getDoc();
+            const nodeId = getNodeId();
+            if (!doc || !nodeId)
+                return toolResult({ error: "Ansible not initialized" });
+            try {
+                requireAuth(nodeId);
+                const skills = params.skills;
+                if (!Array.isArray(skills) || skills.length === 0) {
+                    return toolResult({ error: "skills must be a non-empty array of strings" });
+                }
+                // 1. Update NodeContext with skills
+                const contextMap = doc.getMap("context");
+                const current = contextMap.get(nodeId);
+                const updated = {
+                    currentFocus: current?.currentFocus ?? "",
+                    activeThreads: current?.activeThreads ?? [],
+                    recentDecisions: current?.recentDecisions ?? [],
+                    skills,
+                };
+                contextMap.set(nodeId, updated);
+                // 2. Broadcast skill-advertised message
+                const content = `Skill advertisement from ${nodeId}: I now handle the following skills: ${skills.join(", ")}. Route relevant tasks to me.`;
+                const messagesMap = doc.getMap("messages");
+                const msgId = randomUUID();
+                messagesMap.set(msgId, {
+                    id: msgId,
+                    from: nodeId,
+                    to: undefined,
+                    content,
+                    intent: "skill-advertised",
+                    timestamp: Date.now(),
+                    readBy: [nodeId],
+                });
+                api.logger?.info(`Ansible: skills advertised: [${skills.join(", ")}]`);
+                return toolResult({ success: true, skills, broadcastMessageId: msgId });
+            }
+            catch (err) {
+                return toolResult({ error: err.message });
+            }
+        },
+    });
+    // === ansible_create_skill_task ===
+    api.registerTool({
+        name: "ansible_create_skill_task",
+        label: "Ansible Create Skill Task",
+        description: "Send a skill instantiation request to a target node. The target node will receive the spec, instantiate the skill locally, and broadcast its availability to the mesh.",
+        parameters: {
+            type: "object",
+            properties: {
+                skillName: {
+                    type: "string",
+                    description: "Name of the skill to instantiate (e.g., 'caldav-calendar')",
+                },
+                assignedTo: {
+                    type: "string",
+                    description: "Node ID of the executor (e.g., 'vps-jane'). Required.",
+                },
+                spec: {
+                    type: "string",
+                    description: "Full specification for the skill: what it does, how it should be set up, any scripts or SKILL.md content to create, configuration needed.",
+                },
+                title: {
+                    type: "string",
+                    description: "Optional human-readable title. Defaults to 'Instantiate skill: {skillName}'",
+                },
+            },
+            required: ["skillName", "assignedTo", "spec"],
+        },
+        async execute(_id, params) {
+            const doc = getDoc();
+            const nodeId = getNodeId();
+            if (!doc || !nodeId)
+                return toolResult({ error: "Ansible not initialized" });
+            try {
+                requireAuth(nodeId);
+                const skillName = validateString(params.skillName, 100, "skillName");
+                const assignedTo = params.assignedTo;
+                const spec = validateString(params.spec, VALIDATION_LIMITS.maxContextLength, "spec");
+                const title = params.title ?? `Instantiate skill: ${skillName}`;
+                const executorInstructions = [
+                    `You have been assigned a skill instantiation task.`,
+                    ``,
+                    `**Skill to instantiate**: ${skillName}`,
+                    ``,
+                    `**Your steps**:`,
+                    `1. Read the spec carefully (in the context field below)`,
+                    `2. Create the skill locally: write SKILL.md and any required scripts in your workspace/skills/${skillName}/ directory`,
+                    `3. Test the skill if possible`,
+                    `4. Call ansible_advertise_skills(["${skillName}"]) to publish your availability to the mesh`,
+                    `5. Complete this task with ansible_complete_task(taskId, result)`,
+                    ``,
+                    `**Spec**:`,
+                    spec,
+                ].join("\n");
+                const task = {
+                    id: randomUUID(),
+                    title,
+                    description: `Instantiate skill '${skillName}' on node ${assignedTo} following the provided spec.`,
+                    status: "pending",
+                    createdBy: nodeId,
+                    createdAt: Date.now(),
+                    updatedAt: Date.now(),
+                    updates: [],
+                    context: executorInstructions,
+                    assignedTo,
+                    intent: "skill-setup",
+                    skillRequired: undefined,
+                };
+                const tasks = doc.getMap("tasks");
+                tasks.set(task.id, task);
+                api.logger?.info(`Ansible: skill-setup task ${task.id.slice(0, 8)} created for '${skillName}' on ${assignedTo}`);
+                return toolResult({
+                    success: true,
+                    taskId: task.id,
+                    message: `Skill instantiation task for '${skillName}' sent to ${assignedTo}`,
                 });
             }
             catch (err) {
@@ -587,6 +1010,7 @@ export function registerAnsibleTools(api, config) {
                             status: normalizedStatus,
                             lastSeen: new Date(lastSeenMs).toISOString(),
                             currentFocus: context?.currentFocus,
+                            skills: context?.skills ?? [],
                             stale: stale ? true : undefined,
                             ageSeconds: Math.floor(ageMs / 1000),
                         });

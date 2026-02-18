@@ -167,6 +167,12 @@ export interface Task {
   /** Context transferred for delegation */
   context?: string;
 
+  /** Semantic type for this task (e.g., "skill-setup", "delegation", "maintenance") */
+  intent?: string;
+
+  /** If set, only nodes that have advertised this skill will auto-dispatch this task */
+  skillRequired?: string;
+
   /** Operational metadata */
   updatedAt?: number;
   updates?: Array<{
@@ -195,6 +201,9 @@ export interface Message {
   timestamp: number;
   readBy: TailscaleId[];
 
+  /** Semantic type (e.g., "skill-advertised", "status-update") */
+  intent?: string;
+
   /**
    * Per-node dispatch tracking so reconnect reconciliation can be deterministic
    * and idempotent. Keyed by receiver nodeId.
@@ -222,6 +231,8 @@ export interface NodeContext {
   currentFocus: string;
   activeThreads: Thread[];
   recentDecisions: Decision[];
+  /** Advertised skill names this node handles */
+  skills?: string[];
 }
 
 // ============================================================================
@@ -253,6 +264,19 @@ export interface CoordinationPreference {
  * - sweepEverySeconds: number
  * - updatedAt: number
  * - updatedBy: TailscaleId
+ * - retentionClosedTaskSeconds: number (default 604800 / 7 days)
+ * - retentionPruneEverySeconds: number (default 86400 / daily)
+ * - retentionLastPruneAt: number (ms epoch)
+ * - retentionUpdatedAt: number (ms epoch)
+ * - retentionUpdatedBy: TailscaleId
+ * - delegationPolicyVersion: string
+ * - delegationPolicyChecksum: string
+ * - delegationPolicyMarkdown: string
+ * - delegationPolicyUpdatedAt: number (ms epoch)
+ * - delegationPolicyUpdatedBy: TailscaleId
+ * - delegationAck:<nodeId>:version: string
+ * - delegationAck:<nodeId>:checksum: string
+ * - delegationAck:<nodeId>:at: number (ms epoch)
  * - pref:<nodeId>: CoordinationPreference
  */
 export interface CoordinationState {
@@ -260,6 +284,11 @@ export interface CoordinationState {
   sweepEverySeconds?: number;
   updatedAt?: number;
   updatedBy?: TailscaleId;
+  delegationPolicyVersion?: string;
+  delegationPolicyChecksum?: string;
+  delegationPolicyMarkdown?: string;
+  delegationPolicyUpdatedAt?: number;
+  delegationPolicyUpdatedBy?: TailscaleId;
 }
 
 // ============================================================================
