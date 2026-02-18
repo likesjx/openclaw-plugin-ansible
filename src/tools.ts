@@ -155,6 +155,28 @@ function resolveTaskKey(
   };
 }
 
+/**
+ * Resolve the effective agent ID for task operations.
+ * Internal agents use nodeId (must be authorized in the nodes map).
+ * External agents provide agentId, which is verified against the agents registry.
+ */
+function resolveEffectiveAgent(
+  doc: ReturnType<typeof getDoc>,
+  nodeId: string,
+  agentId: string | undefined
+): { effectiveAgent: string; error?: never } | { effectiveAgent?: never; error: string } {
+  if (!agentId) {
+    requireAuth(nodeId);
+    return { effectiveAgent: nodeId };
+  }
+  const agents = doc!.getMap("agents");
+  const record = agents.get(agentId) as { type?: string } | undefined;
+  if (!record) {
+    return { error: `Agent '${agentId}' is not registered. Use: openclaw ansible agent register --id ${agentId}` };
+  }
+  return { effectiveAgent: agentId };
+}
+
 export function registerAnsibleTools(
   api: OpenClawPluginApi,
   config: AnsibleConfig
@@ -171,6 +193,7 @@ export function registerAnsibleTools(
         idPrefix: { type: "string", description: "Task id prefix (often 8 chars from ansible_status)" },
         titleContains: { type: "string", description: "Case-insensitive substring match on task title" },
         status: { type: "string", description: "Filter by status (pending|claimed|in_progress|completed|failed)" },
+        assignedTo: { type: "string", description: "Filter by assigned agent ID (e.g., 'claude-code')" },
         limit: { type: "number", description: "Max results to return (default 10)" },
       },
     },
@@ -187,6 +210,8 @@ export function registerAnsibleTools(
         const status = params.status ? String(params.status).trim() : "";
         const limit = typeof params.limit === "number" && Number.isFinite(params.limit) ? Math.max(1, Math.min(50, params.limit)) : 10;
 
+        const assignedTo = params.assignedTo ? String(params.assignedTo).trim() : "";
+
         const out: any[] = [];
         for (const [k, v] of (tasks as any).entries()) {
           const t = v as Task;
@@ -194,6 +219,7 @@ export function registerAnsibleTools(
           if (status && t.status !== status) continue;
           if (idPrefix && !(String(k).startsWith(idPrefix) || String(t.id || "").startsWith(idPrefix))) continue;
           if (titleContains && !String(t.title || "").toLowerCase().includes(titleContains)) continue;
+          if (assignedTo && t.assignedTo_agent !== assignedTo) continue;
           out.push({
             key: k,
             id: t.id,
@@ -1168,13 +1194,17 @@ export function registerAnsibleTools(
   api.registerTool({
     name: "ansible_claim_task",
     label: "Ansible Claim Task",
-    description: "Claim a pending task to work on it.",
+    description: "Claim a pending task to work on it. External agents (claude-code, codex) pass agentId.",
     parameters: {
       type: "object",
       properties: {
         taskId: {
           type: "string",
           description: "The task ID to claim",
+        },
+        agentId: {
+          type: "string",
+          description: "External agent ID claiming the task (e.g., 'claude-code'). Omit for internal agents.",
         },
       },
       required: ["taskId"],
@@ -1189,7 +1219,9 @@ export function registerAnsibleTools(
       }
 
       try {
-        requireAuth(nodeId);
+        const resolved = resolveEffectiveAgent(doc, nodeId, params.agentId as string | undefined);
+        if (resolved.error) return toolResult({ error: resolved.error });
+        const effectiveAgent = resolved.effectiveAgent;
 
         const tasks = doc.getMap("tasks");
         const resolvedKey = resolveTaskKey(tasks as any, params.taskId as string);
@@ -1207,12 +1239,12 @@ export function registerAnsibleTools(
         tasks.set(resolvedKey, {
           ...task,
           status: "claimed",
-          claimedBy_agent: nodeId,
+          claimedBy_agent: effectiveAgent,
           claimedBy_node: nodeId,
           claimedAt: Date.now(),
           updatedAt: Date.now(),
           updates: [
-            { at: Date.now(), by_agent: nodeId, status: "claimed", note: "claimed" },
+            { at: Date.now(), by_agent: effectiveAgent, status: "claimed", note: "claimed" },
             ...((task.updates as any) || []),
           ].slice(0, 50),
         });
@@ -1225,6 +1257,7 @@ export function registerAnsibleTools(
             title: task.title,
             description: task.description,
             context: task.context,
+            intent: task.intent,
           },
         });
       } catch (err: any) {
@@ -1259,6 +1292,10 @@ export function registerAnsibleTools(
           type: "string",
           description: "Optional result text (useful when status=failed).",
         },
+        agentId: {
+          type: "string",
+          description: "External agent ID updating the task (e.g., 'claude-code'). Omit for internal agents.",
+        },
       },
       required: ["taskId", "status"],
     },
@@ -1272,14 +1309,16 @@ export function registerAnsibleTools(
       }
 
       try {
-        requireAuth(nodeId);
+        const resolved = resolveEffectiveAgent(doc, nodeId, params.agentId as string | undefined);
+        if (resolved.error) return toolResult({ error: resolved.error });
+        const effectiveAgent = resolved.effectiveAgent;
 
         const tasks = doc.getMap("tasks");
         const resolvedKey = resolveTaskKey(tasks as any, params.taskId as string);
         if (typeof resolvedKey !== "string") return toolResult(resolvedKey);
         const task = tasks.get(resolvedKey) as Task | undefined;
         if (!task) return toolResult({ error: "Task not found" });
-        if (task.claimedBy_agent !== nodeId) {
+        if (task.claimedBy_agent !== effectiveAgent) {
           return toolResult({ error: "You don't have this task claimed" });
         }
 
@@ -1302,7 +1341,7 @@ export function registerAnsibleTools(
           updatedAt: Date.now(),
           result: result ?? task.result,
           updates: [
-            { at: Date.now(), by_agent: nodeId, status: status as any, note },
+            { at: Date.now(), by_agent: effectiveAgent, status: status as any, note },
             ...((task.updates as any) || []),
           ].slice(0, 50),
         };
@@ -1342,6 +1381,10 @@ export function registerAnsibleTools(
           type: "string",
           description: "Summary of the result or outcome",
         },
+        agentId: {
+          type: "string",
+          description: "External agent ID completing the task (e.g., 'claude-code'). Omit for internal agents.",
+        },
       },
       required: ["taskId"],
     },
@@ -1355,7 +1398,9 @@ export function registerAnsibleTools(
       }
 
       try {
-        requireAuth(nodeId);
+        const resolved = resolveEffectiveAgent(doc, nodeId, params.agentId as string | undefined);
+        if (resolved.error) return toolResult({ error: resolved.error });
+        const effectiveAgent = resolved.effectiveAgent;
 
         const tasks = doc.getMap("tasks");
         const resolvedKey = resolveTaskKey(tasks as any, params.taskId as string);
@@ -1366,7 +1411,7 @@ export function registerAnsibleTools(
           return toolResult({ error: "Task not found" });
         }
 
-        if (task.claimedBy_agent !== nodeId) {
+        if (task.claimedBy_agent !== effectiveAgent) {
           return toolResult({ error: "You don't have this task claimed" });
         }
 
@@ -1379,7 +1424,7 @@ export function registerAnsibleTools(
           result,
           updatedAt: Date.now(),
           updates: [
-            { at: Date.now(), by_agent: nodeId, status: "completed", note: "completed" },
+            { at: Date.now(), by_agent: effectiveAgent, status: "completed", note: "completed" },
             ...((task.updates as any) || []),
           ].slice(0, 50),
         };

@@ -645,45 +645,143 @@ export function registerAnsibleCli(
       });
 
     // === ansible tasks ===
-    ansible
-      .command("tasks")
-      .description("List all tasks")
-      .option("-s, --status <status>", "Filter by status")
+    const tasksCmd = ansible.command("tasks").description("List and manage tasks") as CliCommand;
+
+    tasksCmd
+      .command("list")
+      .description("List tasks (default: all non-completed)")
+      .option("-s, --status <status>", "Filter by status (pending|claimed|in_progress|completed|failed)")
+      .option("--assigned-to <agentId>", "Filter by assigned agent (e.g., claude-code)")
+      .option("--title <text>", "Filter by title substring")
+      .option("-n, --limit <count>", "Max results (default 20)", "20")
+      .option("--format <fmt>", "Output format: text (default) or json")
       .action(async (...args: unknown[]) => {
-        const opts = (args[0] || {}) as { status?: string };
+        const opts = (args[0] || {}) as { status?: string; assignedTo?: string; title?: string; limit?: string; format?: string };
+
+        const toolArgs: Record<string, unknown> = { limit: parseInt(opts.limit || "20", 10) };
+        if (opts.status) toolArgs.status = opts.status;
+        if (opts.assignedTo) toolArgs.assignedTo = opts.assignedTo;
+        if (opts.title) toolArgs.titleContains = opts.title;
 
         let result: any;
         try {
-          result = await callGateway("ansible_status");
+          result = await callGateway("ansible_find_task", toolArgs);
         } catch (err: any) {
           console.log(`✗ ${err.message}`);
           return;
         }
+        if (result.error) { console.log(`✗ ${result.error}`); return; }
 
-        if (result.error) {
-          console.log(`✗ ${result.error}`);
-          return;
-        }
+        if (opts.format === "json") { console.log(JSON.stringify(result, null, 2)); return; }
 
-        console.log("\n=== Tasks ===\n");
+        const tasks: any[] = result.matches || [];
+        console.log(`\n=== Tasks (${tasks.length} of ${result.total}) ===\n`);
+        if (tasks.length === 0) { console.log("No tasks found."); return; }
 
-        // The status tool only returns pending tasks; display what we have
-        const tasks: any[] = result.pendingTasks || [];
-        if (tasks.length === 0) {
-          console.log("No pending tasks.");
-          return;
-        }
-
-        for (const task of tasks) {
-          // If caller filtered by status and this doesn't match, skip
-          if (opts.status && opts.status !== "pending") continue;
-
-          const assignee = task.assignedTo && task.assignedTo !== "anyone" ? ` → ${task.assignedTo}` : "";
-          console.log(`○ [${task.id}] ${task.title}${assignee}`);
-          console.log(`  Status: pending`);
+        for (const t of tasks) {
+          const icon = t.status === "completed" ? "✓" : t.status === "failed" ? "✗" : t.status === "in_progress" ? "▶" : t.status === "claimed" ? "◉" : "○";
+          const assignee = t.assignedTo ? ` → ${t.assignedTo}` : "";
+          const claimer = t.claimedBy ? ` (${t.claimedBy})` : "";
+          const intent = t.intent ? ` [${t.intent}]` : "";
+          console.log(`${icon} [${t.id ? t.id.slice(0, 8) : t.key}] ${t.title}${intent}`);
+          console.log(`  Status: ${t.status}${assignee}${claimer}`);
           console.log();
         }
       });
+
+    tasksCmd
+      .command("claim <taskId>")
+      .description("Claim a pending task to work on it")
+      .option("--as <agentId>", "Claim as this external agent (e.g., claude-code)")
+      .action(async (...args: unknown[]) => {
+        const taskId = args[0] as string;
+        const opts = (args[1] || {}) as { as?: string };
+        const toolArgs: Record<string, unknown> = { taskId };
+        if (opts.as) toolArgs.agentId = opts.as;
+
+        let result: any;
+        try {
+          result = await callGateway("ansible_claim_task", toolArgs);
+        } catch (err: any) { console.log(`✗ ${err.message}`); return; }
+        if (result.error) { console.log(`✗ ${result.error}`); return; }
+
+        console.log(`✓ Claimed: ${result.task?.title}`);
+        if (result.task?.description) console.log(`\nDescription:\n${result.task.description}`);
+        if (result.task?.context) console.log(`\nContext:\n${result.task.context}`);
+        if (result.task?.intent) console.log(`\nIntent: ${result.task.intent}`);
+        console.log(`\nNext steps:`);
+        console.log(`  openclaw ansible tasks update ${taskId} --status in_progress --note "starting work"${opts.as ? ` --as ${opts.as}` : ""}`);
+        console.log(`  openclaw ansible tasks complete ${taskId} --result "..."${opts.as ? ` --as ${opts.as}` : ""}`);
+      });
+
+    tasksCmd
+      .command("update <taskId>")
+      .description("Update a claimed task status or add a progress note")
+      .option("--status <status>", "New status: in_progress|failed")
+      .option("--note <note>", "Progress note")
+      .option("--result <result>", "Result text (useful when status=failed)")
+      .option("--notify", "Send update message to task creator")
+      .option("--as <agentId>", "Update as this external agent (e.g., claude-code)")
+      .action(async (...args: unknown[]) => {
+        const taskId = args[0] as string;
+        const opts = (args[1] || {}) as { status?: string; note?: string; result?: string; notify?: boolean; as?: string };
+        if (!opts.status) { console.log("✗ --status required (in_progress|failed)"); return; }
+
+        const toolArgs: Record<string, unknown> = { taskId, status: opts.status };
+        if (opts.note) toolArgs.note = opts.note;
+        if (opts.result) toolArgs.result = opts.result;
+        if (opts.notify) toolArgs.notify = true;
+        if (opts.as) toolArgs.agentId = opts.as;
+
+        let result: any;
+        try {
+          result = await callGateway("ansible_update_task", toolArgs);
+        } catch (err: any) { console.log(`✗ ${err.message}`); return; }
+        if (result.error) { console.log(`✗ ${result.error}`); return; }
+
+        console.log(`✓ Task updated: status=${opts.status}`);
+        if (result.notified) console.log(`  Creator notified (messageId: ${result.notifyMessageId})`);
+      });
+
+    tasksCmd
+      .command("complete <taskId>")
+      .description("Mark a claimed task as completed")
+      .option("--result <result>", "Result summary (what was done, output, links)")
+      .option("--as <agentId>", "Complete as this external agent (e.g., claude-code)")
+      .action(async (...args: unknown[]) => {
+        const taskId = args[0] as string;
+        const opts = (args[1] || {}) as { result?: string; as?: string };
+        const toolArgs: Record<string, unknown> = { taskId };
+        if (opts.result) toolArgs.result = opts.result;
+        if (opts.as) toolArgs.agentId = opts.as;
+
+        let result: any;
+        try {
+          result = await callGateway("ansible_complete_task", toolArgs);
+        } catch (err: any) { console.log(`✗ ${err.message}`); return; }
+        if (result.error) { console.log(`✗ ${result.error}`); return; }
+
+        console.log(`✓ Task completed.`);
+        if (result.notifyMessageId) console.log(`  Creator notified (messageId: ${result.notifyMessageId})`);
+      });
+
+    // Bare `tasks` (no subcommand) → list pending
+    tasksCmd.action(async () => {
+      let result: any;
+      try {
+        result = await callGateway("ansible_find_task", { status: "pending", limit: 20 });
+      } catch (err: any) { console.log(`✗ ${err.message}`); return; }
+      if (result.error) { console.log(`✗ ${result.error}`); return; }
+
+      const tasks: any[] = result.matches || [];
+      console.log(`\n=== Pending Tasks (${tasks.length}) ===\n`);
+      if (tasks.length === 0) { console.log("No pending tasks."); return; }
+      for (const t of tasks) {
+        const assignee = t.assignedTo ? ` → ${t.assignedTo}` : "";
+        const intent = t.intent ? ` [${t.intent}]` : "";
+        console.log(`○ [${t.id ? t.id.slice(0, 8) : t.key}] ${t.title}${intent}${assignee}`);
+      }
+    });
 
     // === ansible messages ===
     ansible
