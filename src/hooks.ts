@@ -123,7 +123,7 @@ function buildContextInjection(
     const messageLines = unreadMessages
       .filter((m) => now - m.timestamp < maxAgeMs)
       .slice(0, CONTEXT_LIMITS.unreadMessages)
-      .map((m) => `- From **${m.from}**: ${m.content}`);
+      .map((m) => `- From **${m.from_agent}**: ${m.content}`);
 
     if (messageLines.length > 0) {
       sections.push(`## Unread Messages\n${messageLines.join("\n")}`);
@@ -153,13 +153,13 @@ function getMyPendingTasks(
     // - claimed/in_progress tasks that I claimed
     const isMineInFlight =
       (task.status === "claimed" || task.status === "in_progress") &&
-      task.claimedBy === myId;
+      task.claimedBy_agent === myId;
     const isPending = task.status === "pending";
     if (!isMineInFlight && !isPending) continue;
 
     if (isPending) {
       // Check if explicitly assigned to me
-      if (task.assignedTo && task.assignedTo !== myId) continue;
+      if (task.assignedTo_agent && task.assignedTo_agent !== myId) continue;
 
       // Check capability requirements
       if (task.requires && Array.isArray(task.requires) && task.requires.length) {
@@ -191,13 +191,13 @@ function getUnreadMessages(
 
   for (const msg of state.messages.values()) {
     // Skip messages I sent
-    if (msg.from === myId) continue;
+    if (msg.from_agent === myId) continue;
 
     // Skip messages not for me (if targeted)
-    if (msg.to && msg.to !== myId) continue;
+    if (msg.to_agents?.length && !msg.to_agents.includes(myId)) continue;
 
     // Skip messages I've read
-    if (Array.isArray(msg.readBy) && msg.readBy.includes(myId)) continue;
+    if (Array.isArray(msg.readBy_agents) && msg.readBy_agents.includes(myId)) continue;
 
     messages.push(msg);
   }

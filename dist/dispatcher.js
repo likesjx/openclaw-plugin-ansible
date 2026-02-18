@@ -32,8 +32,8 @@ function isDeliveredMessage(msg, myId) {
     const d = getDelivery(msg, myId);
     if (d?.state === "delivered")
         return true;
-    // Back-compat: older versions used readBy only.
-    return Array.isArray(msg.readBy) && msg.readBy.includes(myId);
+    // Back-compat: older versions used readBy_agents only.
+    return Array.isArray(msg.readBy_agents) && msg.readBy_agents.includes(myId);
 }
 function isDeliveredTask(task, myId) {
     const d = getDelivery(task, myId);
@@ -100,15 +100,15 @@ export function startMessageDispatcher(api, config) {
             const msg = value;
             if (!msg || typeof msg !== "object")
                 continue;
-            if (msg.from === myId)
+            if (msg.from_agent === myId)
                 continue;
-            if (msg.to && msg.to !== myId)
+            if (msg.to_agents?.length && !msg.to_agents.includes(myId))
                 continue;
             if (isDeliveredMessage(msg, myId))
                 continue;
             const msgAttempts = msg.delivery?.[myId]?.attempts ?? 0;
             if (msgAttempts >= MAX_DELIVERY_ATTEMPTS) {
-                api.logger?.warn(`Ansible dispatcher: message ${id.slice(0, 8)} from ${msg.from} has exceeded ${MAX_DELIVERY_ATTEMPTS} delivery attempts — skipping. Manual intervention may be needed.`);
+                api.logger?.warn(`Ansible dispatcher: message ${id.slice(0, 8)} from ${msg.from_agent} has exceeded ${MAX_DELIVERY_ATTEMPTS} delivery attempts — skipping. Manual intervention may be needed.`);
                 continue;
             }
             // If a retry is already scheduled for this message, wait for the timer.
@@ -128,13 +128,13 @@ export function startMessageDispatcher(api, config) {
             const task = value;
             if (!task || typeof task !== "object")
                 continue;
-            if (task.createdBy === myId)
+            if (task.createdBy_agent === myId)
                 continue;
-            if (task.assignedTo !== myId)
+            if (task.assignedTo_agent !== myId)
                 continue; // only explicit assignments
             if (task.status !== "pending" && task.status !== "claimed" && task.status !== "in_progress")
                 continue;
-            if (task.claimedBy && task.claimedBy !== myId)
+            if (task.claimedBy_agent && task.claimedBy_agent !== myId)
                 continue;
             if (isDeliveredTask(task, myId))
                 continue;
@@ -261,11 +261,11 @@ function markDeliveredMessage(messages, messageId, myId, attempts) {
         by: myId,
         attempts,
     };
-    const readBy = Array.isArray(current.readBy) ? current.readBy : [];
-    const nextReadBy = readBy.includes(myId) ? readBy : [...readBy, myId];
+    const readBy_agents = Array.isArray(current.readBy_agents) ? current.readBy_agents : [];
+    const nextReadBy_agents = readBy_agents.includes(myId) ? readBy_agents : [...readBy_agents, myId];
     messages.set(messageId, {
         ...current,
-        readBy: nextReadBy,
+        readBy_agents: nextReadBy_agents,
         delivery: { ...(current.delivery || {}), [myId]: updated },
     });
 }
@@ -323,7 +323,7 @@ function markDeliveredTask(tasks, taskId, myId, attempts) {
     });
 }
 async function dispatchAnsibleMessage(api, reply, session, cfg, myId, messageId, msg) {
-    const senderName = msg.from;
+    const senderName = msg.from_agent;
     const rawBody = msg.content;
     // 1. Format the agent envelope
     const envelopeOptions = reply.resolveEnvelopeFormatOptions?.(cfg) ?? {};
@@ -335,22 +335,22 @@ async function dispatchAnsibleMessage(api, reply, session, cfg, myId, messageId,
         body: rawBody,
     });
     // 2. Build and finalize the message context
-    const sessionKey = `ansible:${msg.from}`;
+    const sessionKey = `ansible:${msg.from_agent}`;
     const ctx = reply.finalizeInboundContext({
         Body: body,
         RawBody: rawBody,
         CommandBody: rawBody,
-        From: `ansible:${msg.from}`,
+        From: `ansible:${msg.from_agent}`,
         To: `ansible:${myId}`,
         SessionKey: sessionKey,
         Provider: "ansible",
         Surface: "ansible",
         ChatType: "direct",
         SenderName: senderName,
-        SenderId: msg.from,
+        SenderId: msg.from_agent,
         MessageSid: messageId,
         OriginatingChannel: "ansible",
-        OriginatingTo: `ansible:${msg.from}`,
+        OriginatingTo: `ansible:${msg.from_agent}`,
     });
     // 3. Record session metadata (if available)
     if (session?.recordInboundSession) {
@@ -382,28 +382,29 @@ async function dispatchAnsibleMessage(api, reply, session, cfg, myId, messageId,
                 const replyId = randomUUID();
                 messagesMap.set(replyId, {
                     id: replyId,
-                    from: myId,
-                    to: msg.from,
+                    from_agent: myId,
+                    from_node: myId,
+                    to_agents: [msg.from_agent],
                     content: payload.text,
                     timestamp: Date.now(),
-                    readBy: [myId],
+                    readBy_agents: [myId],
                 });
-                api.logger?.info(`Ansible dispatcher: reply ${replyId.slice(0, 8)} sent to ${msg.from}`);
+                api.logger?.info(`Ansible dispatcher: reply ${replyId.slice(0, 8)} sent to ${msg.from_agent}`);
             },
             onError: (err, info) => {
                 api.logger?.warn(`Ansible dispatcher: ${info.kind} reply error: ${safeErr(err)}`);
             },
         },
     });
-    api.logger?.info(`Ansible dispatcher: delivered message ${messageId.slice(0, 8)} from ${msg.from}`);
+    api.logger?.info(`Ansible dispatcher: delivered message ${messageId.slice(0, 8)} from ${msg.from_agent}`);
 }
 async function dispatchAnsibleTask(api, reply, session, cfg, myId, taskId, task) {
-    const senderName = task.createdBy;
+    const senderName = task.createdBy_agent;
     const rawBody = [
         `[Ansible Task] ${task.title}`,
         `taskId: ${taskId}`,
         `status: ${task.status}`,
-        `assignedTo: ${task.assignedTo || ""}`,
+        `assignedTo: ${task.assignedTo_agent || ""}`,
         "",
         task.description,
         task.context ? `\n\nContext:\n${task.context}` : "",
@@ -427,17 +428,17 @@ async function dispatchAnsibleTask(api, reply, session, cfg, myId, taskId, task)
         Body: body,
         RawBody: rawBody,
         CommandBody: rawBody,
-        From: `ansible:${task.createdBy}`,
+        From: `ansible:${task.createdBy_agent}`,
         To: `ansible:${myId}`,
         SessionKey: sessionKey,
         Provider: "ansible",
         Surface: "ansible",
         ChatType: "direct",
         SenderName: senderName,
-        SenderId: task.createdBy,
+        SenderId: task.createdBy_agent,
         MessageSid: `task:${taskId}`,
         OriginatingChannel: "ansible",
-        OriginatingTo: `ansible:${task.createdBy}`,
+        OriginatingTo: `ansible:${task.createdBy_agent}`,
     });
     if (session?.recordInboundSession) {
         const storePath = session.resolveStorePath?.() ?? undefined;
@@ -467,19 +468,20 @@ async function dispatchAnsibleTask(api, reply, session, cfg, myId, taskId, task)
                 const replyId = randomUUID();
                 messagesMap.set(replyId, {
                     id: replyId,
-                    from: myId,
-                    to: task.createdBy,
+                    from_agent: myId,
+                    from_node: myId,
+                    to_agents: [task.createdBy_agent],
                     content: payload.text,
                     timestamp: Date.now(),
-                    readBy: [myId],
+                    readBy_agents: [myId],
                 });
-                api.logger?.info(`Ansible dispatcher: task reply ${replyId.slice(0, 8)} sent to ${task.createdBy}`);
+                api.logger?.info(`Ansible dispatcher: task reply ${replyId.slice(0, 8)} sent to ${task.createdBy_agent}`);
             },
             onError: (err, info) => {
                 api.logger?.warn(`Ansible dispatcher: ${info.kind} reply error: ${safeErr(err)}`);
             },
         },
     });
-    api.logger?.info(`Ansible dispatcher: delivered task ${taskId.slice(0, 8)} from ${task.createdBy}`);
+    api.logger?.info(`Ansible dispatcher: delivered task ${taskId.slice(0, 8)} from ${task.createdBy_agent}`);
 }
 //# sourceMappingURL=dispatcher.js.map
