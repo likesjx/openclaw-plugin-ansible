@@ -144,23 +144,88 @@ function readJsonFile(filePath: string): any {
   return JSON.parse(raw);
 }
 
-function writeJsonFile(filePath: string, obj: any): void {
-  const out = JSON.stringify(obj, null, 2) + "\n";
-  fs.writeFileSync(filePath, out, "utf-8");
+function makeTimestamp(): string {
+  const d = new Date();
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
 }
 
-function parseCsvOrRepeat(value: unknown): string[] {
-  if (typeof value !== "string") return [];
+function writeJsonFileAtomicWithBackup(filePath: string, obj: any): { backupPath: string } {
+  const backupPath = `${filePath}.bak.${makeTimestamp()}`;
+  const out = JSON.stringify(obj, null, 2) + "\n";
+  const dir = path.dirname(filePath);
+  const base = path.basename(filePath);
+  const tempPath = path.join(dir, `.${base}.tmp.${process.pid}.${Date.now()}`);
+
+  fs.copyFileSync(filePath, backupPath);
+  try {
+    fs.writeFileSync(tempPath, out, "utf-8");
+    fs.renameSync(tempPath, filePath);
+  } catch (err) {
+    try {
+      if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
+    } catch {
+      // best effort cleanup
+    }
+    throw err;
+  }
+  return { backupPath };
+}
+
+function splitCsv(value: string): string[] {
   return value
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean);
 }
 
+function parseCsvOrRepeat(value: unknown): string[] {
+  if (typeof value === "string") return splitCsv(value);
+  if (Array.isArray(value)) {
+    return value
+      .flatMap((v) => (typeof v === "string" ? splitCsv(v) : []))
+      .filter(Boolean);
+  }
+  return [];
+}
+
+function parseRepeatedFlagFromArgv(flag: string): string[] {
+  const out: string[] = [];
+  const argv = process.argv;
+  for (let i = 0; i < argv.length; i++) {
+    const token = argv[i];
+    if (token === flag) {
+      const next = argv[i + 1];
+      if (typeof next === "string" && !next.startsWith("-")) out.push(next);
+      continue;
+    }
+    if (token.startsWith(`${flag}=`)) {
+      out.push(token.slice(flag.length + 1));
+    }
+  }
+  return out;
+}
+
+function parseRepeatableOption(value: unknown, flag: string): string[] {
+  const merged = [
+    ...parseCsvOrRepeat(value),
+    ...parseRepeatedFlagFromArgv(flag).flatMap(splitCsv),
+  ];
+  return Array.from(new Set(merged));
+}
+
 function parseBool(value: unknown): boolean | undefined {
   if (typeof value !== "string") return undefined;
   if (value === "true") return true;
   if (value === "false") return false;
+  return undefined;
+}
+
+function parseTier(value: unknown): "backbone" | "edge" | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  if (typeof value !== "string") return undefined;
+  const v = value.trim();
+  if (v === "backbone" || v === "edge") return v;
   return undefined;
 }
 
@@ -184,24 +249,26 @@ export function registerAnsibleCli(
       .option("--inject-agent <id>", "Agent id to allow context injection for (repeatable).")
       .option("--dispatch-incoming <true|false>", "Enable/disable auto-dispatch of inbound messages")
       .option("--lock-sweep <true|false>", "Enable/disable per-gateway stale session lock sweeper (recommended)")
-      .option("--lock-sweep-every <seconds>", "Lock sweep interval seconds (default 300)")
-      .option("--lock-sweep-stale <seconds>", "Treat pid-less locks as stale after seconds (default 1800)")
+      .option("--lock-sweep-every <seconds>", "Lock sweep interval seconds (default 60)")
+      .option("--lock-sweep-stale <seconds>", "Treat stale lock files older than this many seconds as removable (default 300)")
       .option("--no-skill", "Skip installing/updating the companion skill repo")
       .option("--no-restart", "Do not restart the gateway service after changes")
+      .option("--dry-run", "Preview setup changes without writing config, updating skill repo, or restarting")
       .action(async (...args: unknown[]) => {
         const opts = (args[0] || {}) as {
           tier?: string;
-          backbone?: string;
+          backbone?: string | string[];
           nodeId?: string;
-          capability?: string;
+          capability?: string | string[];
           injectContext?: string;
-          injectAgent?: string;
+          injectAgent?: string | string[];
           dispatchIncoming?: string;
           lockSweep?: string;
           lockSweepEvery?: string;
           lockSweepStale?: string;
           skill?: boolean;
           restart?: boolean;
+          dryRun?: boolean;
         };
 
         const home = process.env.HOME || process.env.USERPROFILE;
@@ -215,16 +282,21 @@ export function registerAnsibleCli(
         const skillsDir = path.join(workspaceDir, "skills");
         const configPath = process.env.OPENCLAW_CONFIG || path.join(openclawDir, "openclaw.json");
 
-        const requestedTier = opts.tier as "backbone" | "edge" | undefined;
-        const backbonePeers = parseCsvOrRepeat(opts.backbone);
+        const requestedTier = parseTier(opts.tier);
+        if (opts.tier && !requestedTier) {
+          console.log(`✗ Invalid tier '${opts.tier}'. Use: backbone or edge.`);
+          return;
+        }
+        const backbonePeers = parseRepeatableOption(opts.backbone, "--backbone");
         const nodeIdOverride = typeof opts.nodeId === "string" && opts.nodeId.trim() ? opts.nodeId.trim() : undefined;
-        const capabilities = parseCsvOrRepeat(opts.capability);
+        const capabilities = parseRepeatableOption(opts.capability, "--capability");
         const injectContext = parseBool(opts.injectContext);
         const dispatchIncoming = parseBool(opts.dispatchIncoming);
-        const injectAgents = parseCsvOrRepeat(opts.injectAgent);
+        const injectAgents = parseRepeatableOption(opts.injectAgent, "--inject-agent");
         const lockSweepEnabled = parseBool(opts.lockSweep);
         const lockSweepEverySeconds = opts.lockSweepEvery ? Number(opts.lockSweepEvery) : undefined;
         const lockSweepStaleSeconds = opts.lockSweepStale ? Number(opts.lockSweepStale) : undefined;
+        const dryRun = opts.dryRun === true;
 
         if (!fs.existsSync(configPath)) {
           console.log(`✗ Config not found at ${configPath}`);
@@ -235,7 +307,7 @@ export function registerAnsibleCli(
         console.log("\n=== Ansible Setup ===\n");
 
         // 1) Ensure companion skill installed
-        if (opts.skill !== false) {
+        if (opts.skill !== false && !dryRun) {
           try {
             ensureGitRepo({
               dir: path.join(skillsDir, "ansible"),
@@ -247,7 +319,11 @@ export function registerAnsibleCli(
             return;
           }
         } else {
-          console.log("- Skipping skill install/update (--no-skill)");
+          if (dryRun && opts.skill !== false) {
+            console.log("- Dry run: would install/update ansible skill repo");
+          } else {
+            console.log("- Skipping skill install/update (--no-skill)");
+          }
         }
 
         // 2) Patch config
@@ -267,11 +343,12 @@ export function registerAnsibleCli(
         const pluginCfg: any = conf.plugins.entries.ansible.config || {};
 
         // Tier + backbone peers
-        const tier = requestedTier || pluginCfg.tier || config.tier;
-        if (!tier) {
+        const tierRaw = requestedTier || parseTier(pluginCfg.tier) || parseTier(config.tier);
+        if (!tierRaw) {
           console.log("✗ tier not set. Use: openclaw ansible setup --tier edge|backbone");
           return;
         }
+        const tier: "backbone" | "edge" = tierRaw;
         pluginCfg.tier = tier;
         if (nodeIdOverride) pluginCfg.nodeIdOverride = nodeIdOverride;
 
@@ -298,7 +375,7 @@ export function registerAnsibleCli(
           pluginCfg.injectContextAgents = Array.from(merged);
         }
 
-        // Lock sweeper defaults (opt-in via setup; can still be disabled explicitly)
+        // Lock sweeper defaults (default-on reliability guard; can still be disabled explicitly)
         pluginCfg.lockSweep = pluginCfg.lockSweep || {};
         if (lockSweepEnabled !== undefined) pluginCfg.lockSweep.enabled = lockSweepEnabled;
         else if (pluginCfg.lockSweep.enabled === undefined) pluginCfg.lockSweep.enabled = true;
@@ -307,14 +384,23 @@ export function registerAnsibleCli(
 
         conf.plugins.entries.ansible.config = pluginCfg;
 
-        try {
-          writeJsonFile(configPath, conf);
-        } catch (err: any) {
-          console.log(`✗ Failed to write config: ${String(err?.message || err)}`);
-          return;
+        let backupPath = "";
+        if (!dryRun) {
+          try {
+            const out = writeJsonFileAtomicWithBackup(configPath, conf);
+            backupPath = out.backupPath;
+          } catch (err: any) {
+            console.log(`✗ Failed to write config: ${String(err?.message || err)}`);
+            return;
+          }
         }
 
-        console.log(`✓ Updated config: ${configPath}`);
+        if (dryRun) {
+          console.log(`✓ Dry run preview for config: ${configPath}`);
+        } else {
+          console.log(`✓ Updated config: ${configPath}`);
+          console.log(`  backup=${backupPath}`);
+        }
         console.log(`  tier=${pluginCfg.tier}`);
         if (pluginCfg.nodeIdOverride) console.log(`  nodeIdOverride=${String(pluginCfg.nodeIdOverride)}`);
         if (pluginCfg.backbonePeers) console.log(`  backbonePeers=${JSON.stringify(pluginCfg.backbonePeers)}`);
@@ -327,7 +413,7 @@ export function registerAnsibleCli(
         if (pluginCfg.lockSweep?.staleSeconds !== undefined) console.log(`  lockSweep.staleSeconds=${String(pluginCfg.lockSweep.staleSeconds)}`);
 
         // 3) Restart gateway to pick up skill/config changes
-        if (opts.restart !== false) {
+        if (opts.restart !== false && !dryRun) {
           try {
             console.log("\n- Restarting gateway...");
             runCmd("openclaw", ["gateway", "restart"]);
@@ -338,7 +424,11 @@ export function registerAnsibleCli(
             return;
           }
         } else {
-          console.log("\n- Skipping gateway restart (--no-restart)");
+          if (dryRun) {
+            console.log("\n- Dry run: would restart gateway");
+          } else {
+            console.log("\n- Skipping gateway restart (--no-restart)");
+          }
         }
 
         console.log("\nNext steps:");
@@ -354,10 +444,21 @@ export function registerAnsibleCli(
     ansible
       .command("status")
       .description("Show status of all hemispheres")
-      .action(async () => {
+      .option("--json", "Output machine-readable JSON")
+      .option("--full", "Include lock sweep, agent registry, and unread message preview")
+      .option("--stale-after <seconds>", "Override stale node threshold in seconds (default 300)")
+      .action(async (...args: unknown[]) => {
+        const opts = (args[0] || {}) as { json?: boolean; full?: boolean; staleAfter?: string };
+        const staleAfterSeconds =
+          typeof opts.staleAfter === "string" && Number.isFinite(Number(opts.staleAfter))
+            ? Math.max(30, Math.floor(Number(opts.staleAfter)))
+            : undefined;
+
         let result: any;
         try {
-          result = await callGateway("ansible_status");
+          const statusArgs: Record<string, unknown> = {};
+          if (typeof staleAfterSeconds === "number") statusArgs.staleAfterSeconds = staleAfterSeconds;
+          result = await callGateway("ansible_status", statusArgs);
         } catch (err: any) {
           console.log(`✗ ${err.message}`);
           return;
@@ -368,17 +469,50 @@ export function registerAnsibleCli(
           return;
         }
 
-        // Best-effort: fetch coordination config (includes retention knobs).
+        // Best-effort: fetch additional status detail.
         let coordination: any = null;
         try {
           coordination = await callGateway("ansible_get_coordination");
         } catch {
           coordination = null;
         }
+        let lockSweep: any = null;
+        try {
+          lockSweep = await callGateway("ansible_lock_sweep_status");
+        } catch {
+          lockSweep = null;
+        }
+        let agents: any = null;
+        try {
+          agents = await callGateway("ansible_list_agents");
+        } catch {
+          agents = null;
+        }
+        let unreadPreview: any = null;
+        try {
+          unreadPreview = await callGateway("ansible_read_messages", { limit: 10 });
+        } catch {
+          unreadPreview = null;
+        }
+
+        if (opts.json) {
+          const payload = {
+            status: result,
+            coordination,
+            lockSweep,
+            agents,
+            unreadPreview,
+          };
+          console.log(JSON.stringify(payload, null, 2));
+          return;
+        }
 
         console.log("\n=== Ansible Status ===\n");
         console.log(`My ID: ${result.myId}`);
         console.log(`Tier: ${config.tier}`);
+        if (typeof result.staleAfterSeconds === "number") {
+          console.log(`Stale threshold: ${result.staleAfterSeconds}s`);
+        }
         console.log();
 
         if (coordination && !coordination.error) {
@@ -421,6 +555,11 @@ export function registerAnsibleCli(
         // Nodes
         console.log("Hemispheres:");
         const nodes = result.nodes || [];
+        const onlineCount = nodes.filter((n: any) => n.status === "online").length;
+        const busyCount = nodes.filter((n: any) => n.status === "busy").length;
+        const offlineCount = nodes.filter((n: any) => n.status === "offline").length;
+        const staleCount = nodes.filter((n: any) => n.stale === true).length;
+        console.log(`  Summary: online=${onlineCount} busy=${busyCount} offline=${offlineCount} stale=${staleCount}`);
         if (nodes.length === 0) {
           console.log("  (no nodes online)");
         }
@@ -451,6 +590,57 @@ export function registerAnsibleCli(
 
         // Messages
         console.log(`Unread messages: ${result.unreadMessages || 0}`);
+        const previewMessages = unreadPreview?.messages || [];
+        if (previewMessages.length > 0) {
+          console.log("Recent unread:");
+          for (const msg of previewMessages.slice(0, 3)) {
+            const to = Array.isArray(msg.to) && msg.to.length > 0 ? ` -> ${msg.to.join(",")}` : " (broadcast)";
+            const snippet = typeof msg.content === "string" ? msg.content.slice(0, 100) : "";
+            console.log(`  - ${msg.from}${to}: ${snippet}`);
+          }
+          if (previewMessages.length > 3) {
+            console.log(`  ... and ${previewMessages.length - 3} more`);
+          }
+        }
+
+        if (opts.full) {
+          console.log();
+          console.log("Lock sweep:");
+          if (lockSweep && !lockSweep.error) {
+            console.log(`  enabled=${String(lockSweep.enabled)}`);
+            console.log(`  everySeconds=${String(lockSweep.config?.everySeconds ?? "?")} staleSeconds=${String(lockSweep.config?.staleSeconds ?? "?")}`);
+            const lastAt = typeof lockSweep.lastStatus?.at === "number"
+              ? new Date(lockSweep.lastStatus.at).toLocaleString()
+              : "(never)";
+            console.log(`  lastRun=${lastAt}`);
+            if (lockSweep.lastStatus) {
+              console.log(`  lastCounts found=${lockSweep.lastStatus.found} removed=${lockSweep.lastStatus.removed} kept=${lockSweep.lastStatus.kept} errors=${lockSweep.lastStatus.errors}`);
+            }
+            if (lockSweep.totals) {
+              console.log(`  totals runs=${lockSweep.totals.runs} removed=${lockSweep.totals.removed} errors=${lockSweep.totals.errors}`);
+            }
+          } else {
+            console.log("  unavailable");
+          }
+
+          console.log();
+          console.log("Agents:");
+          const agentList = agents?.agents || [];
+          if (!Array.isArray(agentList) || agentList.length === 0) {
+            console.log("  (none registered)");
+          } else {
+            const internal = agentList.filter((a: any) => a.type === "internal");
+            const external = agentList.filter((a: any) => a.type === "external");
+            console.log(`  total=${agentList.length} internal=${internal.length} external=${external.length}`);
+            for (const a of agentList.slice(0, 8)) {
+              const location = a.gateway ? `gateway:${a.gateway}` : "external/cli";
+              console.log(`  - ${a.id} [${a.type}] (${location})`);
+            }
+            if (agentList.length > 8) {
+              console.log(`  ... and ${agentList.length - 8} more`);
+            }
+          }
+        }
       });
 
     // === ansible retention ===
@@ -847,6 +1037,89 @@ export function registerAnsibleCli(
             console.log(`  metadata: ${JSON.stringify(msg.metadata)}`);
           }
           console.log();
+        }
+      });
+
+    // === ansible messages-delete ===
+    ansible
+      .command("messages-delete")
+      .description("Operator-only emergency message purge (destructive)")
+      .option("--id <messageId>", "Message ID to delete (repeatable)")
+      .option("--all", "Delete all messages (dangerous)")
+      .option("-f, --from <agentId>", "Delete messages from sender agent")
+      .option("--conversation-id <id>", "Delete messages matching metadata.conversation_id")
+      .option("--before <iso>", "Delete messages older than/equal to ISO timestamp")
+      .option("-n, --limit <count>", "Max matches to delete", "200")
+      .option("--dry-run", "Preview matches without deleting")
+      .option("--reason <text>", "Required operator justification (min 15 chars)")
+      .option("--yes", "Required for destructive delete (non-dry-run)")
+      .action(async (...args: unknown[]) => {
+        const opts = (args[0] || {}) as {
+          id?: string | string[];
+          all?: boolean;
+          from?: string;
+          conversationId?: string;
+          before?: string;
+          limit?: string;
+          dryRun?: boolean;
+          reason?: string;
+          yes?: boolean;
+        };
+
+        const messageIds = parseRepeatableOption(opts.id, "--id");
+        const hasSelector =
+          opts.all === true ||
+          messageIds.length > 0 ||
+          !!opts.from ||
+          !!opts.conversationId ||
+          !!opts.before;
+        if (!hasSelector) {
+          console.log("✗ Refusing delete without selector. Use --id/--all/--from/--conversation-id/--before.");
+          return;
+        }
+
+        if (!opts.reason || opts.reason.trim().length < 15) {
+          console.log("✗ --reason is required and must be at least 15 characters.");
+          return;
+        }
+
+        if (opts.dryRun !== true && opts.yes !== true) {
+          console.log("✗ Destructive delete requires --yes (or run with --dry-run first).");
+          return;
+        }
+
+        const toolArgs: Record<string, unknown> = {
+          confirm: "DELETE_MESSAGES",
+          reason: opts.reason.trim(),
+        };
+        if (messageIds.length > 0) toolArgs.messageIds = messageIds;
+        if (opts.all) toolArgs.all = true;
+        if (opts.from) toolArgs.from = opts.from;
+        if (opts.conversationId) toolArgs.conversation_id = opts.conversationId;
+        if (opts.before) toolArgs.before = opts.before;
+        if (opts.limit) toolArgs.limit = parseInt(opts.limit, 10);
+        if (opts.dryRun) toolArgs.dryRun = true;
+
+        let result: any;
+        try {
+          result = await callGateway("ansible_delete_messages", toolArgs);
+        } catch (err: any) {
+          console.log(`✗ ${err.message}`);
+          return;
+        }
+
+        if (result.error) {
+          console.log(`✗ ${result.error}`);
+          return;
+        }
+
+        if (opts.dryRun) {
+          console.log(`✓ Dry run: matched ${result.matched || 0} message(s)`);
+        } else {
+          console.log(`✓ Deleted ${result.deleted || 0} message(s)`);
+        }
+        if (result.truncated) {
+          console.log("! Result truncated by limit");
         }
       });
 

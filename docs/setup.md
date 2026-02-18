@@ -34,12 +34,27 @@ What it does (idempotent):
 2. Patches `~/.openclaw/openclaw.json` to enable/configure the ansible plugin
 3. Restarts the gateway (unless `--no-restart`)
 
+What it does **not** do:
+
+- It does not update plugin code in the plugin install directory.
+- Update plugin code separately with `openclaw plugins update ansible` (or reinstall), then restart.
+
 ### Flags You’ll Actually Use
 
 - `--tier backbone|edge`
 - `--backbone ws://host:1235` (repeat or comma separate)
 - `--inject-agent <agentId>` (repeat)
 - `--dispatch-incoming true|false` (see "Reliability" below)
+- `--dry-run` (preview config changes only; no skill git operations, no writes, no restart)
+
+### Config Safety
+
+When `--dry-run` is not used, setup writes config with:
+
+- timestamped backup (`openclaw.json.bak.<timestamp>`)
+- temp-file + atomic rename
+
+This prevents partial config writes during interruptions.
 
 ## Adding The Plugin/Skill To A New Agent (Same Gateway)
 
@@ -118,6 +133,36 @@ CLI:
 
 ```bash
 openclaw ansible retention set --closed-days 7 --every-hours 24
+```
+
+### Emergency Message Purge (Admin Only)
+
+Use only for incident cleanup. Normal operations should use inbox polling + `mark_read`, not deletion.
+
+Hard gates:
+
+- caller node must have capability `admin`
+- selector required (`--id`, `--all`, `--from`, `--conversation-id`, or `--before`)
+- `--reason` required (min 15 chars)
+- real delete requires `--yes`
+
+Recommended flow:
+
+```bash
+# 1) Preview matches first
+openclaw ansible messages-delete \
+  --dry-run \
+  --from architect \
+  --before 2026-02-18T00:00:00.000Z \
+  --reason "Emergency cleanup of stale coordination chatter"
+
+# 2) Execute only if preview is correct
+openclaw ansible messages-delete \
+  --from architect \
+  --before 2026-02-18T00:00:00.000Z \
+  --limit 200 \
+  --reason "Emergency cleanup of stale coordination chatter" \
+  --yes
 ```
 
 ### Initial Policy (What We’re Doing Now)

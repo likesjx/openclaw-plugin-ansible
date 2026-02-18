@@ -242,6 +242,7 @@ All state is synchronized via Yjs CRDTs:
 | `ansible_update_context` | Update your current focus, threads, or decisions |
 | `ansible_read_messages` | Read messages (unread by default) |
 | `ansible_mark_read` | Mark messages as read |
+| `ansible_delete_messages` | **Operator-only emergency purge** (destructive; strongly discouraged for agent workflows) |
 | `ansible_get_coordination` | Read coordinator configuration (who coordinates, sweep cadence) |
 | `ansible_set_coordination_preference` | Record your preferred coordinator/cadence (per-node preference) |
 | `ansible_set_coordination` | Set coordinator configuration (initial setup or last-resort failover) |
@@ -249,6 +250,8 @@ All state is synchronized via Yjs CRDTs:
 | `ansible_get_delegation_policy` | Read shared delegation policy + per-agent ACK records |
 | `ansible_set_delegation_policy` | Coordinator-only publish/update delegation policy (+ optional notify) |
 | `ansible_ack_delegation_policy` | Record this agent's ACK for the current policy version/checksum |
+
+`ansible_delete_messages` is intentionally high-friction (`confirm` token + required justification + explicit filters) and should only be used by human operators for emergency cleanup. It is hard-gated to nodes that advertise capability `admin`.
 
 ## CLI Commands
 
@@ -258,6 +261,7 @@ openclaw ansible nodes               # List authorized nodes
 openclaw ansible tasks               # View shared task list
 openclaw ansible send --message "hi" # Send a manual message
 openclaw ansible retention set       # Configure closed-task roll-off (coordinator-only service)
+openclaw ansible messages-delete --dry-run --from architect --reason "Emergency cleanup of stale chatter"
 openclaw ansible delegation show     # Show policy + ACK status
 openclaw ansible delegation set      # Publish policy from markdown file (coordinator-only)
 openclaw ansible delegation ack      # ACK current policy
@@ -282,7 +286,10 @@ This plugin is typically installed from GitHub, so **`dist/` must be committed**
 After updating the plugin:
 
 1. Update the plugin checkout (either via `openclaw plugins update ansible` if you have an install record, or by re-running `openclaw plugins install likesjx/openclaw-plugin-ansible`).
-2. Restart the gateway (`openclaw gateway restart`, or your supervisor).
+2. Run `openclaw ansible setup` to align skill + config (use `--dry-run` first if desired).
+3. Restart the gateway (`openclaw gateway restart`, or your supervisor).
+
+`openclaw ansible setup` intentionally updates **skill + config only**. Plugin code update remains a separate explicit step.
 
 ## Troubleshooting
 

@@ -56,9 +56,9 @@
         "type": "object",
         "description": "Per-gateway stale session lock sweeper",
         "properties": {
-          "enabled": { "type": "boolean", "description": "Enable lock sweeping (default true)" },
-          "everySeconds": { "type": "number", "description": "Sweep interval seconds (default 60)", "minimum": 30 },
-          "staleSeconds": { "type": "number", "description": "Treat locks older than this as stale (default 300)", "minimum": 30 }
+          "enabled": { "type": "boolean", "default": true, "description": "Enable lock sweeping (default true)" },
+          "everySeconds": { "type": "number", "default": 60, "description": "Sweep interval seconds (default 60)", "minimum": 30 },
+          "staleSeconds": { "type": "number", "default": 300, "description": "Remove stale lock files older than this many seconds (default 300)", "minimum": 30 }
         }
       }
     },

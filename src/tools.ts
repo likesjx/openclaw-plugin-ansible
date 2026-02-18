@@ -48,6 +48,17 @@ function requireAuth(nodeId: string): void {
   }
 }
 
+function requireAdmin(nodeId: string, doc: ReturnType<typeof getDoc>): void {
+  const nodes = doc?.getMap("nodes");
+  const me = nodes?.get(nodeId) as { capabilities?: string[] } | undefined;
+  const caps = Array.isArray(me?.capabilities) ? me!.capabilities : [];
+  if (!caps.includes("admin")) {
+    throw new Error(
+      "Admin capability required for this destructive operation. Add capability 'admin' to this node configuration.",
+    );
+  }
+}
+
 function getCoordinationMap(doc: ReturnType<typeof getDoc>) {
   return doc?.getMap("coordination");
 }
@@ -1578,6 +1589,153 @@ export function registerAnsibleTools(
         return toolResult({
           success: true,
           message: `Marked ${count} message(s) as read`,
+        });
+      } catch (err: any) {
+        return toolResult({ error: err.message });
+      }
+    },
+  });
+
+  // === ansible_delete_messages ===
+  api.registerTool({
+    name: "ansible_delete_messages",
+    label: "Ansible Delete Messages (Operator Only)",
+    description:
+      "DANGEROUS/DESTRUCTIVE. Operator-only emergency cleanup to permanently delete messages from the shared ansible document. Strongly discouraged for agent workflows.",
+    parameters: {
+      type: "object",
+      properties: {
+        messageIds: {
+          type: "array",
+          items: { type: "string" },
+          description: "Exact message IDs to delete.",
+        },
+        all: {
+          type: "boolean",
+          description: "Delete all messages. Must be combined with confirm.",
+        },
+        from: {
+          type: "string",
+          description: "Delete messages from a specific sender agent ID.",
+        },
+        conversation_id: {
+          type: "string",
+          description: "Delete messages matching metadata.conversation_id.",
+        },
+        before: {
+          type: "string",
+          description: "Delete messages older than this ISO timestamp (inclusive).",
+        },
+        limit: {
+          type: "number",
+          description: "Maximum number of matching messages to delete (safety cap). Default 200.",
+        },
+        dryRun: {
+          type: "boolean",
+          description: "If true, returns matches without deleting.",
+        },
+        reason: {
+          type: "string",
+          description: "Required operator justification (min 15 chars).",
+        },
+        confirm: {
+          type: "string",
+          description: "Required literal confirmation: DELETE_MESSAGES",
+        },
+      },
+      required: ["reason", "confirm"],
+    },
+    async execute(_id, params) {
+      const doc = getDoc();
+      const nodeId = getNodeId();
+
+      if (!doc || !nodeId) {
+        return toolResult({ error: "Ansible not initialized" });
+      }
+
+      try {
+        requireAuth(nodeId);
+        requireAdmin(nodeId, doc);
+
+        const confirm = String(params.confirm || "");
+        if (confirm !== "DELETE_MESSAGES") {
+          return toolResult({
+            error: "Refusing delete. Set confirm to exact string: DELETE_MESSAGES",
+          });
+        }
+
+        const reason = validateString(params.reason, VALIDATION_LIMITS.maxDescriptionLength, "reason");
+        if (reason.trim().length < 15) {
+          return toolResult({
+            error: "reason must be at least 15 characters",
+          });
+        }
+
+        const all = params.all === true;
+        const messageIds = Array.isArray(params.messageIds)
+          ? (params.messageIds.map((v) => String(v).trim()).filter(Boolean))
+          : [];
+        const from = typeof params.from === "string" && params.from.trim() ? params.from.trim() : undefined;
+        const conversationId =
+          typeof params.conversation_id === "string" && params.conversation_id.trim()
+            ? params.conversation_id.trim()
+            : undefined;
+        const beforeRaw = typeof params.before === "string" ? params.before.trim() : "";
+        const beforeMs = beforeRaw ? Date.parse(beforeRaw) : undefined;
+        if (beforeRaw && !Number.isFinite(beforeMs)) {
+          return toolResult({ error: "before must be a valid ISO timestamp" });
+        }
+        const dryRun = params.dryRun === true;
+        const limit = params.limit === undefined ? 200 : validateNumber(params.limit, "limit");
+        if (limit < 1 || limit > 5000) {
+          return toolResult({ error: "limit must be between 1 and 5000" });
+        }
+
+        const hasFilter = all || messageIds.length > 0 || !!from || !!conversationId || beforeMs !== undefined;
+        if (!hasFilter) {
+          return toolResult({
+            error:
+              "Refusing delete without selection. Provide one of: all, messageIds, from, conversation_id, before.",
+          });
+        }
+
+        const messages = doc.getMap("messages");
+        const idSet = new Set(messageIds);
+        const matches: string[] = [];
+
+        for (const [id, msg] of messages.entries()) {
+          const message = msg as Message;
+
+          let matched = all;
+          if (!matched && idSet.size > 0 && idSet.has(id as string)) matched = true;
+          if (!matched && from && message.from_agent === from) matched = true;
+          if (!matched && conversationId && message.metadata?.conversation_id === conversationId) matched = true;
+          if (!matched && beforeMs !== undefined && Number.isFinite(message.timestamp) && message.timestamp <= beforeMs) {
+            matched = true;
+          }
+
+          if (!matched) continue;
+          matches.push(id as string);
+          if (matches.length >= limit) break;
+        }
+
+        if (!dryRun) {
+          for (const id of matches) messages.delete(id);
+        }
+
+        api.logger?.warn(
+          `Ansible: ${dryRun ? "dry-run " : ""}deleted_messages count=${matches.length} by=${nodeId} reason=${reason}`,
+        );
+
+        return toolResult({
+          success: true,
+          dryRun,
+          deleted: dryRun ? 0 : matches.length,
+          matched: matches.length,
+          truncated: matches.length >= limit,
+          messageIds: matches,
+          warning:
+            "Permanent delete completed. This action is destructive and is intended for operator emergency cleanup only.",
         });
       } catch (err: any) {
         return toolResult({ error: err.message });

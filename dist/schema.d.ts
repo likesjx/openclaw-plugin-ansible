@@ -59,11 +59,11 @@ export interface AnsibleConfig {
      * `*.jsonl.lock` file that blocks future turns for that session.
      */
     lockSweep?: {
-        /** Enable/disable the sweeper. Default: false (opt-in). */
+        /** Enable/disable the sweeper. Default: true. */
         enabled?: boolean;
-        /** Sweep interval. Default: 300 seconds. */
+        /** Sweep interval. Default: 60 seconds. */
         everySeconds?: number;
-        /** For locks without a PID, treat as stale after this many seconds. Default: 1800. */
+        /** For stale lock files, remove after this many seconds. Default: 300. */
         staleSeconds?: number;
     };
 }

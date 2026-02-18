@@ -8,6 +8,7 @@
 - **[identity-delegation-template.md](identity-delegation-template.md)** — Copy/paste template section for each agent `IDENTITY.md`
 - **[protocol.md](protocol.md)** — Inter-agent messaging conventions, delivery semantics, current limitations, and the concrete reliability improvement plan
 - **[setup.md](setup.md)** — Practical setup and operations guide (new agent, new gateway, coordinator sweep)
+- **[update-architecture.md](update-architecture.md)** — Source-of-truth update model (`setup` scope, plugin update path, config write safety, canonical defaults)
 
 ## Platform Knowledge
 

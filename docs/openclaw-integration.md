@@ -57,6 +57,7 @@ It registers:
   - emits `onDocReady` and `onSync` events
 - **Agent tools** (`src/tools.ts`)
   - status, messages, task delegation lifecycle, coordination configuration
+  - includes `ansible_delete_messages` for admin-only emergency cleanup (destructive; not for normal agent workflows)
 - **Hook** (`src/hooks.ts`)
   - `before_agent_start` context injection (optional)
 - **CLI** (`src/cli.ts`)
@@ -154,6 +155,11 @@ Config:
 - restarts the gateway (unless `--no-restart`)
 
 This is intentionally idempotent to support both first-time install and later maintenance.
+
+Important scope boundary:
+
+- `ansible setup` does **not** update plugin code under the installed plugin checkout.
+- Update plugin code separately (`openclaw plugins update ansible` or reinstall), then restart.
 
 ## Dist Folder (Why It Exists)
 
