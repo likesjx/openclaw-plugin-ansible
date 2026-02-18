@@ -20,11 +20,23 @@ export function registerAnsibleHooks(
   }
 
   api.on("before_agent_start", async (ctx?: any) => {
-    const agentId = ctx?.agentId ?? ctx?.AgentId ?? ctx?.agent?.id ?? undefined;
+    // Resolve agent ID — try all known field names across gateway versions,
+    // then fall back to parsing the session key (format: "agent:<agentId>:<session>")
+    const agentId: string | undefined = (() => {
+      const direct = ctx?.agentId ?? ctx?.AgentId ?? ctx?.agent?.id ?? ctx?.agentName ?? ctx?.name;
+      if (direct) return String(direct);
+      const sk = ctx?.SessionKey ?? ctx?.sessionKey ?? ctx?.session_key;
+      if (typeof sk === "string") {
+        const m = sk.match(/^agent:([^:]+)/);
+        if (m?.[1]) return m[1];
+      }
+      return undefined;
+    })();
+
     if (Array.isArray(config.injectContextAgents) && config.injectContextAgents.length > 0) {
-      if (!agentId || !config.injectContextAgents.includes(String(agentId))) {
+      if (!agentId || !config.injectContextAgents.includes(agentId)) {
         api.logger?.debug?.(
-          `Ansible: skipping context injection for agentId=${String(agentId ?? "unknown")}`,
+          `Ansible: skipping context injection for agentId=${agentId ?? "unknown"}`,
         );
         return {};
       }
