@@ -1032,6 +1032,9 @@ export function registerAnsibleCli(
           const meta = msg.metadata ? ` [${msg.metadata.kind || ""}${msg.metadata.conversation_id ? ` conv:${msg.metadata.conversation_id}` : ""}]` : "";
           console.log(`${msg.from}${to}${unread}${meta}`);
           console.log(`  ${new Date(msg.timestamp).toLocaleString()}`);
+          if (msg.updatedAt) {
+            console.log(`  updated: ${new Date(msg.updatedAt).toLocaleString()}`);
+          }
           console.log(`  ${msg.content}`);
           if (msg.metadata && Object.keys(msg.metadata).length > 0) {
             console.log(`  metadata: ${JSON.stringify(msg.metadata)}`);

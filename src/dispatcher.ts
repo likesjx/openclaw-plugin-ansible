@@ -279,9 +279,10 @@ function markAttemptedMessage(
 
   const prev = current.delivery?.[myId];
   const attempts = (prev?.attempts ?? 0) + 1;
+  const now = Date.now();
   const updated: DeliveryRecord = {
     state: "attempted",
-    at: Date.now(),
+    at: now,
     by: myId,
     attempts,
     lastError,
@@ -289,6 +290,7 @@ function markAttemptedMessage(
 
   messages.set(messageId, {
     ...current,
+    updatedAt: now,
     delivery: { ...(current.delivery || {}), [myId]: updated },
   } satisfies Message);
 
@@ -301,9 +303,10 @@ function markAttemptErrorMessage(messages: any, messageId: string, myId: AgentId
 
   const prev = current.delivery?.[myId];
   const attempts = prev?.attempts ?? 1;
+  const now = Date.now();
   const updated: DeliveryRecord = {
     state: "attempted",
-    at: Date.now(),
+    at: now,
     by: myId,
     attempts,
     lastError,
@@ -311,6 +314,7 @@ function markAttemptErrorMessage(messages: any, messageId: string, myId: AgentId
 
   messages.set(messageId, {
     ...current,
+    updatedAt: now,
     delivery: { ...(current.delivery || {}), [myId]: updated },
   } satisfies Message);
 
@@ -321,9 +325,10 @@ function markDeliveredMessage(messages: any, messageId: string, myId: AgentId, a
   const current = messages.get(messageId) as Message | undefined;
   if (!current) return;
 
+  const now = Date.now();
   const updated: DeliveryRecord = {
     state: "delivered",
-    at: Date.now(),
+    at: now,
     by: myId,
     attempts,
   };
@@ -333,6 +338,7 @@ function markDeliveredMessage(messages: any, messageId: string, myId: AgentId, a
 
   messages.set(messageId, {
     ...current,
+    updatedAt: now,
     readBy_agents: nextReadBy_agents,
     delivery: { ...(current.delivery || {}), [myId]: updated },
   } satisfies Message);
@@ -470,13 +476,15 @@ async function dispatchAnsibleMessage(
 
         const messagesMap = doc.getMap("messages");
         const replyId = randomUUID();
+        const now = Date.now();
         messagesMap.set(replyId, {
           id: replyId,
           from_agent: targetAgent,
           from_node: myNodeId,
           to_agents: [msg.from_agent],
           content: payload.text,
-          timestamp: Date.now(),
+          timestamp: now,
+          updatedAt: now,
           readBy_agents: [targetAgent],
         } satisfies Message);
 
@@ -574,13 +582,15 @@ async function dispatchAnsibleTask(
         // Send the final reply back to the task creator as an ansible message.
         const messagesMap = doc.getMap("messages");
         const replyId = randomUUID();
+        const now = Date.now();
         messagesMap.set(replyId, {
           id: replyId,
           from_agent: targetAgent,
           from_node: myNodeId,
           to_agents: [task.createdBy_agent],
           content: payload.text,
-          timestamp: Date.now(),
+          timestamp: now,
+          updatedAt: now,
           readBy_agents: [targetAgent],
         } satisfies Message);
 

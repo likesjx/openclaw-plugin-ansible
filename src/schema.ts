@@ -270,7 +270,10 @@ export interface Message {
   to_agents?: AgentId[];
 
   content: string;
+  /** Creation time (epoch ms) */
   timestamp: number;
+  /** Last mutation time (epoch ms): delivery/read/metadata updates */
+  updatedAt?: number;
 
   /** Agents that have read this message */
   readBy_agents: AgentId[];

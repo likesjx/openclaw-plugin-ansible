@@ -24,7 +24,8 @@
     "dev": "tsc --watch",
     "prepublishOnly": "npm run build",
     "clean": "rm -rf dist",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "migrate:v2026.2.19": "node ./scripts/migrate-v2026-2-19.mjs"
   },
   "keywords": [
     "openclaw",

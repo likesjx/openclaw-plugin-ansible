@@ -110,13 +110,15 @@ function notifyTaskOwner(doc, fromNodeId, task, payload) {
     if (result)
         lines.push(`result: ${result}`);
     lines.push(`from: ${fromNodeId}`);
+    const now = Date.now();
     const message = {
         id: messageId,
         from_agent: fromNodeId,
         from_node: fromNodeId,
         to_agents: [task.createdBy_agent],
         content: lines.join("\n"),
-        timestamp: Date.now(),
+        timestamp: now,
+        updatedAt: now,
         readBy_agents: [fromNodeId],
     };
     messages.set(message.id, message);
@@ -642,12 +644,14 @@ export function registerAnsibleTools(api, config) {
                 if (notifyAgents.length > 0) {
                     const messages = doc.getMap("messages");
                     for (const to of notifyAgents) {
+                        const now = Date.now();
                         const message = {
                             id: randomUUID(),
                             from_agent: nodeId,
                             from_node: nodeId,
                             to_agents: [to],
-                            timestamp: Date.now(),
+                            timestamp: now,
+                            updatedAt: now,
                             readBy_agents: [nodeId],
                             content: [
                                 "kind: policy_update",
@@ -864,13 +868,15 @@ export function registerAnsibleTools(api, config) {
                 const toAgents = params.to
                     ? (Array.isArray(params.to) ? params.to : [params.to])
                     : [];
+                const now = Date.now();
                 const message = {
                     id: randomUUID(),
                     from_agent: nodeId,
                     from_node: nodeId,
                     to_agents: toAgents.length > 0 ? toAgents : undefined,
                     content,
-                    timestamp: Date.now(),
+                    timestamp: now,
+                    updatedAt: now,
                     readBy_agents: [nodeId],
                     metadata: params.metadata,
                 };
@@ -931,13 +937,15 @@ export function registerAnsibleTools(api, config) {
                 const content = `Skill advertisement from ${nodeId}: I now handle the following skills: ${skills.join(", ")}. Route relevant tasks to me.`;
                 const messagesMap = doc.getMap("messages");
                 const msgId = randomUUID();
+                const now = Date.now();
                 messagesMap.set(msgId, {
                     id: msgId,
                     from_agent: nodeId,
                     from_node: nodeId,
                     content,
                     intent: "skill-advertised",
-                    timestamp: Date.now(),
+                    timestamp: now,
+                    updatedAt: now,
                     readBy_agents: [nodeId],
                 });
                 api.logger?.info(`Ansible: skills advertised: [${skills.join(", ")}]`);
@@ -1493,11 +1501,18 @@ export function registerAnsibleTools(api, config) {
                         to: message.to_agents,
                         content: message.content,
                         timestamp: new Date(message.timestamp).toISOString(),
+                        updatedAt: Number.isFinite(message.updatedAt)
+                            ? new Date(message.updatedAt).toISOString()
+                            : undefined,
                         unread,
                     });
                 }
-                // Sort newest first
-                results.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+                // Sort newest activity first (fallback to creation timestamp)
+                results.sort((a, b) => {
+                    const ta = a.updatedAt ? new Date(a.updatedAt).getTime() : new Date(a.timestamp).getTime();
+                    const tb = b.updatedAt ? new Date(b.updatedAt).getTime() : new Date(b.timestamp).getTime();
+                    return tb - ta;
+                });
                 return toolResult({
                     myId: nodeId,
                     messages: results.slice(0, limit),
@@ -1546,6 +1561,7 @@ export function registerAnsibleTools(api, config) {
                     messages.set(id, {
                         ...message,
                         readBy_agents: [...message.readBy_agents, nodeId],
+                        updatedAt: Date.now(),
                     });
                     count++;
                 }
