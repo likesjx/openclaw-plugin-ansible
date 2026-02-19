@@ -204,6 +204,8 @@ export interface Task {
 
   /** Explicit assignment to a specific agent */
   assignedTo_agent?: AgentId;
+  /** Optional multi-assignment target list (superset of assignedTo_agent) */
+  assignedTo_agents?: AgentId[];
 
   /** Capability requirements for claiming */
   requires?: string[];

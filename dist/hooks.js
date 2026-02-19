@@ -43,7 +43,8 @@ export function registerAnsibleHooks(api, config) {
             api.logger?.debug("Ansible: skipping context injection (not initialized)");
             return {};
         }
-        const prependContext = buildContextInjection(state, myId, config);
+        const effectiveAgentId = agentId || myId;
+        const prependContext = buildContextInjection(state, myId, effectiveAgentId, config);
         if (!prependContext) {
             api.logger?.debug("Ansible: no shared context to inject");
             return {};
@@ -52,7 +53,7 @@ export function registerAnsibleHooks(api, config) {
         return { prependContext };
     });
 }
-function buildContextInjection(state, myId, config) {
+function buildContextInjection(state, nodeId, agentId, config) {
     if (!state)
         return null;
     const sections = [];
@@ -60,17 +61,17 @@ function buildContextInjection(state, myId, config) {
     const maxAgeMs = CONTEXT_LIMITS.maxAgeHours * 60 * 60 * 1000;
     // === What Jane is Working On ===
     const focusLines = [];
-    const myContext = state.context.get(myId);
+    const myContext = state.context.get(agentId) || state.context.get(nodeId);
     if (myContext?.currentFocus || myContext?.skills?.length) {
         const parts = [];
         if (myContext.currentFocus)
             parts.push(myContext.currentFocus);
         if (myContext.skills?.length)
             parts.push(`[skills: ${myContext.skills.join(", ")}]`);
-        focusLines.push(`- **${myId}** (me): ${parts.join(" ")}`);
+        focusLines.push(`- **${agentId}** (me): ${parts.join(" ")}`);
     }
-    for (const [nodeId, ctx] of state.context.entries()) {
-        if (nodeId === myId)
+    for (const [ctxNodeId, ctx] of state.context.entries()) {
+        if (ctxNodeId === agentId || ctxNodeId === nodeId)
             continue;
         const parts = [];
         if (ctx.currentFocus)
@@ -78,7 +79,7 @@ function buildContextInjection(state, myId, config) {
         if (ctx.skills && ctx.skills.length > 0)
             parts.push(`[skills: ${ctx.skills.join(", ")}]`);
         if (parts.length > 0)
-            focusLines.push(`- **${nodeId}**: ${parts.join(" ")}`);
+            focusLines.push(`- **${ctxNodeId}**: ${parts.join(" ")}`);
     }
     if (focusLines.length > 0) {
         sections.push(`## What Jane is Working On\n${focusLines.join("\n")}`);
@@ -104,7 +105,7 @@ function buildContextInjection(state, myId, config) {
         }
     }
     // === Pending Tasks for Me ===
-    const myTasks = getMyPendingTasks(state, myId, config.capabilities || []);
+    const myTasks = getMyPendingTasks(state, agentId, config.capabilities || []);
     if (myTasks.length > 0) {
         const taskLines = myTasks
             .slice(0, CONTEXT_LIMITS.pendingTasks)
@@ -112,7 +113,7 @@ function buildContextInjection(state, myId, config) {
         sections.push(`## Pending Tasks for Me\n${taskLines.join("\n")}`);
     }
     // === Unread Messages ===
-    const unreadMessages = getUnreadMessages(state, myId);
+    const unreadMessages = getUnreadMessages(state, agentId);
     if (unreadMessages.length > 0) {
         const messageLines = unreadMessages
             .filter((m) => now - m.timestamp < maxAgeMs)
@@ -143,7 +144,14 @@ function getMyPendingTasks(state, myId, myCapabilities) {
             continue;
         if (isPending) {
             // Check if explicitly assigned to me
-            if (task.assignedTo_agent && task.assignedTo_agent !== myId)
+            const assignees = new Set();
+            if (task.assignedTo_agent)
+                assignees.add(task.assignedTo_agent);
+            if (Array.isArray(task.assignedTo_agents)) {
+                for (const a of task.assignedTo_agents)
+                    assignees.add(a);
+            }
+            if (assignees.size > 0 && !assignees.has(myId))
                 continue;
             // Check capability requirements
             if (task.requires && Array.isArray(task.requires) && task.requires.length) {

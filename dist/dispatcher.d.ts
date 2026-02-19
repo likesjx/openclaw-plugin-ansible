@@ -13,4 +13,5 @@ import type { AnsibleConfig } from "./schema.js";
  * Start observing the Yjs state and dispatching inbound work into the agent loop.
  */
 export declare function startMessageDispatcher(api: OpenClawPluginApi, config: AnsibleConfig): void;
+export declare function requestDispatcherReconcile(reason?: string): void;
 //# sourceMappingURL=dispatcher.d.ts.map

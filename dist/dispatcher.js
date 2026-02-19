@@ -13,6 +13,7 @@ const RETRY_BASE_MS = 2_000;
 const RETRY_MAX_MS = 5 * 60_000;
 const RETRY_JITTER = 0.2;
 const MAX_DELIVERY_ATTEMPTS = 15;
+let requestReconcileHook = null;
 function safeErr(err) {
     if (err instanceof Error)
         return err.stack || err.message;
@@ -27,6 +28,33 @@ function calcBackoffMs(attempts) {
 }
 function getDelivery(item, myId) {
     return item.delivery?.[myId];
+}
+function getTaskAssignees(task) {
+    const out = new Set();
+    if (typeof task.assignedTo_agent === "string" && task.assignedTo_agent.trim().length > 0) {
+        out.add(task.assignedTo_agent.trim());
+    }
+    if (Array.isArray(task.assignedTo_agents)) {
+        for (const a of task.assignedTo_agents) {
+            if (typeof a === "string" && a.trim().length > 0)
+                out.add(a.trim());
+        }
+    }
+    return Array.from(out);
+}
+function getLocalInternalAgents(doc, nodeId) {
+    if (!doc)
+        return [nodeId];
+    const out = new Set([nodeId]);
+    const agents = doc.getMap("agents");
+    for (const [agentId, raw] of agents.entries()) {
+        const record = raw;
+        if (!record || record.type !== "internal")
+            continue;
+        if (record.gateway === nodeId)
+            out.add(String(agentId));
+    }
+    return Array.from(out).sort((a, b) => a.localeCompare(b));
 }
 function isDeliveredMessage(msg, myId) {
     const d = getDelivery(msg, myId);
@@ -76,6 +104,7 @@ export function startMessageDispatcher(api, config) {
             void reconcileNow(reason);
         }, 0);
     };
+    requestReconcileHook = queueReconcile;
     const scheduleRetry = (key, attempts, reason) => {
         if (scheduled.has(key))
             return;
@@ -92,7 +121,8 @@ export function startMessageDispatcher(api, config) {
         const myId = getNodeId();
         if (!doc || !myId)
             return;
-        const mySkills = getAnsibleState()?.context.get(myId)?.skills ?? [];
+        const localAgents = getLocalInternalAgents(doc, myId);
+        const contextMap = getAnsibleState()?.context;
         const msgs = doc.getMap("messages");
         const tasks = doc.getMap("tasks");
         const pendingMessages = [];
@@ -100,21 +130,23 @@ export function startMessageDispatcher(api, config) {
             const msg = value;
             if (!msg || typeof msg !== "object")
                 continue;
-            if (msg.from_agent === myId)
-                continue;
-            if (msg.to_agents?.length && !msg.to_agents.includes(myId))
-                continue;
-            if (isDeliveredMessage(msg, myId))
-                continue;
-            const msgAttempts = msg.delivery?.[myId]?.attempts ?? 0;
-            if (msgAttempts >= MAX_DELIVERY_ATTEMPTS) {
-                api.logger?.warn(`Ansible dispatcher: message ${id.slice(0, 8)} from ${msg.from_agent} has exceeded ${MAX_DELIVERY_ATTEMPTS} delivery attempts — skipping. Manual intervention may be needed.`);
-                continue;
+            for (const targetAgent of localAgents) {
+                if (msg.from_agent === targetAgent)
+                    continue;
+                if (msg.to_agents?.length && !msg.to_agents.includes(targetAgent))
+                    continue;
+                if (isDeliveredMessage(msg, targetAgent))
+                    continue;
+                const key = `msg:${id}:${targetAgent}`;
+                const msgAttempts = msg.delivery?.[targetAgent]?.attempts ?? 0;
+                if (msgAttempts >= MAX_DELIVERY_ATTEMPTS) {
+                    api.logger?.warn(`Ansible dispatcher: message ${id.slice(0, 8)} from ${msg.from_agent} to ${targetAgent} exceeded ${MAX_DELIVERY_ATTEMPTS} delivery attempts — skipping.`);
+                    continue;
+                }
+                if (scheduled.has(key))
+                    continue;
+                pendingMessages.push({ id: id, targetAgent, msg });
             }
-            // If a retry is already scheduled for this message, wait for the timer.
-            if (scheduled.has(`msg:${id}`))
-                continue;
-            pendingMessages.push({ id: id, msg });
         }
         pendingMessages.sort((a, b) => {
             const ta = a.msg.timestamp || 0;
@@ -128,30 +160,37 @@ export function startMessageDispatcher(api, config) {
             const task = value;
             if (!task || typeof task !== "object")
                 continue;
-            if (task.createdBy_agent === myId)
-                continue;
-            if (task.assignedTo_agent !== myId)
+            const assignees = getTaskAssignees(task);
+            if (assignees.length === 0)
                 continue; // only explicit assignments
             if (task.status !== "pending" && task.status !== "claimed" && task.status !== "in_progress")
                 continue;
-            if (task.claimedBy_agent && task.claimedBy_agent !== myId)
-                continue;
-            if (isDeliveredTask(task, myId))
-                continue;
-            const taskAttempts = task.delivery?.[myId]?.attempts ?? 0;
-            if (taskAttempts >= MAX_DELIVERY_ATTEMPTS) {
-                api.logger?.warn(`Ansible dispatcher: task ${id.slice(0, 8)} "${task.title}" has exceeded ${MAX_DELIVERY_ATTEMPTS} delivery attempts — skipping.`);
-                continue;
-            }
-            if (task.skillRequired) {
-                if (!mySkills.includes(task.skillRequired)) {
-                    api.logger?.debug(`Ansible dispatcher: skipping task ${id.slice(0, 8)} — requires skill '${task.skillRequired}', not available on this node (have: [${mySkills.join(", ")}])`);
+            for (const targetAgent of assignees) {
+                if (!localAgents.includes(targetAgent))
+                    continue;
+                if (task.createdBy_agent === targetAgent)
+                    continue;
+                if (task.claimedBy_agent && task.claimedBy_agent !== targetAgent)
+                    continue;
+                if (isDeliveredTask(task, targetAgent))
+                    continue;
+                const taskAttempts = task.delivery?.[targetAgent]?.attempts ?? 0;
+                if (taskAttempts >= MAX_DELIVERY_ATTEMPTS) {
+                    api.logger?.warn(`Ansible dispatcher: task ${id.slice(0, 8)} "${task.title}" for ${targetAgent} exceeded ${MAX_DELIVERY_ATTEMPTS} delivery attempts — skipping.`);
                     continue;
                 }
+                if (task.skillRequired) {
+                    const targetSkills = contextMap?.get(targetAgent)?.skills ?? [];
+                    if (!targetSkills.includes(task.skillRequired)) {
+                        api.logger?.debug(`Ansible dispatcher: skipping task ${id.slice(0, 8)} for ${targetAgent} — missing skill '${task.skillRequired}'`);
+                        continue;
+                    }
+                }
+                const key = `task:${id}:${targetAgent}`;
+                if (scheduled.has(key))
+                    continue;
+                pendingTasks.push({ id: id, targetAgent, task });
             }
-            if (scheduled.has(`task:${id}`))
-                continue;
-            pendingTasks.push({ id: id, task });
         }
         pendingTasks.sort((a, b) => {
             const ta = a.task.createdAt || 0;
@@ -163,38 +202,38 @@ export function startMessageDispatcher(api, config) {
         if (pendingMessages.length || pendingTasks.length) {
             api.logger?.info(`Ansible dispatcher: reconcile (${reason}): ${pendingMessages.length} msg(s), ${pendingTasks.length} task(s)`);
         }
-        for (const { id, msg } of pendingMessages) {
-            const key = `msg:${id}`;
+        for (const { id, targetAgent, msg } of pendingMessages) {
+            const key = `msg:${id}:${targetAgent}`;
             if (inFlight.has(key))
                 continue;
             inFlight.add(key);
             let attempts = 0;
             try {
-                attempts = markAttemptedMessage(msgs, id, myId);
-                await dispatchAnsibleMessage(api, reply, session, apiConfig, myId, id, msg);
-                markDeliveredMessage(msgs, id, myId, attempts);
+                attempts = markAttemptedMessage(msgs, id, targetAgent);
+                await dispatchAnsibleMessage(api, reply, session, apiConfig, myId, targetAgent, id, msg);
+                markDeliveredMessage(msgs, id, targetAgent, attempts);
             }
             catch (err) {
-                attempts = markAttemptErrorMessage(msgs, id, myId, safeErr(err));
+                attempts = markAttemptErrorMessage(msgs, id, targetAgent, safeErr(err));
                 scheduleRetry(key, attempts, "dispatch-error");
             }
             finally {
                 inFlight.delete(key);
             }
         }
-        for (const { id, task } of pendingTasks) {
-            const key = `task:${id}`;
+        for (const { id, targetAgent, task } of pendingTasks) {
+            const key = `task:${id}:${targetAgent}`;
             if (inFlight.has(key))
                 continue;
             inFlight.add(key);
             let attempts = 0;
             try {
-                attempts = markAttemptedTask(tasks, id, myId);
-                await dispatchAnsibleTask(api, reply, session, apiConfig, myId, id, task);
-                markDeliveredTask(tasks, id, myId, attempts);
+                attempts = markAttemptedTask(tasks, id, targetAgent);
+                await dispatchAnsibleTask(api, reply, session, apiConfig, myId, targetAgent, id, task);
+                markDeliveredTask(tasks, id, targetAgent, attempts);
             }
             catch (err) {
-                attempts = markAttemptErrorTask(tasks, id, myId, safeErr(err));
+                attempts = markAttemptErrorTask(tasks, id, targetAgent, safeErr(err));
                 scheduleRetry(key, attempts, "dispatch-error");
             }
             finally {
@@ -212,6 +251,9 @@ export function startMessageDispatcher(api, config) {
     });
     api.logger?.info("Ansible dispatcher: enabled (live dispatch + reconnect reconciliation)");
     queueReconcile("startup");
+}
+export function requestDispatcherReconcile(reason = "manual") {
+    requestReconcileHook?.(reason);
 }
 function markAttemptedMessage(messages, messageId, myId, lastError) {
     const current = messages.get(messageId);
@@ -322,7 +364,7 @@ function markDeliveredTask(tasks, taskId, myId, attempts) {
         delivery: { ...(current.delivery || {}), [myId]: updated },
     });
 }
-async function dispatchAnsibleMessage(api, reply, session, cfg, myId, messageId, msg) {
+async function dispatchAnsibleMessage(api, reply, session, cfg, myNodeId, targetAgent, messageId, msg) {
     const senderName = msg.from_agent;
     const rawBody = msg.content;
     // 1. Format the agent envelope
@@ -335,14 +377,15 @@ async function dispatchAnsibleMessage(api, reply, session, cfg, myId, messageId,
         body: rawBody,
     });
     // 2. Build and finalize the message context
-    const sessionKey = `ansible:${msg.from_agent}`;
+    const sessionKey = `agent:${targetAgent}:ansible:msg:${messageId}`;
     const ctx = reply.finalizeInboundContext({
         Body: body,
         RawBody: rawBody,
         CommandBody: rawBody,
         From: `ansible:${msg.from_agent}`,
-        To: `ansible:${myId}`,
+        To: `ansible:${targetAgent}`,
         SessionKey: sessionKey,
+        AgentId: targetAgent,
         Provider: "ansible",
         Surface: "ansible",
         ChatType: "direct",
@@ -382,12 +425,12 @@ async function dispatchAnsibleMessage(api, reply, session, cfg, myId, messageId,
                 const replyId = randomUUID();
                 messagesMap.set(replyId, {
                     id: replyId,
-                    from_agent: myId,
-                    from_node: myId,
+                    from_agent: targetAgent,
+                    from_node: myNodeId,
                     to_agents: [msg.from_agent],
                     content: payload.text,
                     timestamp: Date.now(),
-                    readBy_agents: [myId],
+                    readBy_agents: [targetAgent],
                 });
                 api.logger?.info(`Ansible dispatcher: reply ${replyId.slice(0, 8)} sent to ${msg.from_agent}`);
             },
@@ -398,7 +441,7 @@ async function dispatchAnsibleMessage(api, reply, session, cfg, myId, messageId,
     });
     api.logger?.info(`Ansible dispatcher: delivered message ${messageId.slice(0, 8)} from ${msg.from_agent}`);
 }
-async function dispatchAnsibleTask(api, reply, session, cfg, myId, taskId, task) {
+async function dispatchAnsibleTask(api, reply, session, cfg, myNodeId, targetAgent, taskId, task) {
     const senderName = task.createdBy_agent;
     const rawBody = [
         `[Ansible Task] ${task.title}`,
@@ -423,14 +466,15 @@ async function dispatchAnsibleTask(api, reply, session, cfg, myId, taskId, task)
         envelope: envelopeOptions,
         body: rawBody,
     });
-    const sessionKey = `ansible:task:${taskId}`;
+    const sessionKey = `agent:${targetAgent}:ansible:task:${taskId}`;
     const ctx = reply.finalizeInboundContext({
         Body: body,
         RawBody: rawBody,
         CommandBody: rawBody,
         From: `ansible:${task.createdBy_agent}`,
-        To: `ansible:${myId}`,
+        To: `ansible:${targetAgent}`,
         SessionKey: sessionKey,
+        AgentId: targetAgent,
         Provider: "ansible",
         Surface: "ansible",
         ChatType: "direct",
@@ -468,12 +512,12 @@ async function dispatchAnsibleTask(api, reply, session, cfg, myId, taskId, task)
                 const replyId = randomUUID();
                 messagesMap.set(replyId, {
                     id: replyId,
-                    from_agent: myId,
-                    from_node: myId,
+                    from_agent: targetAgent,
+                    from_node: myNodeId,
                     to_agents: [task.createdBy_agent],
                     content: payload.text,
                     timestamp: Date.now(),
-                    readBy_agents: [myId],
+                    readBy_agents: [targetAgent],
                 });
                 api.logger?.info(`Ansible dispatcher: task reply ${replyId.slice(0, 8)} sent to ${task.createdBy_agent}`);
             },

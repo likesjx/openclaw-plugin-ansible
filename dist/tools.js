@@ -6,6 +6,7 @@
 import { createHash, randomUUID } from "crypto";
 import { VALIDATION_LIMITS } from "./schema.js";
 import { getDoc, getNodeId, getAnsibleState } from "./service.js";
+import { requestDispatcherReconcile } from "./dispatcher.js";
 import { isNodeAuthorized } from "./auth.js";
 import { getLockSweepStatus } from "./lock-sweep.js";
 /**
@@ -167,6 +168,96 @@ function resolveEffectiveAgent(doc, nodeId, agentId) {
     }
     return { effectiveAgent: agentId };
 }
+function cleanStringArray(value) {
+    if (!Array.isArray(value))
+        return [];
+    const out = [];
+    const seen = new Set();
+    for (const v of value) {
+        if (typeof v !== "string")
+            continue;
+        const s = v.trim();
+        if (!s || seen.has(s))
+            continue;
+        seen.add(s);
+        out.push(s);
+    }
+    return out;
+}
+function getInternalAgentsByGateway(doc, gatewayId) {
+    if (!doc)
+        return [];
+    const agents = doc.getMap("agents");
+    const out = [];
+    for (const [id, raw] of agents.entries()) {
+        const rec = raw;
+        if (!rec || rec.type !== "internal")
+            continue;
+        if (rec.gateway === gatewayId)
+            out.push(String(id));
+    }
+    return out.sort((a, b) => a.localeCompare(b));
+}
+function resolveAssignedTargets(doc, nodeId, explicitAssignedTo, requires) {
+    if (!doc)
+        return { error: "Ansible not initialized" };
+    const assignedTo = explicitAssignedTo?.trim();
+    const agents = doc.getMap("agents");
+    const context = doc.getMap("context");
+    const nodes = doc.getMap("nodes");
+    if (!assignedTo && requires.length === 0) {
+        return { error: "Task must include assignedTo or requires (or both)." };
+    }
+    if (assignedTo) {
+        const direct = agents.get(assignedTo);
+        if (direct)
+            return { assignees: [assignedTo] };
+        // Back-compat: caller passed a gateway/node id. Resolve to first local internal agent.
+        const nodeExists = nodes.get(assignedTo) !== undefined;
+        if (nodeExists) {
+            const candidates = getInternalAgentsByGateway(doc, assignedTo);
+            if (candidates.length > 0)
+                return { assignees: [candidates[0]] };
+            return { assignees: [assignedTo] };
+        }
+        return { error: `assignedTo '${assignedTo}' is not a known agent or node.` };
+    }
+    const skillToAgents = new Map();
+    for (const skill of requires) {
+        const matches = new Set();
+        for (const [agentId, raw] of agents.entries()) {
+            const rec = raw;
+            if (!rec)
+                continue;
+            if (Array.isArray(context.get(String(agentId))?.skills)) {
+                const agentSkills = context.get(String(agentId))?.skills ?? [];
+                if (agentSkills.includes(skill))
+                    matches.add(String(agentId));
+            }
+            if (rec.type === "internal" && rec.gateway) {
+                const gatewaySkills = context.get(rec.gateway)?.skills ?? [];
+                if (gatewaySkills.includes(skill))
+                    matches.add(String(agentId));
+            }
+        }
+        const ordered = Array.from(matches).sort((a, b) => a.localeCompare(b));
+        if (ordered.length === 0)
+            return { error: `No registered agent advertises required skill '${skill}'.` };
+        skillToAgents.set(skill, ordered);
+    }
+    if (requires.length === 1) {
+        return { assignees: [skillToAgents.get(requires[0])[0]] };
+    }
+    const union = new Set();
+    for (const skill of requires) {
+        for (const id of skillToAgents.get(skill) || [])
+            union.add(id);
+    }
+    const assignees = Array.from(union).sort((a, b) => a.localeCompare(b));
+    return assignees.length > 0
+        ? { assignees }
+        : { error: "No assignees resolved from requires." };
+}
 export function registerAnsibleTools(api, config) {
     // === ansible_find_task ===
     api.registerTool({
@@ -207,7 +298,8 @@ export function registerAnsibleTools(api, config) {
                         continue;
                     if (titleContains && !String(t.title || "").toLowerCase().includes(titleContains))
                         continue;
-                    if (assignedTo && t.assignedTo_agent !== assignedTo)
+                    const assignees = Array.from(new Set([...(t.assignedTo_agent ? [t.assignedTo_agent] : []), ...(t.assignedTo_agents || [])]));
+                    if (assignedTo && !assignees.includes(assignedTo))
                         continue;
                     out.push({
                         key: k,
@@ -215,6 +307,7 @@ export function registerAnsibleTools(api, config) {
                         title: t.title,
                         status: t.status,
                         assignedTo: t.assignedTo_agent,
+                        assignedToAll: assignees,
                         createdBy: t.createdBy_agent,
                         claimedBy: t.claimedBy_agent,
                         updatedAt: t.updatedAt,
@@ -693,6 +786,12 @@ export function registerAnsibleTools(api, config) {
                 const title = validateString(params.title, VALIDATION_LIMITS.maxTitleLength, "title");
                 const description = validateString(params.description, VALIDATION_LIMITS.maxDescriptionLength, "description");
                 const context = params.context ? validateString(params.context, VALIDATION_LIMITS.maxContextLength, "context") : undefined;
+                const requires = cleanStringArray(params.requires);
+                const explicitAssignedTo = typeof params.assignedTo === "string" ? validateString(params.assignedTo, 200, "assignedTo") : undefined;
+                const resolvedTargets = resolveAssignedTargets(doc, nodeId, explicitAssignedTo, requires);
+                if ("error" in resolvedTargets)
+                    return toolResult({ error: resolvedTargets.error });
+                const assignees = resolvedTargets.assignees;
                 const task = {
                     id: randomUUID(),
                     title,
@@ -704,18 +803,22 @@ export function registerAnsibleTools(api, config) {
                     updatedAt: Date.now(),
                     updates: [],
                     context,
-                    assignedTo_agent: params.assignedTo,
-                    requires: params.requires,
+                    assignedTo_agent: assignees[0],
+                    assignedTo_agents: assignees.length > 1 ? assignees : undefined,
+                    requires: requires.length > 0 ? requires : undefined,
                     intent: params.intent,
                     skillRequired: params.skillRequired,
                     metadata: params.metadata,
                 };
                 const tasks = doc.getMap("tasks");
                 tasks.set(task.id, task);
+                requestDispatcherReconcile("local-task-created");
                 api.logger?.info(`Ansible: task ${task.id.slice(0, 8)} delegated`);
                 return toolResult({
                     success: true,
                     taskId: task.id,
+                    assignedTo: task.assignedTo_agent,
+                    assignedTo_all: task.assignedTo_agents ?? [task.assignedTo_agent],
                     message: `Task "${task.title}" created and delegated`,
                 });
             }
@@ -773,6 +876,7 @@ export function registerAnsibleTools(api, config) {
                 };
                 const messages = doc.getMap("messages");
                 messages.set(message.id, message);
+                requestDispatcherReconcile("local-message-created");
                 return toolResult({
                     success: true,
                     messageId: message.id,
@@ -1068,6 +1172,7 @@ export function registerAnsibleTools(api, config) {
                     id: t.id ? t.id.slice(0, 8) : "unknown",
                     title: t.title || "Untitled",
                     assignedTo: t.assignedTo_agent || "anyone",
+                    assignedToAll: t.assignedTo_agents || (t.assignedTo_agent ? [t.assignedTo_agent] : []),
                 }));
                 const unreadCount = (state.messages ? Array.from(state.messages.values()) : [])
                     .filter((m) => {

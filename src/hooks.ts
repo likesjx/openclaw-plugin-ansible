@@ -54,7 +54,8 @@ export function registerAnsibleHooks(
       return {};
     }
 
-    const prependContext = buildContextInjection(state, myId, config);
+    const effectiveAgentId = agentId || myId;
+    const prependContext = buildContextInjection(state, myId, effectiveAgentId, config);
 
     if (!prependContext) {
       api.logger?.debug("Ansible: no shared context to inject");
@@ -68,7 +69,8 @@ export function registerAnsibleHooks(
 
 function buildContextInjection(
   state: ReturnType<typeof getAnsibleState>,
-  myId: TailscaleId,
+  nodeId: TailscaleId,
+  agentId: string,
   config: AnsibleConfig
 ): string | null {
   if (!state) return null;
@@ -79,20 +81,20 @@ function buildContextInjection(
 
   // === What Jane is Working On ===
   const focusLines: string[] = [];
-  const myContext = state.context.get(myId);
+  const myContext = state.context.get(agentId) || state.context.get(nodeId);
   if (myContext?.currentFocus || myContext?.skills?.length) {
     const parts: string[] = [];
     if (myContext.currentFocus) parts.push(myContext.currentFocus);
     if (myContext.skills?.length) parts.push(`[skills: ${myContext.skills.join(", ")}]`);
-    focusLines.push(`- **${myId}** (me): ${parts.join(" ")}`);
+    focusLines.push(`- **${agentId}** (me): ${parts.join(" ")}`);
   }
 
-  for (const [nodeId, ctx] of state.context.entries()) {
-    if (nodeId === myId) continue;
+  for (const [ctxNodeId, ctx] of state.context.entries()) {
+    if (ctxNodeId === agentId || ctxNodeId === nodeId) continue;
     const parts: string[] = [];
     if (ctx.currentFocus) parts.push(ctx.currentFocus);
     if (ctx.skills && ctx.skills.length > 0) parts.push(`[skills: ${ctx.skills.join(", ")}]`);
-    if (parts.length > 0) focusLines.push(`- **${nodeId}**: ${parts.join(" ")}`);
+    if (parts.length > 0) focusLines.push(`- **${ctxNodeId}**: ${parts.join(" ")}`);
   }
 
   if (focusLines.length > 0) {
@@ -124,7 +126,7 @@ function buildContextInjection(
   }
 
   // === Pending Tasks for Me ===
-  const myTasks = getMyPendingTasks(state, myId, config.capabilities || []);
+  const myTasks = getMyPendingTasks(state, agentId, config.capabilities || []);
   if (myTasks.length > 0) {
     const taskLines = myTasks
       .slice(0, CONTEXT_LIMITS.pendingTasks)
@@ -134,7 +136,7 @@ function buildContextInjection(
   }
 
   // === Unread Messages ===
-  const unreadMessages = getUnreadMessages(state, myId);
+  const unreadMessages = getUnreadMessages(state, agentId);
   if (unreadMessages.length > 0) {
     const messageLines = unreadMessages
       .filter((m) => now - m.timestamp < maxAgeMs)
@@ -155,7 +157,7 @@ function buildContextInjection(
 
 function getMyPendingTasks(
   state: ReturnType<typeof getAnsibleState>,
-  myId: TailscaleId,
+  myId: string,
   myCapabilities: string[]
 ): Task[] {
   if (!state) return [];
@@ -175,7 +177,12 @@ function getMyPendingTasks(
 
     if (isPending) {
       // Check if explicitly assigned to me
-      if (task.assignedTo_agent && task.assignedTo_agent !== myId) continue;
+      const assignees = new Set<string>();
+      if (task.assignedTo_agent) assignees.add(task.assignedTo_agent);
+      if (Array.isArray(task.assignedTo_agents)) {
+        for (const a of task.assignedTo_agents) assignees.add(a);
+      }
+      if (assignees.size > 0 && !assignees.has(myId)) continue;
 
       // Check capability requirements
       if (task.requires && Array.isArray(task.requires) && task.requires.length) {
@@ -199,7 +206,7 @@ function getMyPendingTasks(
 
 function getUnreadMessages(
   state: ReturnType<typeof getAnsibleState>,
-  myId: TailscaleId
+  myId: string
 ): Message[] {
   if (!state) return [];
 
