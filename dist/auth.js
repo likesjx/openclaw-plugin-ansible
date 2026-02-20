@@ -126,11 +126,29 @@ export function isNodeAuthorized(checkNodeId) {
     const doc = getDoc();
     if (!doc)
         return false;
+    const nodeId = String(checkNodeId || "").trim();
+    if (!nodeId)
+        return false;
     const nodes = doc.getMap("nodes");
     // If no nodes registered yet, allow (bootstrapping)
     if (nodes.size === 0)
         return true;
-    return nodes.has(checkNodeId);
+    if (nodes.has(nodeId))
+        return true;
+    // Fallback 1: allow nodes that are actively heartbeating in this shared doc.
+    const pulse = doc.getMap("pulse");
+    if (pulse.has(nodeId))
+        return true;
+    // Fallback 2: allow nodes that host at least one internal registered agent.
+    const agents = doc.getMap("agents");
+    for (const raw of agents.values()) {
+        const rec = raw;
+        if (!rec)
+            continue;
+        if (rec.type === "internal" && rec.gateway === nodeId)
+            return true;
+    }
+    return false;
 }
 /**
  * Get list of pending invites (for backbone nodes)
