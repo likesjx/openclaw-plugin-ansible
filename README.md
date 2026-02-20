@@ -78,6 +78,17 @@ openclaw ansible skills verify --skill ansible
 
 `sync` links the skill into each agent workspace and is safe by default (it will not replace existing mismatched paths unless you pass `--force-replace`).
 
+### Sync Skill Registry Entries Across Workspaces
+
+If you want custom skills (for example `ansible-codex-comm`) to be slash-addressable in multiple workspace contexts, sync the `### Available skills` block in `AGENTS.md`:
+
+```bash
+just sync-agents-skills-dry-run
+just sync-agents-skills
+```
+
+This uses `scripts/sync-agents-skills.sh` and reads target workspaces from `~/.openclaw/openclaw.json`.
+
 ## Installation
 
 ### 1. Install the Plugin
