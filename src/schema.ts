@@ -80,6 +80,20 @@ export interface AnsibleConfig {
     /** For stale lock files, remove after this many seconds. Default: 300. */
     staleSeconds?: number;
   };
+
+  /**
+   * Actor auth mode for mutating ansible operations.
+   * - legacy: ignore tokens and use current node / explicit handle behavior
+   * - mixed: prefer token when provided, fallback to legacy behavior
+   * - token-required: mutating operations require agent_token
+   */
+  authMode?: "legacy" | "mixed" | "token-required";
+
+  /**
+   * Canonical admin actor handle for destructive admin operations.
+   * Default: "admin"
+   */
+  adminAgentId?: string;
 }
 
 // ============================================================================
@@ -143,6 +157,13 @@ export interface AgentRecord {
 
   /** Who registered this agent */
   registeredBy: TailscaleId;
+
+  /** Token auth material (never store plaintext token; hash only). */
+  auth?: {
+    tokenHash: string;
+    issuedAt: number;
+    rotatedAt?: number;
+  };
 }
 
 // ============================================================================

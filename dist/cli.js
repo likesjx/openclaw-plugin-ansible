@@ -190,6 +190,14 @@ function parseTier(value) {
         return v;
     return undefined;
 }
+function resolveAgentToken(optToken) {
+    if (typeof optToken === "string" && optToken.trim().length > 0)
+        return optToken.trim();
+    const env = process.env.OPENCLAW_ANSIBLE_TOKEN;
+    if (typeof env === "string" && env.trim().length > 0)
+        return env.trim();
+    return undefined;
+}
 function parseSkillSourceMappings(value, flag = "--source") {
     const specs = parseRepeatableOption(value, flag);
     const out = {};
@@ -1130,12 +1138,16 @@ export function registerAnsibleCli(api, config) {
             .command("claim <taskId>")
             .description("Claim a pending task to work on it")
             .option("--as <agentId>", "Claim as this external agent (e.g., claude-code)")
+            .option("--token <token>", "Auth token for actor (or set OPENCLAW_ANSIBLE_TOKEN)")
             .action(async (...args) => {
             const taskId = args[0];
             const opts = (args[1] || {});
             const toolArgs = { taskId };
             if (opts.as)
                 toolArgs.agentId = opts.as;
+            const token = resolveAgentToken(opts.token);
+            if (token)
+                toolArgs.agent_token = token;
             let result;
             try {
                 result = await callGateway("ansible_claim_task", toolArgs);
@@ -1167,6 +1179,7 @@ export function registerAnsibleCli(api, config) {
             .option("--result <result>", "Result text (useful when status=failed)")
             .option("--notify", "Send update message to task creator")
             .option("--as <agentId>", "Update as this external agent (e.g., claude-code)")
+            .option("--token <token>", "Auth token for actor (or set OPENCLAW_ANSIBLE_TOKEN)")
             .action(async (...args) => {
             const taskId = args[0];
             const opts = (args[1] || {});
@@ -1183,6 +1196,9 @@ export function registerAnsibleCli(api, config) {
                 toolArgs.notify = true;
             if (opts.as)
                 toolArgs.agentId = opts.as;
+            const token = resolveAgentToken(opts.token);
+            if (token)
+                toolArgs.agent_token = token;
             let result;
             try {
                 result = await callGateway("ansible_update_task", toolArgs);
@@ -1204,6 +1220,7 @@ export function registerAnsibleCli(api, config) {
             .description("Mark a claimed task as completed")
             .option("--result <result>", "Result summary (what was done, output, links)")
             .option("--as <agentId>", "Complete as this external agent (e.g., claude-code)")
+            .option("--token <token>", "Auth token for actor (or set OPENCLAW_ANSIBLE_TOKEN)")
             .action(async (...args) => {
             const taskId = args[0];
             const opts = (args[1] || {});
@@ -1212,6 +1229,9 @@ export function registerAnsibleCli(api, config) {
                 toolArgs.result = opts.result;
             if (opts.as)
                 toolArgs.agentId = opts.as;
+            const token = resolveAgentToken(opts.token);
+            if (token)
+                toolArgs.agent_token = token;
             let result;
             try {
                 result = await callGateway("ansible_complete_task", toolArgs);
@@ -1321,6 +1341,7 @@ export function registerAnsibleCli(api, config) {
             .description("Operator-only emergency message purge (destructive)")
             .option("--id <messageId>", "Message ID to delete (repeatable)")
             .option("--all", "Delete all messages (dangerous)")
+            .option("--as <agentId>", "Acting admin agent id (must match configured admin handle)", "admin")
             .option("-f, --from <agentId>", "Delete messages from sender agent")
             .option("--conversation-id <id>", "Delete messages matching metadata.conversation_id")
             .option("--before <iso>", "Delete messages older than/equal to ISO timestamp")
@@ -1328,6 +1349,7 @@ export function registerAnsibleCli(api, config) {
             .option("--dry-run", "Preview matches without deleting")
             .option("--reason <text>", "Required operator justification (min 15 chars)")
             .option("--yes", "Required for destructive delete (non-dry-run)")
+            .option("--token <token>", "Auth token for acting admin (or set OPENCLAW_ANSIBLE_TOKEN)")
             .action(async (...args) => {
             const opts = (args[0] || {});
             const messageIds = parseRepeatableOption(opts.id, "--id");
@@ -1351,7 +1373,11 @@ export function registerAnsibleCli(api, config) {
             const toolArgs = {
                 confirm: "DELETE_MESSAGES",
                 reason: opts.reason.trim(),
+                from_agent: (opts.as || "admin").trim(),
             };
+            const token = resolveAgentToken(opts.token);
+            if (token)
+                toolArgs.agent_token = token;
             if (messageIds.length > 0)
                 toolArgs.messageIds = messageIds;
             if (opts.all)
@@ -1476,6 +1502,7 @@ export function registerAnsibleCli(api, config) {
             .option("--kind <kind>", "Message kind: proposal, status, result, alert, decision")
             .option("--metadata <json>", "Additional metadata as JSON object")
             .option("--broadcast", "Explicitly broadcast to all agents (same as omitting --to)")
+            .option("--token <token>", "Auth token for sender agent (or set OPENCLAW_ANSIBLE_TOKEN)")
             .action(async (...args) => {
             const opts = (args[0] || {});
             if (!opts.message) {
@@ -1511,6 +1538,9 @@ export function registerAnsibleCli(api, config) {
                 toolArgs.to = toAgents.join(",");
             if (opts.from)
                 toolArgs.from_agent = opts.from;
+            const token = resolveAgentToken(opts.token);
+            if (token)
+                toolArgs.agent_token = token;
             if (Object.keys(metadata).length > 0)
                 toolArgs.metadata = metadata;
             let result;
@@ -1555,8 +1585,40 @@ export function registerAnsibleCli(api, config) {
                 return;
             }
             console.log(`✓ Agent "${opts.id}" registered as external${opts.name ? ` (${opts.name})` : ""}`);
+            if (result.agent_token) {
+                console.log(`  Token:      ${result.agent_token}`);
+                console.log(`  Export:     export OPENCLAW_ANSIBLE_TOKEN=\"${result.agent_token}\"`);
+            }
             console.log(`  Pull inbox: openclaw ansible messages --agent ${opts.id} --unread`);
             console.log(`  Send:       openclaw ansible send --from ${opts.id} --to <target> --message "..."`);
+        });
+        agentCmd
+            .command("token-issue")
+            .description("Issue/rotate token for a registered agent (admin capability required)")
+            .option("--id <agentId>", "Agent ID to issue token for")
+            .action(async (...args) => {
+            const opts = (args[0] || {});
+            if (!opts.id) {
+                console.log("✗ Agent ID required. Use: openclaw ansible agent token-issue --id <agentId>");
+                return;
+            }
+            let result;
+            try {
+                result = await callGateway("ansible_issue_agent_token", { agent_id: opts.id });
+            }
+            catch (err) {
+                console.log(`✗ ${err.message}`);
+                return;
+            }
+            if (result.error) {
+                console.log(`✗ ${result.error}`);
+                return;
+            }
+            console.log(`✓ Token issued for "${opts.id}"`);
+            if (result.agent_token) {
+                console.log(`  Token:  ${result.agent_token}`);
+                console.log(`  Export: export OPENCLAW_ANSIBLE_TOKEN=\"${result.agent_token}\"`);
+            }
         });
         agentCmd
             .command("list")

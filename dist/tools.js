@@ -3,7 +3,7 @@
  *
  * Tools available to the agent for inter-hemisphere coordination.
  */
-import { createHash, randomUUID } from "crypto";
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from "crypto";
 import { VALIDATION_LIMITS } from "./schema.js";
 import { getDoc, getNodeId, getAnsibleState } from "./service.js";
 import { requestDispatcherReconcile } from "./dispatcher.js";
@@ -41,6 +41,41 @@ function requireAuth(nodeId) {
         throw new Error("Node not authorized. Use 'ansible join' first.");
     }
 }
+function getAuthMode(config) {
+    const mode = config?.authMode;
+    if (mode === "legacy" || mode === "token-required")
+        return mode;
+    return "mixed";
+}
+function hashAgentToken(token) {
+    return `sha256:${createHash("sha256").update(token).digest("hex")}`;
+}
+function mintAgentToken() {
+    return `at_${randomBytes(24).toString("hex")}`;
+}
+function safeEqual(a, b) {
+    const ab = Buffer.from(a);
+    const bb = Buffer.from(b);
+    if (ab.length !== bb.length)
+        return false;
+    return timingSafeEqual(ab, bb);
+}
+function resolveAgentByToken(doc, token) {
+    if (!doc)
+        return null;
+    const agents = doc.getMap("agents");
+    const want = hashAgentToken(token);
+    for (const [id, raw] of agents.entries()) {
+        const rec = raw;
+        const auth = rec?.auth || undefined;
+        const tokenHash = typeof auth?.tokenHash === "string" ? auth.tokenHash : "";
+        if (!tokenHash)
+            continue;
+        if (safeEqual(tokenHash, want))
+            return String(id);
+    }
+    return null;
+}
 function requireAdmin(nodeId, doc) {
     const nodes = doc?.getMap("nodes");
     const me = nodes?.get(nodeId);
@@ -48,6 +83,31 @@ function requireAdmin(nodeId, doc) {
     if (!caps.includes("admin")) {
         throw new Error("Admin capability required for this destructive operation. Add capability 'admin' to this node configuration.");
     }
+}
+function requireAdminActor(doc, nodeId, adminAgentId, requestedFrom) {
+    const from = (requestedFrom || "").trim();
+    if (!from) {
+        throw new Error(`from_agent is required for this operation and must be '${adminAgentId}'.`);
+    }
+    if (from !== adminAgentId) {
+        throw new Error(`from_agent must be '${adminAgentId}' for this operation (got '${from}').`);
+    }
+    const agents = doc?.getMap("agents");
+    const rec = agents?.get(from);
+    if (!rec) {
+        throw new Error(`Admin agent '${adminAgentId}' is not registered. Register it with ansible_register_agent first.`);
+    }
+    const t = String(rec.type || "");
+    if (t === "external")
+        return;
+    if (t === "internal") {
+        const gateway = typeof rec.gateway === "string" ? rec.gateway : "";
+        if (gateway !== nodeId) {
+            throw new Error(`Admin agent '${adminAgentId}' is internal on gateway '${gateway}', not this node '${nodeId}'.`);
+        }
+        return;
+    }
+    throw new Error(`Admin agent '${adminAgentId}' has unsupported type '${t}'.`);
 }
 function getCoordinationMap(doc) {
     return doc?.getMap("coordination");
@@ -158,7 +218,16 @@ function resolveTaskKey(tasks, idOrPrefix) {
  * Internal agents use nodeId (must be authorized in the nodes map).
  * External agents provide agentId, which is verified against the agents registry.
  */
-function resolveEffectiveAgent(doc, nodeId, agentId) {
+function resolveEffectiveAgent(doc, nodeId, agentId, agentToken, authMode) {
+    if (agentToken) {
+        const byToken = resolveAgentByToken(doc, agentToken);
+        if (!byToken)
+            return { error: "Invalid agent_token." };
+        return { effectiveAgent: byToken };
+    }
+    if (authMode === "token-required") {
+        return { error: "agent_token is required for this operation." };
+    }
     if (!agentId) {
         requireAuth(nodeId);
         return { effectiveAgent: nodeId };
@@ -843,6 +912,14 @@ export function registerAnsibleTools(api, config) {
                     type: "string",
                     description: "The message content",
                 },
+                from_agent: {
+                    type: "string",
+                    description: "Optional sender agent id override for external-agent sends (e.g., codex). Internal sends default to this node id.",
+                },
+                agent_token: {
+                    type: "string",
+                    description: "Authentication token for caller agent. When provided, sender identity is resolved from token and from_agent is ignored.",
+                },
                 to: {
                     type: "string",
                     description: "Specific agent to send to (single agent id or comma-separated). If omitted, broadcasts to all.",
@@ -865,19 +942,59 @@ export function registerAnsibleTools(api, config) {
             try {
                 requireAuth(nodeId);
                 const content = validateString(params.content, VALIDATION_LIMITS.maxMessageLength, "content");
+                const authMode = getAuthMode(config);
+                const requestedFrom = typeof params.from_agent === "string" && params.from_agent.trim().length > 0
+                    ? validateString(params.from_agent, 100, "from_agent").trim()
+                    : undefined;
+                const agentToken = typeof params.agent_token === "string" && params.agent_token.trim().length > 0
+                    ? params.agent_token.trim()
+                    : undefined;
                 const toAgents = params.to
                     ? (Array.isArray(params.to) ? params.to : [params.to])
                     : [];
+                // Default sender is this node's id (internal agent identity).
+                // Allow override only for registered external agents so operators can
+                // route CLI-originated messages as codex/claude without spoofing internals.
+                let effectiveFrom = nodeId;
+                if (agentToken) {
+                    const byToken = resolveAgentByToken(doc, agentToken);
+                    if (!byToken)
+                        return toolResult({ error: "Invalid agent_token." });
+                    effectiveFrom = byToken;
+                }
+                else if (authMode === "token-required") {
+                    return toolResult({ error: "agent_token is required for this operation." });
+                }
+                if (requestedFrom && requestedFrom !== nodeId) {
+                    if (agentToken) {
+                        return toolResult({
+                            error: "Do not pass from_agent when agent_token is provided. Sender is derived from token.",
+                        });
+                    }
+                    const agents = doc.getMap("agents");
+                    const rec = agents.get(requestedFrom);
+                    if (!rec) {
+                        return toolResult({
+                            error: `from_agent '${requestedFrom}' is not registered. Register first with ansible_register_agent.`,
+                        });
+                    }
+                    if (rec.type !== "external") {
+                        return toolResult({
+                            error: `from_agent '${requestedFrom}' must be a registered external agent when overriding sender identity.`,
+                        });
+                    }
+                    effectiveFrom = requestedFrom;
+                }
                 const now = Date.now();
                 const message = {
                     id: randomUUID(),
-                    from_agent: nodeId,
+                    from_agent: effectiveFrom,
                     from_node: nodeId,
                     to_agents: toAgents.length > 0 ? toAgents : undefined,
                     content,
                     timestamp: now,
                     updatedAt: now,
-                    readBy_agents: [nodeId],
+                    readBy_agents: [effectiveFrom],
                     metadata: params.metadata,
                 };
                 const messages = doc.getMap("messages");
@@ -1230,6 +1347,10 @@ export function registerAnsibleTools(api, config) {
                     type: "string",
                     description: "External agent ID claiming the task (e.g., 'claude-code'). Omit for internal agents.",
                 },
+                agent_token: {
+                    type: "string",
+                    description: "Auth token for caller agent. Preferred over agentId.",
+                },
             },
             required: ["taskId"],
         },
@@ -1241,7 +1362,7 @@ export function registerAnsibleTools(api, config) {
                 return toolResult({ error: "Ansible not initialized" });
             }
             try {
-                const resolved = resolveEffectiveAgent(doc, nodeId, params.agentId);
+                const resolved = resolveEffectiveAgent(doc, nodeId, params.agentId, params.agent_token, getAuthMode(config));
                 if (resolved.error)
                     return toolResult({ error: resolved.error });
                 const effectiveAgent = resolved.effectiveAgent;
@@ -1314,6 +1435,10 @@ export function registerAnsibleTools(api, config) {
                     type: "string",
                     description: "External agent ID updating the task (e.g., 'claude-code'). Omit for internal agents.",
                 },
+                agent_token: {
+                    type: "string",
+                    description: "Auth token for caller agent. Preferred over agentId.",
+                },
             },
             required: ["taskId", "status"],
         },
@@ -1325,7 +1450,7 @@ export function registerAnsibleTools(api, config) {
                 return toolResult({ error: "Ansible not initialized" });
             }
             try {
-                const resolved = resolveEffectiveAgent(doc, nodeId, params.agentId);
+                const resolved = resolveEffectiveAgent(doc, nodeId, params.agentId, params.agent_token, getAuthMode(config));
                 if (resolved.error)
                     return toolResult({ error: resolved.error });
                 const effectiveAgent = resolved.effectiveAgent;
@@ -1396,6 +1521,10 @@ export function registerAnsibleTools(api, config) {
                     type: "string",
                     description: "External agent ID completing the task (e.g., 'claude-code'). Omit for internal agents.",
                 },
+                agent_token: {
+                    type: "string",
+                    description: "Auth token for caller agent. Preferred over agentId.",
+                },
             },
             required: ["taskId"],
         },
@@ -1407,7 +1536,7 @@ export function registerAnsibleTools(api, config) {
                 return toolResult({ error: "Ansible not initialized" });
             }
             try {
-                const resolved = resolveEffectiveAgent(doc, nodeId, params.agentId);
+                const resolved = resolveEffectiveAgent(doc, nodeId, params.agentId, params.agent_token, getAuthMode(config));
                 if (resolved.error)
                     return toolResult({ error: resolved.error });
                 const effectiveAgent = resolved.effectiveAgent;
@@ -1616,6 +1745,14 @@ export function registerAnsibleTools(api, config) {
                     type: "string",
                     description: "Required operator justification (min 15 chars).",
                 },
+                from_agent: {
+                    type: "string",
+                    description: "Required acting agent for admin deletes. Must match configured admin agent id (default: admin).",
+                },
+                agent_token: {
+                    type: "string",
+                    description: "Auth token for acting admin agent. Preferred over from_agent.",
+                },
                 confirm: {
                     type: "string",
                     description: "Required literal confirmation: DELETE_MESSAGES",
@@ -1632,6 +1769,27 @@ export function registerAnsibleTools(api, config) {
             try {
                 requireAuth(nodeId);
                 requireAdmin(nodeId, doc);
+                const adminAgentId = typeof config?.adminAgentId === "string" && config.adminAgentId.trim().length > 0
+                    ? config.adminAgentId.trim()
+                    : "admin";
+                const authMode = getAuthMode(config);
+                const requestedFrom = typeof params.from_agent === "string" ? String(params.from_agent) : undefined;
+                const token = typeof params.agent_token === "string" && params.agent_token.trim().length > 0
+                    ? params.agent_token.trim()
+                    : undefined;
+                const tokenActor = token ? resolveAgentByToken(doc, token) : null;
+                if (token && !tokenActor)
+                    return toolResult({ error: "Invalid agent_token." });
+                if (authMode === "token-required" && !tokenActor) {
+                    return toolResult({ error: "agent_token is required for this operation." });
+                }
+                const effectiveFrom = tokenActor || requestedFrom;
+                if (tokenActor && requestedFrom && requestedFrom.trim() && requestedFrom.trim() !== tokenActor) {
+                    return toolResult({
+                        error: "from_agent does not match token identity. Omit from_agent when using agent_token.",
+                    });
+                }
+                requireAdminActor(doc, nodeId, adminAgentId, effectiveFrom);
                 const confirm = String(params.confirm || "");
                 if (confirm !== "DELETE_MESSAGES") {
                     return toolResult({
@@ -1746,15 +1904,87 @@ export function registerAnsibleTools(api, config) {
                 const agentId = validateString(params.agent_id, 100, "agent_id");
                 const agentType = params.type ?? "external";
                 const agents = doc.getMap("agents");
+                const existing = agents.get(agentId);
+                if (existing) {
+                    return toolResult({
+                        error: `agent_id '${agentId}' already exists (type=${String(existing.type || "unknown")}, ` +
+                            `gateway=${String(existing.gateway ?? "null")}). ` +
+                            "Agent handles must be unique; use a different id.",
+                        existing,
+                    });
+                }
+                const token = mintAgentToken();
+                const tokenHash = hashAgentToken(token);
                 const record = {
                     name: typeof params.name === "string" ? params.name : undefined,
                     gateway: agentType === "internal" ? (typeof params.gateway === "string" ? params.gateway : nodeId) : null,
                     type: agentType,
                     registeredAt: Date.now(),
                     registeredBy: nodeId,
+                    auth: {
+                        tokenHash,
+                        issuedAt: Date.now(),
+                    },
                 };
                 agents.set(agentId, record);
-                return toolResult({ success: true, agent_id: agentId, record });
+                return toolResult({
+                    success: true,
+                    agent_id: agentId,
+                    record,
+                    agent_token: token,
+                    warning: "Store this token securely. It will not be shown again.",
+                });
+            }
+            catch (err) {
+                return toolResult({ error: err.message });
+            }
+        },
+    });
+    // === ansible_issue_agent_token ===
+    api.registerTool({
+        name: "ansible_issue_agent_token",
+        label: "Ansible Issue Agent Token",
+        description: "Issue (rotate) an auth token for a registered agent. Returns token once; store securely.",
+        parameters: {
+            type: "object",
+            properties: {
+                agent_id: {
+                    type: "string",
+                    description: "Registered agent id to issue token for.",
+                },
+            },
+            required: ["agent_id"],
+        },
+        async execute(_id, params) {
+            const doc = getDoc();
+            const nodeId = getNodeId();
+            if (!doc || !nodeId)
+                return toolResult({ error: "Ansible not initialized" });
+            try {
+                requireAuth(nodeId);
+                requireAdmin(nodeId, doc);
+                const agentId = validateString(params.agent_id, 100, "agent_id");
+                const agents = doc.getMap("agents");
+                const rec = agents.get(agentId);
+                if (!rec)
+                    return toolResult({ error: `Agent '${agentId}' is not registered.` });
+                const token = mintAgentToken();
+                const tokenHash = hashAgentToken(token);
+                const next = {
+                    ...rec,
+                    auth: {
+                        tokenHash,
+                        issuedAt: rec?.auth?.issuedAt ?? Date.now(),
+                        rotatedAt: Date.now(),
+                    },
+                };
+                agents.set(agentId, next);
+                return toolResult({
+                    success: true,
+                    agent_id: agentId,
+                    agent_token: token,
+                    warning: "Store this token securely. It will not be shown again.",
+                });
             }
             catch (err) {
                 return toolResult({ error: err.message });
