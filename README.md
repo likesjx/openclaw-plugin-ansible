@@ -69,6 +69,15 @@ git clone https://github.com/likesjx/openclaw-skill-ansible.git ansible
 
 Restart your OpenClaw gateway to pick up the skill.
 
+To enforce base ansible skills across all configured agent workspaces on a gateway:
+
+```bash
+openclaw ansible skills sync --skill ansible
+openclaw ansible skills verify --skill ansible
+```
+
+`sync` links the skill into each agent workspace and is safe by default (it will not replace existing mismatched paths unless you pass `--force-replace`).
+
 ## Installation
 
 ### 1. Install the Plugin

@@ -229,6 +229,176 @@ function parseTier(value: unknown): "backbone" | "edge" | undefined {
   return undefined;
 }
 
+function parseSkillSourceMappings(value: unknown, flag = "--source"): Record<string, string> {
+  const specs = parseRepeatableOption(value, flag);
+  const out: Record<string, string> = {};
+  for (const specRaw of specs) {
+    const spec = specRaw.trim();
+    const idx = spec.indexOf("=");
+    if (idx <= 0 || idx === spec.length - 1) continue;
+    const name = spec.slice(0, idx).trim();
+    const src = spec.slice(idx + 1).trim();
+    if (!name || !src) continue;
+    out[name] = src;
+  }
+  return out;
+}
+
+function parseSkillNames(value: unknown, flag = "--skill", fallback: string[] = ["ansible"]): string[] {
+  const parsed = parseRepeatableOption(value, flag).map((s) => s.trim()).filter(Boolean);
+  return parsed.length > 0 ? Array.from(new Set(parsed)) : fallback;
+}
+
+function readOpenClawConfig(configPath: string): any {
+  return readJsonFile(configPath);
+}
+
+function getAgentWorkspaces(configPath: string, explicitWorkspaces: string[]): string[] {
+  const conf = readOpenClawConfig(configPath);
+  const fromAgents: string[] = Array.isArray(conf?.agents?.list)
+    ? conf.agents.list
+      .map((a: any) => (typeof a?.workspace === "string" ? a.workspace : ""))
+      .filter(Boolean)
+    : [];
+
+  const home = process.env.HOME || process.env.USERPROFILE || ".";
+  const defaultWorkspace = path.join(home, ".openclaw", "workspace");
+
+  const merged = Array.from(new Set([...explicitWorkspaces, ...fromAgents, defaultWorkspace]));
+  return merged.filter((p) => typeof p === "string" && p.trim().length > 0);
+}
+
+function isLikelyGitSource(value: string): boolean {
+  if (!value) return false;
+  if (/^[a-z]+:\/\//i.test(value)) return true;
+  if (value.startsWith("git@")) return true;
+  if (/^[^/\s]+\/[^/\s]+$/.test(value)) return true; // owner/repo shorthand
+  return false;
+}
+
+function normalizeGitSource(value: string): string {
+  if (/^[a-z]+:\/\//i.test(value) || value.startsWith("git@")) return value;
+  if (/^[^/\s]+\/[^/\s]+$/.test(value)) return `https://github.com/${value}.git`;
+  return value;
+}
+
+const DEFAULT_SKILL_GIT_SOURCES: Record<string, string> = {
+  ansible: "https://github.com/likesjx/openclaw-skill-ansible.git",
+};
+
+function ensureLocalSkillSource(params: {
+  skill: string;
+  requestedSource?: string;
+  sharedRoot: string;
+  updateSource: boolean;
+  dryRun: boolean;
+}): { sourcePath: string; note: string } {
+  const { skill, requestedSource, sharedRoot, updateSource, dryRun } = params;
+  const sourceCandidate = requestedSource?.trim();
+  const localPathIfCloned = path.join(sharedRoot, skill);
+
+  if (sourceCandidate && !isLikelyGitSource(sourceCandidate)) {
+    const abs = path.resolve(sourceCandidate);
+    if (!fs.existsSync(abs)) {
+      throw new Error(`Skill source path does not exist for '${skill}': ${abs}`);
+    }
+    if (!fs.statSync(abs).isDirectory()) {
+      throw new Error(`Skill source path is not a directory for '${skill}': ${abs}`);
+    }
+    if (updateSource && fs.existsSync(path.join(abs, ".git")) && !dryRun) {
+      runCmd("git", ["-C", abs, "fetch", "origin"]);
+      runCmd("git", ["-C", abs, "pull", "--ff-only"]);
+      return { sourcePath: abs, note: "updated local git source" };
+    }
+    return { sourcePath: abs, note: "using local path source" };
+  }
+
+  const gitSource = normalizeGitSource(
+    sourceCandidate || DEFAULT_SKILL_GIT_SOURCES[skill] || "",
+  );
+  if (!gitSource) {
+    throw new Error(
+      `No source provided for skill '${skill}'. Pass --source ${skill}=/path/to/repo or ${skill}=owner/repo`,
+    );
+  }
+
+  if (!dryRun) {
+    ensureGitRepo({
+      dir: localPathIfCloned,
+      url: gitSource,
+      name: `${skill} skill`,
+    });
+  }
+  return {
+    sourcePath: localPathIfCloned,
+    note: dryRun ? `would clone/update from ${gitSource}` : `synced from ${gitSource}`,
+  };
+}
+
+function symlinkSkillIntoWorkspace(params: {
+  workspace: string;
+  skill: string;
+  sourcePath: string;
+  forceReplace: boolean;
+  dryRun: boolean;
+}): { action: "linked" | "already-linked" | "would-link" | "skipped"; detail: string } {
+  const { workspace, skill, sourcePath, forceReplace, dryRun } = params;
+  const skillsDir = path.join(workspace, "skills");
+  const target = path.join(skillsDir, skill);
+  const sourceReal = path.resolve(sourcePath);
+
+  if (!fs.existsSync(workspace)) {
+    return { action: "skipped", detail: `workspace missing: ${workspace}` };
+  }
+
+  if (!dryRun) mkdirp(skillsDir);
+
+  if (fs.existsSync(target)) {
+    const stat = fs.lstatSync(target);
+    if (stat.isSymbolicLink()) {
+      const current = fs.readlinkSync(target);
+      const currentResolved = path.resolve(path.dirname(target), current);
+      if (currentResolved === sourceReal) {
+        return { action: "already-linked", detail: `${target} -> ${current}` };
+      }
+      if (!forceReplace) {
+        return {
+          action: "skipped",
+          detail: `existing symlink points elsewhere: ${target} -> ${current} (use --force-replace)`,
+        };
+      }
+      if (!dryRun) fs.unlinkSync(target);
+    } else {
+      if (!forceReplace) {
+        return {
+          action: "skipped",
+          detail: `existing non-symlink at ${target} (use --force-replace)`,
+        };
+      }
+      if (!dryRun) {
+        const backup = `${target}.bak.${makeTimestamp()}`;
+        fs.renameSync(target, backup);
+      }
+    }
+  }
+
+  if (dryRun) {
+    return { action: "would-link", detail: `${target} -> ${sourceReal}` };
+  }
+
+  fs.symlinkSync(sourceReal, target, "dir");
+  return { action: "linked", detail: `${target} -> ${sourceReal}` };
+}
+
+function verifySkillInWorkspace(workspace: string, skill: string): { ok: boolean; detail: string } {
+  const target = path.join(workspace, "skills", skill);
+  const skillMd = path.join(target, "SKILL.md");
+  if (!fs.existsSync(workspace)) return { ok: false, detail: `workspace missing: ${workspace}` };
+  if (!fs.existsSync(target)) return { ok: false, detail: `missing path: ${target}` };
+  if (!fs.existsSync(skillMd)) return { ok: false, detail: `missing SKILL.md: ${skillMd}` };
+  return { ok: true, detail: `ok: ${skillMd}` };
+}
+
 export function registerAnsibleCli(
   api: OpenClawPluginApi,
   config: AnsibleConfig
@@ -437,6 +607,196 @@ export function registerAnsibleCli(
           console.log("  openclaw ansible invite --tier edge");
         } else {
           console.log("  openclaw ansible join --token <token-from-backbone>");
+        }
+      });
+
+    // === ansible status ===
+    const skillsCmd = ansible.command("skills").description("Manage base ansible skill distribution");
+
+    skillsCmd
+      .command("sync")
+      .description("Ensure required skills are present in every configured agent workspace")
+      .option("--skill <name>", "Skill name (repeatable or comma-separated). Default: ansible")
+      .option("--source <spec>", "Skill source mapping (repeatable): <skill>=</path|owner/repo|git-url>")
+      .option("--shared-root <dir>", "Directory used for cloned shared skills (default ~/.openclaw/shared-skills)")
+      .option("--workspace <path>", "Explicit workspace(s) to include (repeatable or comma-separated)")
+      .option("--force-replace", "Replace existing non-symlink or mismatched symlink targets (backs up existing dirs/files)")
+      .option("--update-source", "If source is a local git repo, run fetch + pull --ff-only before linking")
+      .option("--dry-run", "Preview actions without cloning/updating or writing symlinks")
+      .action(async (...args: unknown[]) => {
+        const opts = (args[0] || {}) as {
+          skill?: string | string[];
+          source?: string | string[];
+          sharedRoot?: string;
+          workspace?: string | string[];
+          forceReplace?: boolean;
+          updateSource?: boolean;
+          dryRun?: boolean;
+        };
+
+        const home = process.env.HOME || process.env.USERPROFILE;
+        if (!home) {
+          console.log("✗ Cannot resolve HOME; set $HOME and retry.");
+          return;
+        }
+
+        const configPath = process.env.OPENCLAW_CONFIG || path.join(home, ".openclaw", "openclaw.json");
+        if (!fs.existsSync(configPath)) {
+          console.log(`✗ Config not found at ${configPath}`);
+          return;
+        }
+
+        const dryRun = opts.dryRun === true;
+        const forceReplace = opts.forceReplace === true;
+        const updateSource = opts.updateSource === true;
+        const sharedRoot = path.resolve(
+          typeof opts.sharedRoot === "string" && opts.sharedRoot.trim().length > 0
+            ? opts.sharedRoot
+            : path.join(home, ".openclaw", "shared-skills"),
+        );
+        const skills = parseSkillNames(opts.skill, "--skill", ["ansible"]);
+        const sourceMap = parseSkillSourceMappings(opts.source, "--source");
+        const explicitWorkspaces = parseRepeatableOption(opts.workspace, "--workspace").map((w) => path.resolve(w));
+
+        let workspaces: string[];
+        try {
+          workspaces = getAgentWorkspaces(configPath, explicitWorkspaces);
+        } catch (err: any) {
+          console.log(`✗ Failed to read workspaces from config: ${String(err?.message || err)}`);
+          return;
+        }
+
+        if (workspaces.length === 0) {
+          console.log("✗ No workspaces found.");
+          return;
+        }
+
+        if (dryRun) {
+          console.log("=== Dry Run: ansible skills sync ===");
+        } else {
+          console.log("=== ansible skills sync ===");
+        }
+        console.log(`skills=${JSON.stringify(skills)}`);
+        console.log(`workspaces=${workspaces.length}`);
+        console.log(`sharedRoot=${sharedRoot}`);
+
+        if (!dryRun) mkdirp(sharedRoot);
+
+        const resolvedSources: Record<string, string> = {};
+        let sourceErrors = 0;
+        for (const skill of skills) {
+          try {
+            const resolved = ensureLocalSkillSource({
+              skill,
+              requestedSource: sourceMap[skill],
+              sharedRoot,
+              updateSource,
+              dryRun,
+            });
+            resolvedSources[skill] = resolved.sourcePath;
+            console.log(`- source ${skill}: ${resolved.note} (${resolved.sourcePath})`);
+          } catch (err: any) {
+            sourceErrors += 1;
+            console.log(`✗ source ${skill}: ${String(err?.message || err)}`);
+          }
+        }
+
+        if (sourceErrors > 0) {
+          console.log(`\n✗ Aborting: ${sourceErrors} skill source error(s).`);
+          return;
+        }
+
+        let linked = 0;
+        let already = 0;
+        let would = 0;
+        let skipped = 0;
+
+        for (const workspace of workspaces) {
+          for (const skill of skills) {
+            const out = symlinkSkillIntoWorkspace({
+              workspace,
+              skill,
+              sourcePath: resolvedSources[skill],
+              forceReplace,
+              dryRun,
+            });
+            if (out.action === "linked") linked += 1;
+            if (out.action === "already-linked") already += 1;
+            if (out.action === "would-link") would += 1;
+            if (out.action === "skipped") skipped += 1;
+            const prefix =
+              out.action === "skipped"
+                ? "!"
+                : out.action === "already-linked"
+                ? "="
+                : out.action === "would-link"
+                ? "~"
+                : "+";
+            console.log(`${prefix} [${skill}] ${workspace}: ${out.detail}`);
+          }
+        }
+
+        console.log("\nSummary:");
+        if (dryRun) {
+          console.log(`  would-link=${would} already-linked=${already} skipped=${skipped}`);
+        } else {
+          console.log(`  linked=${linked} already-linked=${already} skipped=${skipped}`);
+        }
+      });
+
+    skillsCmd
+      .command("verify")
+      .description("Verify required skills are present in each configured agent workspace")
+      .option("--skill <name>", "Skill name (repeatable or comma-separated). Default: ansible")
+      .option("--workspace <path>", "Explicit workspace(s) to include (repeatable or comma-separated)")
+      .action(async (...args: unknown[]) => {
+        const opts = (args[0] || {}) as {
+          skill?: string | string[];
+          workspace?: string | string[];
+        };
+
+        const home = process.env.HOME || process.env.USERPROFILE;
+        if (!home) {
+          console.log("✗ Cannot resolve HOME; set $HOME and retry.");
+          return;
+        }
+        const configPath = process.env.OPENCLAW_CONFIG || path.join(home, ".openclaw", "openclaw.json");
+        if (!fs.existsSync(configPath)) {
+          console.log(`✗ Config not found at ${configPath}`);
+          return;
+        }
+
+        const skills = parseSkillNames(opts.skill, "--skill", ["ansible"]);
+        const explicitWorkspaces = parseRepeatableOption(opts.workspace, "--workspace").map((w) => path.resolve(w));
+        let workspaces: string[];
+        try {
+          workspaces = getAgentWorkspaces(configPath, explicitWorkspaces);
+        } catch (err: any) {
+          console.log(`✗ Failed to read workspaces from config: ${String(err?.message || err)}`);
+          return;
+        }
+
+        let okCount = 0;
+        let failCount = 0;
+        console.log("=== ansible skills verify ===");
+        for (const workspace of workspaces) {
+          for (const skill of skills) {
+            const res = verifySkillInWorkspace(workspace, skill);
+            if (res.ok) {
+              okCount += 1;
+              console.log(`✓ [${skill}] ${workspace}`);
+            } else {
+              failCount += 1;
+              console.log(`✗ [${skill}] ${workspace}: ${res.detail}`);
+            }
+          }
+        }
+
+        console.log("\nSummary:");
+        console.log(`  ok=${okCount} failed=${failCount}`);
+        if (failCount > 0) {
+          console.log("\nFix with:");
+          console.log("  openclaw ansible skills sync --skill ansible --force-replace");
         }
       });
 

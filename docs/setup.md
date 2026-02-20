@@ -38,6 +38,7 @@ What it does **not** do:
 
 - It does not update plugin code in the plugin install directory.
 - Update plugin code separately with `openclaw plugins update ansible` (or reinstall), then restart.
+- It does not implicitly force base-skill links into every agent workspace. Use `openclaw ansible skills sync` for that.
 
 ### Flags You’ll Actually Use
 
@@ -46,6 +47,20 @@ What it does **not** do:
 - `--inject-agent <agentId>` (repeat)
 - `--dispatch-incoming true|false` (see "Reliability" below)
 - `--dry-run` (preview config changes only; no skill git operations, no writes, no restart)
+
+### Base Skill Distribution (All Agents on a Gateway)
+
+To ensure every configured agent workspace has the base ansible skill mounted:
+
+```bash
+openclaw ansible skills sync --skill ansible
+openclaw ansible skills verify --skill ansible
+```
+
+Notes:
+- Default source for `ansible` is `likesjx/openclaw-skill-ansible` cloned into `~/.openclaw/shared-skills/ansible`.
+- Existing workspace skill directories are not replaced unless `--force-replace` is passed.
+- You can override source per skill: `--source ansible=/absolute/path/to/openclaw-skill-ansible`.
 
 ### Config Safety
 
