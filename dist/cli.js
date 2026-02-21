@@ -198,6 +198,17 @@ function resolveAgentToken(optToken) {
         return env.trim();
     return undefined;
 }
+function emitJson(payload, outPath, compact = false) {
+    const json = JSON.stringify(payload, null, compact ? 0 : 2);
+    if (outPath && outPath.trim().length > 0) {
+        const abs = path.resolve(outPath.trim());
+        fs.mkdirSync(path.dirname(abs), { recursive: true });
+        fs.writeFileSync(abs, `${json}\n`, "utf-8");
+        console.log(`✓ Wrote JSON: ${abs}`);
+        return;
+    }
+    console.log(json);
+}
 function parseSkillSourceMappings(value, flag = "--source") {
     const specs = parseRepeatableOption(value, flag);
     const out = {};
@@ -904,6 +915,28 @@ export function registerAnsibleCli(api, config) {
                 }
             }
         });
+        // === ansible dump-state ===
+        ansible
+            .command("dump-state")
+            .description("Dump full ansible/plugin state from the gateway as JSON")
+            .option("--out <path>", "Write JSON output to a file path")
+            .option("--compact", "Compact JSON output")
+            .action(async (...args) => {
+            const opts = (args[0] || {});
+            let result;
+            try {
+                result = await callGateway("ansible_dump_state");
+            }
+            catch (err) {
+                console.log(`✗ ${err.message}`);
+                return;
+            }
+            if (result?.error) {
+                console.log(`✗ ${result.error}`);
+                return;
+            }
+            emitJson(result, opts.out, opts.compact === true);
+        });
         // === ansible retention ===
         const retention = ansible.command("retention").description("Coordinator retention / roll-off");
         retention
@@ -1274,6 +1307,38 @@ export function registerAnsibleCli(api, config) {
                 console.log(`○ [${t.id ? t.id.slice(0, 8) : t.key}] ${t.title}${intent}${assignee}`);
             }
         });
+        // === ansible tasks-dump ===
+        ansible
+            .command("tasks-dump")
+            .description("Dump full raw task records from shared ansible state as JSON")
+            .option("-s, --status <status>", "Filter by status (pending|claimed|in_progress|completed|failed)")
+            .option("--assigned-to <agentId>", "Filter by assignee")
+            .option("-n, --limit <count>", "Max records to return (default: all)")
+            .option("--out <path>", "Write JSON output to a file path")
+            .option("--compact", "Compact JSON output")
+            .action(async (...args) => {
+            const opts = (args[0] || {});
+            const toolArgs = {};
+            if (opts.status)
+                toolArgs.status = opts.status;
+            if (opts.assignedTo)
+                toolArgs.assignedTo = opts.assignedTo;
+            if (opts.limit && Number.isFinite(Number(opts.limit)))
+                toolArgs.limit = Math.floor(Number(opts.limit));
+            let result;
+            try {
+                result = await callGateway("ansible_dump_tasks", toolArgs);
+            }
+            catch (err) {
+                console.log(`✗ ${err.message}`);
+                return;
+            }
+            if (result?.error) {
+                console.log(`✗ ${result.error}`);
+                return;
+            }
+            emitJson(result, opts.out, opts.compact === true);
+        });
         // === ansible messages ===
         ansible
             .command("messages")
@@ -1334,6 +1399,41 @@ export function registerAnsibleCli(api, config) {
                 }
                 console.log();
             }
+        });
+        // === ansible messages-dump ===
+        ansible
+            .command("messages-dump")
+            .description("Dump full raw message records from shared ansible state as JSON")
+            .option("-f, --from <agentId>", "Filter by sender agent")
+            .option("--to <agentId>", "Filter by recipient agent in to_agents")
+            .option("--conversation-id <id>", "Filter by metadata.conversation_id")
+            .option("-n, --limit <count>", "Max records to return (default: all)")
+            .option("--out <path>", "Write JSON output to a file path")
+            .option("--compact", "Compact JSON output")
+            .action(async (...args) => {
+            const opts = (args[0] || {});
+            const toolArgs = {};
+            if (opts.from)
+                toolArgs.from = opts.from;
+            if (opts.to)
+                toolArgs.to = opts.to;
+            if (opts.conversationId)
+                toolArgs.conversation_id = opts.conversationId;
+            if (opts.limit && Number.isFinite(Number(opts.limit)))
+                toolArgs.limit = Math.floor(Number(opts.limit));
+            let result;
+            try {
+                result = await callGateway("ansible_dump_messages", toolArgs);
+            }
+            catch (err) {
+                console.log(`✗ ${err.message}`);
+                return;
+            }
+            if (result?.error) {
+                console.log(`✗ ${result.error}`);
+                return;
+            }
+            emitJson(result, opts.out, opts.compact === true);
         });
         // === ansible messages-delete ===
         ansible

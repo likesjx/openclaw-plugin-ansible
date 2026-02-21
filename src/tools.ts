@@ -26,6 +26,45 @@ function toolResult(data: Record<string, unknown>) {
   };
 }
 
+function isMapLike(value: unknown): value is { entries: () => IterableIterator<[unknown, unknown]> } {
+  return (
+    !!value &&
+    typeof value === "object" &&
+    typeof (value as any).entries === "function" &&
+    typeof (value as any).get === "function" &&
+    typeof (value as any).set === "function"
+  );
+}
+
+function serializeValue(value: unknown, seen: WeakSet<object> = new WeakSet()): unknown {
+  if (value === null || value === undefined) return value;
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") return value;
+  if (typeof value === "bigint") return value.toString();
+  if (value instanceof Date) return value.toISOString();
+  if (Array.isArray(value)) return value.map((v) => serializeValue(v, seen));
+
+  if (typeof value === "object") {
+    if (seen.has(value as object)) return "[Circular]";
+    seen.add(value as object);
+
+    if (isMapLike(value)) {
+      const out: Record<string, unknown> = {};
+      for (const [k, v] of value.entries()) {
+        out[String(k)] = serializeValue(v, seen);
+      }
+      return out;
+    }
+
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      out[k] = serializeValue(v, seen);
+    }
+    return out;
+  }
+
+  return String(value);
+}
+
 function validateString(value: unknown, maxLength: number, fieldName: string): string {
   if (typeof value !== "string") {
     throw new Error(`${fieldName} must be a string`);
@@ -1457,6 +1496,247 @@ export function registerAnsibleTools(
     async handler() {
       // @ts-ignore
       return this.execute();
+    },
+  });
+
+  // === ansible_dump_state ===
+  api.registerTool({
+    name: "ansible_dump_state",
+    label: "Ansible Dump State",
+    description:
+      "Operator observability: dump full ansible/plugin state for this gateway, including config and all Yjs maps.",
+    parameters: {
+      type: "object",
+      properties: {},
+    },
+    async execute() {
+      const doc = getDoc();
+      const nodeId = getNodeId();
+
+      if (!doc || !nodeId) {
+        return toolResult({ error: "Ansible not initialized" });
+      }
+
+      try {
+        requireAuth(nodeId);
+
+        const readMap = (name: string): Array<{ key: string; value: unknown }> => {
+          const m = doc.getMap(name);
+          const out: Array<{ key: string; value: unknown }> = [];
+          for (const [k, v] of m.entries()) {
+            out.push({ key: String(k), value: serializeValue(v) });
+          }
+          out.sort((a, b) => a.key.localeCompare(b.key));
+          return out;
+        };
+
+        const maps = {
+          nodes: readMap("nodes"),
+          agents: readMap("agents"),
+          pendingInvites: readMap("pendingInvites"),
+          tasks: readMap("tasks"),
+          messages: readMap("messages"),
+          context: readMap("context"),
+          pulse: readMap("pulse"),
+          coordination: readMap("coordination"),
+        };
+
+        const counts = {
+          nodes: maps.nodes.length,
+          agents: maps.agents.length,
+          pendingInvites: maps.pendingInvites.length,
+          tasks: maps.tasks.length,
+          messages: maps.messages.length,
+          context: maps.context.length,
+          pulse: maps.pulse.length,
+          coordination: maps.coordination.length,
+        };
+
+        return toolResult({
+          generatedAt: Date.now(),
+          myId: nodeId,
+          plugin: {
+            config: serializeValue(config),
+            authMode: getAuthMode(config),
+            adminAgentId:
+              typeof (config as any)?.adminAgentId === "string" && (config as any).adminAgentId.trim().length > 0
+                ? (config as any).adminAgentId.trim()
+                : "admin",
+          },
+          counts,
+          maps,
+        });
+      } catch (err: any) {
+        return toolResult({ error: err.message });
+      }
+    },
+  });
+
+  // === ansible_dump_tasks ===
+  api.registerTool({
+    name: "ansible_dump_tasks",
+    label: "Ansible Dump Tasks",
+    description: "Operator observability: dump full raw task records from shared ansible state.",
+    parameters: {
+      type: "object",
+      properties: {
+        status: {
+          type: "string",
+          description: "Optional status filter (pending|claimed|in_progress|completed|failed).",
+        },
+        assignedTo: {
+          type: "string",
+          description: "Optional assignee filter. Matches assignedTo_agent or assignedTo_agents.",
+        },
+        limit: {
+          type: "number",
+          description: "Optional maximum records to return after filtering.",
+        },
+      },
+    },
+    async execute(_id, params) {
+      const doc = getDoc();
+      const nodeId = getNodeId();
+
+      if (!doc || !nodeId) {
+        return toolResult({ error: "Ansible not initialized" });
+      }
+
+      try {
+        requireAuth(nodeId);
+        const statusFilter = typeof params.status === "string" && params.status.trim() ? params.status.trim() : undefined;
+        const assignedFilter =
+          typeof params.assignedTo === "string" && params.assignedTo.trim() ? params.assignedTo.trim() : undefined;
+        const limitRaw = typeof params.limit === "number" ? params.limit : undefined;
+        const limit = typeof limitRaw === "number" && Number.isFinite(limitRaw) ? Math.max(1, Math.floor(limitRaw)) : undefined;
+
+        const tasks = doc.getMap("tasks");
+        const rows: Array<{ key: string; id: string; value: unknown }> = [];
+        for (const [key, raw] of tasks.entries()) {
+          const task = raw as Task | undefined;
+          if (!task) continue;
+          if (statusFilter && task.status !== statusFilter) continue;
+          if (assignedFilter) {
+            const assignees = new Set<string>();
+            if (task.assignedTo_agent) assignees.add(task.assignedTo_agent);
+            if (Array.isArray(task.assignedTo_agents)) {
+              for (const a of task.assignedTo_agents) assignees.add(a);
+            }
+            if (!assignees.has(assignedFilter)) continue;
+          }
+          rows.push({
+            key: String(key),
+            id: typeof task.id === "string" ? task.id : String(key),
+            value: serializeValue(task),
+          });
+        }
+
+        rows.sort((a, b) => {
+          const ta = Number((a.value as any)?.createdAt || 0);
+          const tb = Number((b.value as any)?.createdAt || 0);
+          if (ta !== tb) return tb - ta;
+          return a.key.localeCompare(b.key);
+        });
+
+        const items = limit ? rows.slice(0, limit) : rows;
+        return toolResult({
+          generatedAt: Date.now(),
+          myId: nodeId,
+          total: rows.length,
+          returned: items.length,
+          items,
+        });
+      } catch (err: any) {
+        return toolResult({ error: err.message });
+      }
+    },
+  });
+
+  // === ansible_dump_messages ===
+  api.registerTool({
+    name: "ansible_dump_messages",
+    label: "Ansible Dump Messages",
+    description: "Operator observability: dump full raw message records from shared ansible state.",
+    parameters: {
+      type: "object",
+      properties: {
+        from: {
+          type: "string",
+          description: "Optional sender filter (from_agent).",
+        },
+        to: {
+          type: "string",
+          description: "Optional recipient filter (must appear in to_agents).",
+        },
+        conversation_id: {
+          type: "string",
+          description: "Optional conversation filter (metadata.conversation_id).",
+        },
+        limit: {
+          type: "number",
+          description: "Optional maximum records to return after filtering.",
+        },
+      },
+    },
+    async execute(_id, params) {
+      const doc = getDoc();
+      const nodeId = getNodeId();
+
+      if (!doc || !nodeId) {
+        return toolResult({ error: "Ansible not initialized" });
+      }
+
+      try {
+        requireAuth(nodeId);
+        const fromFilter = typeof params.from === "string" && params.from.trim() ? params.from.trim() : undefined;
+        const toFilter = typeof params.to === "string" && params.to.trim() ? params.to.trim() : undefined;
+        const convoFilter =
+          typeof params.conversation_id === "string" && params.conversation_id.trim()
+            ? params.conversation_id.trim()
+            : undefined;
+        const limitRaw = typeof params.limit === "number" ? params.limit : undefined;
+        const limit = typeof limitRaw === "number" && Number.isFinite(limitRaw) ? Math.max(1, Math.floor(limitRaw)) : undefined;
+
+        const messages = doc.getMap("messages");
+        const rows: Array<{ key: string; id: string; value: unknown }> = [];
+        for (const [key, raw] of messages.entries()) {
+          const msg = raw as Message | undefined;
+          if (!msg) continue;
+          if (fromFilter && msg.from_agent !== fromFilter) continue;
+          if (toFilter) {
+            const to = Array.isArray(msg.to_agents) ? msg.to_agents : [];
+            if (!to.includes(toFilter)) continue;
+          }
+          if (convoFilter) {
+            const cid = msg.metadata?.conversation_id;
+            if (cid !== convoFilter) continue;
+          }
+
+          rows.push({
+            key: String(key),
+            id: typeof msg.id === "string" ? msg.id : String(key),
+            value: serializeValue(msg),
+          });
+        }
+
+        rows.sort((a, b) => {
+          const ta = Number((a.value as any)?.updatedAt || (a.value as any)?.timestamp || 0);
+          const tb = Number((b.value as any)?.updatedAt || (b.value as any)?.timestamp || 0);
+          if (ta !== tb) return tb - ta;
+          return a.key.localeCompare(b.key);
+        });
+
+        const items = limit ? rows.slice(0, limit) : rows;
+        return toolResult({
+          generatedAt: Date.now(),
+          myId: nodeId,
+          total: rows.length,
+          returned: items.length,
+          items,
+        });
+      } catch (err: any) {
+        return toolResult({ error: err.message });
+      }
     },
   });
 
