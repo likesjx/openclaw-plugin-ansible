@@ -27,14 +27,31 @@ function readGatewayConfig() {
     const config = JSON.parse(raw);
     const port = config?.gateway?.port ?? 18789;
     const token = config?.gateway?.auth?.token;
+    const explicitUrl = process.env.OPENCLAW_GATEWAY_URL ||
+        (typeof config?.gateway?.url === "string" ? config.gateway.url : "");
+    const bindHost = typeof config?.gateway?.bind === "string" ? config.gateway.bind : "127.0.0.1";
     if (!token) {
         throw new Error("gateway.auth.token not set in openclaw config");
     }
-    return { port, token };
+    const baseUrl = explicitUrl || `http://${bindHost}:${port}`;
+    let parsed;
+    try {
+        parsed = new URL(baseUrl);
+    }
+    catch {
+        throw new Error(`Invalid gateway URL: ${baseUrl}`);
+    }
+    const host = parsed.hostname.toLowerCase();
+    const loopbackHosts = new Set(["127.0.0.1", "localhost", "::1"]);
+    const isLoopback = loopbackHosts.has(host);
+    if (parsed.protocol === "http:" && !isLoopback && process.env.OPENCLAW_ALLOW_INSECURE_REMOTE_HTTP !== "1") {
+        throw new Error("Refusing insecure remote HTTP gateway URL. Use https://... or set OPENCLAW_ALLOW_INSECURE_REMOTE_HTTP=1");
+    }
+    return { baseUrl: parsed.toString().replace(/\/+$/, ""), token };
 }
 async function callGateway(tool, args = {}) {
-    const { port, token } = readGatewayConfig();
-    const url = `http://127.0.0.1:${port}/tools/invoke`;
+    const { baseUrl, token } = readGatewayConfig();
+    const url = `${baseUrl}/tools/invoke`;
     let res;
     try {
         res = await fetch(url, {
@@ -47,7 +64,7 @@ async function callGateway(tool, args = {}) {
         });
     }
     catch (err) {
-        throw new Error(`Gateway not running on port ${port} (${err.cause?.code || err.message})`);
+        throw new Error(`Gateway not reachable at ${baseUrl} (${err.cause?.code || err.message})`);
     }
     if (!res.ok) {
         const body = await res.text().catch(() => "");
@@ -179,6 +196,17 @@ function parseBool(value) {
     if (value === "false")
         return false;
     return undefined;
+}
+function writeSecretTokenFile(filePath, token) {
+    const dir = path.dirname(filePath);
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(filePath, `${token}\n`, { mode: 0o600 });
+    try {
+        fs.chmodSync(filePath, 0o600);
+    }
+    catch {
+        // Best effort for non-POSIX filesystems.
+    }
 }
 function parseTier(value) {
     if (value === undefined || value === null || value === "")
@@ -1693,9 +1721,145 @@ export function registerAnsibleCli(api, config) {
             console.log(`  Send:       openclaw ansible send --from ${opts.id} --to <target> --message "..."`);
         });
         agentCmd
+            .command("invite")
+            .description("Admin-only: issue a temporary one-time invite token for an external coding agent")
+            .option("--id <agentId>", "Agent ID to invite (e.g., codex, claude)")
+            .option("--ttl-minutes <minutes>", "Invite token TTL in minutes (default 15)", "15")
+            .option("--as <agentId>", "Acting admin agent id (defaults to 'admin')", "admin")
+            .option("--token <token>", "Auth token for acting admin (or set OPENCLAW_ANSIBLE_TOKEN)")
+            .action(async (...args) => {
+            const opts = (args[0] || {});
+            if (!opts.id) {
+                console.log("✗ Agent ID required. Use: openclaw ansible agent invite --id <agentId>");
+                return;
+            }
+            const ttl = Number.parseInt(opts.ttlMinutes || "15", 10);
+            if (!Number.isFinite(ttl)) {
+                console.log("✗ --ttl-minutes must be a number");
+                return;
+            }
+            const toolArgs = {
+                agent_id: opts.id,
+                ttl_minutes: ttl,
+            };
+            if (opts.as)
+                toolArgs.from_agent = opts.as;
+            const token = resolveAgentToken(opts.token);
+            if (token)
+                toolArgs.agent_token = token;
+            let result;
+            try {
+                result = await callGateway("ansible_invite_agent", toolArgs);
+            }
+            catch (err) {
+                console.log(`✗ ${err.message}`);
+                return;
+            }
+            if (result.error) {
+                console.log(`✗ ${result.error}`);
+                return;
+            }
+            console.log(`✓ Invite issued for "${opts.id}"`);
+            console.log(`  Invite token: ${result.invite_token}`);
+            if (result.expiresAt) {
+                console.log(`  Expires:      ${new Date(result.expiresAt).toLocaleString()}`);
+            }
+            console.log(`  Accept:       openclaw ansible agent accept --invite-token ${result.invite_token}`);
+            console.log("\nOnboarding payload (send to external coding agent):");
+            console.log(`  1) Accept invite and write secure token file`);
+            console.log(`     openclaw ansible agent accept --invite-token ${result.invite_token} --write-token-file ~/.openclaw/runtime/ansible/${opts.id}.token`);
+            console.log(`  2) Export token for session use`);
+            console.log(`     export OPENCLAW_ANSIBLE_TOKEN=\"$(cat ~/.openclaw/runtime/ansible/${opts.id}.token)\"`);
+            console.log(`  3) Verify identity`);
+            console.log(`     openclaw ansible agent list`);
+        });
+        agentCmd
+            .command("accept")
+            .description("Accept a temporary invite token and mint a permanent agent token")
+            .option("--invite-token <token>", "Temporary invite token")
+            .option("--write-token-file <path>", "Write permanent token to file (mode 600)")
+            .action(async (...args) => {
+            const opts = (args[0] || {});
+            if (!opts.inviteToken) {
+                console.log("✗ Invite token required. Use: openclaw ansible agent accept --invite-token <token>");
+                return;
+            }
+            let result;
+            try {
+                result = await callGateway("ansible_accept_agent_invite", { invite_token: opts.inviteToken });
+            }
+            catch (err) {
+                console.log(`✗ ${err.message}`);
+                return;
+            }
+            if (result.error) {
+                console.log(`✗ ${result.error}`);
+                return;
+            }
+            const agentId = String(result.agent_id || "");
+            const token = String(result.agent_token || "");
+            if (!token) {
+                console.log("✗ Invite accepted but no permanent token returned.");
+                return;
+            }
+            console.log(`✓ Invite accepted for "${agentId}"`);
+            console.log(`  Agent token: ${token}`);
+            console.log(`  Export:      export OPENCLAW_ANSIBLE_TOKEN=\"${token}\"`);
+            if (opts.writeTokenFile) {
+                try {
+                    const outPath = path.resolve(opts.writeTokenFile);
+                    writeSecretTokenFile(outPath, token);
+                    console.log(`  Wrote:       ${outPath}`);
+                }
+                catch (err) {
+                    console.log(`  ⚠ Failed to write token file: ${String(err?.message || err)}`);
+                }
+            }
+        });
+        agentCmd
+            .command("invites")
+            .description("List coding-agent invite records (active by default)")
+            .option("--all", "Include used/revoked/expired invites")
+            .action(async (...args) => {
+            const opts = (args[0] || {});
+            let result;
+            try {
+                result = await callGateway("ansible_list_agent_invites", {
+                    includeUsed: opts.all === true,
+                    includeRevoked: opts.all === true,
+                    includeExpired: opts.all === true,
+                });
+            }
+            catch (err) {
+                console.log(`✗ ${err.message}`);
+                return;
+            }
+            if (result.error) {
+                console.log(`✗ ${result.error}`);
+                return;
+            }
+            const invites = result.invites || [];
+            console.log(`\n=== Agent Invites (${invites.length}) ===\n`);
+            if (invites.length === 0) {
+                console.log("No invites found.");
+                return;
+            }
+            for (const inv of invites) {
+                console.log(`  ${inv.id.slice(0, 8)} ${inv.agent_id} [${inv.status}] expires=${inv.expiresAt ? new Date(inv.expiresAt).toLocaleString() : "n/a"}`);
+                if (inv.usedAt) {
+                    console.log(`    used=${new Date(inv.usedAt).toLocaleString()} by=${inv.usedByAgent || inv.usedByNode || "unknown"}`);
+                }
+                if (inv.revokedAt) {
+                    console.log(`    revoked=${new Date(inv.revokedAt).toLocaleString()} reason=${inv.revokedReason || "n/a"}`);
+                }
+            }
+        });
+        agentCmd
             .command("token-issue")
             .description("Issue/rotate token for a registered agent (admin capability required)")
             .option("--id <agentId>", "Agent ID to issue token for")
+            .option("--as <agentId>", "Acting admin agent id (defaults to 'admin')", "admin")
+            .option("--token <token>", "Auth token for acting admin (or set OPENCLAW_ANSIBLE_TOKEN)")
             .action(async (...args) => {
             const opts = (args[0] || {});
             if (!opts.id) {
@@ -1703,8 +1867,14 @@ export function registerAnsibleCli(api, config) {
                 return;
             }
             let result;
+            const toolArgs = { agent_id: opts.id };
+            if (opts.as)
+                toolArgs.from_agent = opts.as;
+            const token = resolveAgentToken(opts.token);
+            if (token)
+                toolArgs.agent_token = token;
             try {
-                result = await callGateway("ansible_issue_agent_token", { agent_id: opts.id });
+                result = await callGateway("ansible_issue_agent_token", toolArgs);
             }
             catch (err) {
                 console.log(`✗ ${err.message}`);
@@ -1738,6 +1908,12 @@ export function registerAnsibleCli(api, config) {
             for (const a of agents) {
                 const location = a.gateway ? `gateway:${a.gateway}` : "external/cli";
                 console.log(`  ${a.id} [${a.type}] — ${a.name || a.id} (${location})`);
+                if (a.auth?.tokenHint || a.auth?.issuedAt || a.auth?.rotatedAt) {
+                    const issued = a.auth?.issuedAt ? new Date(a.auth.issuedAt).toLocaleString() : "n/a";
+                    const rotated = a.auth?.rotatedAt ? new Date(a.auth.rotatedAt).toLocaleString() : "n/a";
+                    const accepted = a.auth?.acceptedAt ? new Date(a.auth.acceptedAt).toLocaleString() : "n/a";
+                    console.log(`    auth hint=${a.auth?.tokenHint || "n/a"} issued=${issued} rotated=${rotated} accepted=${accepted}`);
+                }
             }
         });
     }, { commands: ["ansible"] });
