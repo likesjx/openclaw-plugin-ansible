@@ -87,8 +87,18 @@ function getAuthMode(config) {
 function hashAgentToken(token) {
     return `sha256:${createHash("sha256").update(token).digest("hex")}`;
 }
+function tokenHintFromHash(hash) {
+    const normalized = String(hash || "");
+    const hex = normalized.startsWith("sha256:") ? normalized.slice("sha256:".length) : normalized;
+    if (!hex)
+        return "";
+    return `sha256:${hex.slice(0, 12)}`;
+}
 function mintAgentToken() {
     return `at_${randomBytes(24).toString("hex")}`;
+}
+function mintAgentInviteToken() {
+    return `ait_${randomBytes(20).toString("hex")}`;
 }
 function safeEqual(a, b) {
     const ab = Buffer.from(a);
@@ -110,6 +120,48 @@ function resolveAgentByToken(doc, token) {
             continue;
         if (safeEqual(tokenHash, want))
             return String(id);
+    }
+    return null;
+}
+function getAgentInvitesMap(doc) {
+    if (!doc)
+        return null;
+    return doc.getMap("agentInvites");
+}
+function pruneExpiredAgentInvites(invites) {
+    if (!invites)
+        return 0;
+    let removed = 0;
+    const now = Date.now();
+    for (const [id, raw] of invites.entries()) {
+        const invite = raw;
+        if (!invite)
+            continue;
+        if (invite.usedAt || invite.revokedAt)
+            continue;
+        if (typeof invite.expiresAt === "number" && invite.expiresAt < now) {
+            invites.delete(String(id));
+            removed += 1;
+        }
+    }
+    return removed;
+}
+function findInviteByToken(invites, inviteToken) {
+    if (!invites)
+        return null;
+    const want = hashAgentToken(inviteToken);
+    const now = Date.now();
+    for (const [id, raw] of invites.entries()) {
+        const invite = raw;
+        if (!invite || typeof invite.tokenHash !== "string")
+            continue;
+        if (invite.usedAt || invite.revokedAt)
+            continue;
+        if (typeof invite.expiresAt === "number" && invite.expiresAt < now)
+            continue;
+        if (safeEqual(invite.tokenHash, want)) {
+            return { id: String(id), invite };
+        }
     }
     return null;
 }
@@ -2045,13 +2097,12 @@ export function registerAnsibleTools(api, config) {
                 const token = typeof params.agent_token === "string" && params.agent_token.trim().length > 0
                     ? params.agent_token.trim()
                     : undefined;
-                const tokenActor = token ? resolveAgentByToken(doc, token) : null;
-                if (token && !tokenActor)
+                if (!token)
+                    return toolResult({ error: "agent_token is required for invite." });
+                const tokenActor = resolveAgentByToken(doc, token);
+                if (!tokenActor)
                     return toolResult({ error: "Invalid agent_token." });
-                if (authMode === "token-required" && !tokenActor) {
-                    return toolResult({ error: "agent_token is required for this operation." });
-                }
-                const effectiveFrom = tokenActor || requestedFrom;
+                const effectiveFrom = tokenActor;
                 if (tokenActor && requestedFrom && requestedFrom.trim() && requestedFrom.trim() !== tokenActor) {
                     return toolResult({
                         error: "from_agent does not match token identity. Omit from_agent when using agent_token.",
@@ -2181,8 +2232,8 @@ export function registerAnsibleTools(api, config) {
                         existing,
                     });
                 }
-                const token = mintAgentToken();
-                const tokenHash = hashAgentToken(token);
+                const newToken = mintAgentToken();
+                const tokenHash = hashAgentToken(newToken);
                 const record = {
                     name: typeof params.name === "string" ? params.name : undefined,
                     gateway: agentType === "internal" ? (typeof params.gateway === "string" ? params.gateway : nodeId) : null,
@@ -2192,6 +2243,7 @@ export function registerAnsibleTools(api, config) {
                     auth: {
                         tokenHash,
                         issuedAt: Date.now(),
+                        tokenHint: tokenHintFromHash(tokenHash),
                     },
                 };
                 agents.set(agentId, record);
@@ -2199,7 +2251,7 @@ export function registerAnsibleTools(api, config) {
                     success: true,
                     agent_id: agentId,
                     record,
-                    agent_token: token,
+                    agent_token: newToken,
                     warning: "Store this token securely. It will not be shown again.",
                 });
             }
@@ -2220,6 +2272,14 @@ export function registerAnsibleTools(api, config) {
                     type: "string",
                     description: "Registered agent id to issue token for.",
                 },
+                from_agent: {
+                    type: "string",
+                    description: "Acting admin agent for token issue. Must match configured admin agent id (default: admin).",
+                },
+                agent_token: {
+                    type: "string",
+                    description: "Auth token for acting admin agent. Required.",
+                },
             },
             required: ["agent_id"],
         },
@@ -2231,28 +2291,328 @@ export function registerAnsibleTools(api, config) {
             try {
                 requireAuth(nodeId);
                 requireAdmin(nodeId, doc);
+                const adminAgentId = typeof config?.adminAgentId === "string" && config.adminAgentId.trim().length > 0
+                    ? config.adminAgentId.trim()
+                    : "admin";
+                const requestedFrom = typeof params.from_agent === "string" ? String(params.from_agent) : undefined;
+                const token = typeof params.agent_token === "string" && params.agent_token.trim().length > 0
+                    ? params.agent_token.trim()
+                    : undefined;
+                if (!token)
+                    return toolResult({ error: "agent_token is required for token issue." });
+                const tokenActor = resolveAgentByToken(doc, token);
+                if (!tokenActor)
+                    return toolResult({ error: "Invalid agent_token." });
+                if (requestedFrom && requestedFrom.trim() && requestedFrom.trim() !== tokenActor) {
+                    return toolResult({
+                        error: "from_agent does not match token identity. Omit from_agent when using agent_token.",
+                    });
+                }
+                requireAdminActor(doc, nodeId, adminAgentId, tokenActor);
                 const agentId = validateString(params.agent_id, 100, "agent_id");
                 const agents = doc.getMap("agents");
                 const rec = agents.get(agentId);
                 if (!rec)
                     return toolResult({ error: `Agent '${agentId}' is not registered.` });
-                const token = mintAgentToken();
-                const tokenHash = hashAgentToken(token);
+                const newToken = mintAgentToken();
+                const tokenHash = hashAgentToken(newToken);
                 const next = {
                     ...rec,
                     auth: {
                         tokenHash,
                         issuedAt: rec?.auth?.issuedAt ?? Date.now(),
                         rotatedAt: Date.now(),
+                        tokenHint: tokenHintFromHash(tokenHash),
                     },
                 };
                 agents.set(agentId, next);
                 return toolResult({
                     success: true,
                     agent_id: agentId,
-                    agent_token: token,
+                    agent_token: newToken,
                     warning: "Store this token securely. It will not be shown again.",
                 });
+            }
+            catch (err) {
+                return toolResult({ error: err.message });
+            }
+        },
+    });
+    // === ansible_invite_agent ===
+    api.registerTool({
+        name: "ansible_invite_agent",
+        label: "Ansible Invite Agent",
+        description: "Admin-only: issue a temporary one-time invite token for a coding agent. Agent must accept invite to receive a permanent token.",
+        parameters: {
+            type: "object",
+            properties: {
+                agent_id: {
+                    type: "string",
+                    description: "Target external agent id (e.g., codex, claude).",
+                },
+                ttl_minutes: {
+                    type: "number",
+                    description: "Invite TTL in minutes (default 15, range 1-1440).",
+                },
+                from_agent: {
+                    type: "string",
+                    description: "Acting admin agent id (must match configured admin agent).",
+                },
+                agent_token: {
+                    type: "string",
+                    description: "Auth token for acting admin agent. Preferred over from_agent.",
+                },
+            },
+            required: ["agent_id"],
+        },
+        async execute(_id, params) {
+            const doc = getDoc();
+            const nodeId = getNodeId();
+            if (!doc || !nodeId)
+                return toolResult({ error: "Ansible not initialized" });
+            try {
+                requireAuth(nodeId);
+                requireAdmin(nodeId, doc);
+                const adminAgentId = typeof config?.adminAgentId === "string" && config.adminAgentId.trim().length > 0
+                    ? config.adminAgentId.trim()
+                    : "admin";
+                const requestedFrom = typeof params.from_agent === "string" ? String(params.from_agent) : undefined;
+                const token = typeof params.agent_token === "string" && params.agent_token.trim().length > 0
+                    ? params.agent_token.trim()
+                    : undefined;
+                if (!token)
+                    return toolResult({ error: "agent_token is required for invite." });
+                const tokenActor = resolveAgentByToken(doc, token);
+                if (!tokenActor)
+                    return toolResult({ error: "Invalid agent_token." });
+                const effectiveFrom = tokenActor;
+                if (tokenActor && requestedFrom && requestedFrom.trim() && requestedFrom.trim() !== tokenActor) {
+                    return toolResult({
+                        error: "from_agent does not match token identity. Omit from_agent when using agent_token.",
+                    });
+                }
+                requireAdminActor(doc, nodeId, adminAgentId, effectiveFrom);
+                const agentId = validateString(params.agent_id, 100, "agent_id");
+                const ttlRaw = params.ttl_minutes === undefined ? 15 : validateNumber(params.ttl_minutes, "ttl_minutes");
+                const ttlMinutes = Math.floor(ttlRaw);
+                if (ttlMinutes < 1 || ttlMinutes > 1440) {
+                    return toolResult({ error: "ttl_minutes must be between 1 and 1440" });
+                }
+                const agents = doc.getMap("agents");
+                const existing = agents.get(agentId);
+                if (existing && existing.type !== "external") {
+                    return toolResult({
+                        error: `Agent '${agentId}' exists as type '${String(existing.type)}'. Invite flow is only for external coding agents.`,
+                    });
+                }
+                if (!existing) {
+                    agents.set(agentId, {
+                        name: undefined,
+                        gateway: null,
+                        type: "external",
+                        registeredAt: Date.now(),
+                        registeredBy: nodeId,
+                    });
+                }
+                const invites = getAgentInvitesMap(doc);
+                if (!invites)
+                    return toolResult({ error: "Ansible not initialized" });
+                pruneExpiredAgentInvites(invites);
+                const now = Date.now();
+                const expiresAt = now + ttlMinutes * 60_000;
+                const inviteToken = mintAgentInviteToken();
+                const inviteId = randomUUID();
+                invites.set(inviteId, {
+                    agent_id: agentId,
+                    tokenHash: hashAgentToken(inviteToken),
+                    createdAt: now,
+                    expiresAt,
+                    createdBy: nodeId,
+                    createdByAgent: effectiveFrom,
+                });
+                return toolResult({
+                    success: true,
+                    invite_id: inviteId,
+                    agent_id: agentId,
+                    invite_token: inviteToken,
+                    expiresAt,
+                    warning: "Temporary invite token: single-use, expires automatically, and cannot be retrieved again.",
+                });
+            }
+            catch (err) {
+                return toolResult({ error: err.message });
+            }
+        },
+    });
+    // === ansible_accept_agent_invite ===
+    api.registerTool({
+        name: "ansible_accept_agent_invite",
+        label: "Ansible Accept Agent Invite",
+        description: "Accept a temporary invite token and receive a permanent agent token. Invite is invalidated after first successful use.",
+        parameters: {
+            type: "object",
+            properties: {
+                invite_token: {
+                    type: "string",
+                    description: "Temporary invite token issued by ansible_invite_agent.",
+                },
+            },
+            required: ["invite_token"],
+        },
+        async execute(_id, params) {
+            const doc = getDoc();
+            const nodeId = getNodeId();
+            if (!doc || !nodeId)
+                return toolResult({ error: "Ansible not initialized" });
+            try {
+                requireAuth(nodeId);
+                const inviteToken = validateString(params.invite_token, 200, "invite_token").trim();
+                if (!inviteToken)
+                    return toolResult({ error: "invite_token is required" });
+                const invites = getAgentInvitesMap(doc);
+                if (!invites)
+                    return toolResult({ error: "Ansible not initialized" });
+                pruneExpiredAgentInvites(invites);
+                const found = findInviteByToken(invites, inviteToken);
+                if (!found) {
+                    return toolResult({ error: "Invalid, expired, or already-used invite_token." });
+                }
+                const { id: inviteId, invite } = found;
+                const agentId = String(invite.agent_id || "").trim();
+                if (!agentId)
+                    return toolResult({ error: "Invite record is missing agent_id." });
+                const agents = doc.getMap("agents");
+                const existing = agents.get(agentId);
+                if (existing && existing.type !== "external") {
+                    return toolResult({
+                        error: `Agent '${agentId}' exists as type '${String(existing.type)}'. Invite flow only supports external agents.`,
+                    });
+                }
+                const now = Date.now();
+                const permanentToken = mintAgentToken();
+                const tokenHash = hashAgentToken(permanentToken);
+                const next = {
+                    ...(existing || {
+                        name: undefined,
+                        gateway: null,
+                        type: "external",
+                        registeredAt: now,
+                        registeredBy: invite.createdBy || nodeId,
+                    }),
+                    gateway: null,
+                    type: "external",
+                    auth: {
+                        tokenHash,
+                        issuedAt: existing?.auth?.issuedAt ?? now,
+                        rotatedAt: now,
+                        tokenHint: tokenHintFromHash(tokenHash),
+                        acceptedAt: now,
+                        acceptedByNode: nodeId,
+                        acceptedByAgent: agentId,
+                    },
+                };
+                agents.set(agentId, next);
+                invites.set(inviteId, {
+                    ...invite,
+                    usedAt: now,
+                    usedByNode: nodeId,
+                    usedByAgent: agentId,
+                });
+                // Revoke any other outstanding invites for this agent after successful acceptance.
+                for (const [id, raw] of invites.entries()) {
+                    const cur = raw;
+                    if (!cur || String(id) === inviteId)
+                        continue;
+                    if (cur.agent_id !== agentId)
+                        continue;
+                    if (cur.usedAt || cur.revokedAt)
+                        continue;
+                    invites.set(String(id), {
+                        ...cur,
+                        revokedAt: now,
+                        revokedReason: `superseded-by:${inviteId}`,
+                    });
+                }
+                return toolResult({
+                    success: true,
+                    agent_id: agentId,
+                    agent_token: permanentToken,
+                    warning: "Store this permanent token securely. It will not be shown again.",
+                });
+            }
+            catch (err) {
+                return toolResult({ error: err.message });
+            }
+        },
+    });
+    // === ansible_list_agent_invites ===
+    api.registerTool({
+        name: "ansible_list_agent_invites",
+        label: "Ansible List Agent Invites",
+        description: "Admin-only: list temporary coding-agent invite records (active by default) without exposing raw invite tokens.",
+        parameters: {
+            type: "object",
+            properties: {
+                includeUsed: {
+                    type: "boolean",
+                    description: "Include already-used invites.",
+                },
+                includeRevoked: {
+                    type: "boolean",
+                    description: "Include revoked invites.",
+                },
+                includeExpired: {
+                    type: "boolean",
+                    description: "Include expired invites.",
+                },
+            },
+        },
+        async execute(_id, params) {
+            const doc = getDoc();
+            const nodeId = getNodeId();
+            if (!doc || !nodeId)
+                return toolResult({ error: "Ansible not initialized" });
+            try {
+                requireAuth(nodeId);
+                requireAdmin(nodeId, doc);
+                const invites = getAgentInvitesMap(doc);
+                if (!invites)
+                    return toolResult({ invites: [], total: 0 });
+                const includeUsed = params.includeUsed === true;
+                const includeRevoked = params.includeRevoked === true;
+                const includeExpired = params.includeExpired === true;
+                const now = Date.now();
+                const out = [];
+                for (const [id, raw] of invites.entries()) {
+                    const invite = raw;
+                    if (!invite)
+                        continue;
+                    const expired = typeof invite.expiresAt === "number" ? invite.expiresAt < now : false;
+                    const used = !!invite.usedAt;
+                    const revoked = !!invite.revokedAt;
+                    if (!includeUsed && used)
+                        continue;
+                    if (!includeRevoked && revoked)
+                        continue;
+                    if (!includeExpired && expired)
+                        continue;
+                    out.push({
+                        id: String(id),
+                        agent_id: invite.agent_id,
+                        createdAt: invite.createdAt,
+                        expiresAt: invite.expiresAt,
+                        createdBy: invite.createdBy,
+                        createdByAgent: invite.createdByAgent,
+                        usedAt: invite.usedAt,
+                        usedByNode: invite.usedByNode,
+                        usedByAgent: invite.usedByAgent,
+                        revokedAt: invite.revokedAt,
+                        revokedReason: invite.revokedReason,
+                        status: used ? "used" : revoked ? "revoked" : expired ? "expired" : "active",
+                    });
+                }
+                out.sort((a, b) => Number(b.createdAt || 0) - Number(a.createdAt || 0));
+                return toolResult({ invites: out, total: out.length });
             }
             catch (err) {
                 return toolResult({ error: err.message });
@@ -2276,7 +2636,22 @@ export function registerAnsibleTools(api, config) {
             const result = [];
             for (const [id, record] of agents.entries()) {
                 const r = record;
-                result.push({ id, ...r });
+                const auth = r.auth || undefined;
+                const safeAuth = auth
+                    ? {
+                        issuedAt: auth.issuedAt,
+                        rotatedAt: auth.rotatedAt,
+                        tokenHint: typeof auth.tokenHint === "string" && auth.tokenHint.length > 0
+                            ? auth.tokenHint
+                            : typeof auth.tokenHash === "string"
+                                ? tokenHintFromHash(auth.tokenHash)
+                                : undefined,
+                        acceptedAt: auth.acceptedAt,
+                        acceptedByNode: auth.acceptedByNode,
+                        acceptedByAgent: auth.acceptedByAgent,
+                    }
+                    : undefined;
+                result.push({ ...r, id, auth: safeAuth });
             }
             return toolResult({ agents: result, total: result.length });
         },

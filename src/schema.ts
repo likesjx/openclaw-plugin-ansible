@@ -163,6 +163,10 @@ export interface AgentRecord {
     tokenHash: string;
     issuedAt: number;
     rotatedAt?: number;
+    tokenHint?: string;
+    acceptedAt?: number;
+    acceptedByNode?: TailscaleId;
+    acceptedByAgent?: string;
   };
 }
 
