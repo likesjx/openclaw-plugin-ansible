@@ -290,6 +290,86 @@ openclaw ansible invite --tier edge  # Generate invite token
 openclaw ansible join --token <tok>  # Join with invite token
 ```
 
+### Gateway Transport Security (CLI -> Gateway)
+
+By default, the CLI targets local loopback (`http://127.0.0.1:<port>`), which is acceptable for local-only traffic.
+
+For remote gateway calls, use HTTPS:
+
+```bash
+export OPENCLAW_GATEWAY_URL="https://gateway.example.com"
+```
+
+Security guardrail:
+- The CLI refuses non-loopback `http://` endpoints by default.
+- To override intentionally (not recommended), set:
+  `OPENCLAW_ALLOW_INSECURE_REMOTE_HTTP=1`
+
+### External Coding Agent Token Lifecycle (Recommended)
+
+Use a two-step flow so admins never hand out long-lived tokens directly:
+
+```bash
+# 1) Admin issues temporary invite (single-use, short TTL)
+openclaw ansible agent invite --id codex --ttl-minutes 15 --as admin --token "$OPENCLAW_ANSIBLE_TOKEN"
+
+# 2) Agent accepts invite and receives permanent token (rotated on accept)
+openclaw ansible agent accept --invite-token <temp_invite_token> \
+  --write-token-file ~/.openclaw/runtime/ansible/codex.token
+```
+
+Notes:
+- Invite tokens are one-time and expire automatically.
+- Accepting an invite mints a permanent `agent_token` and invalidates the invite.
+- Any other outstanding invites for the same agent are revoked after successful accept.
+- Admin can inspect invite state with:
+  `openclaw ansible agent invites` (or `openclaw ansible agent invites --all`).
+- Admin can inspect non-secret auth lifecycle metadata with:
+  `openclaw ansible agent list` (token hint + issued/rotated/accepted timestamps).
+- Admin-sensitive operations require a valid admin `agent_token` (invite, token issue, destructive message delete).
+
+### External Agent Rotation Runbook
+
+Two supported rotation paths:
+
+1. Immediate rotate (admin-driven):
+```bash
+openclaw ansible agent token-issue --id codex
+```
+
+2. Re-invite rotate (recommended for unattended coding agents):
+```bash
+openclaw ansible agent invite --id codex --ttl-minutes 15 --as admin --token "$OPENCLAW_ANSIBLE_TOKEN"
+openclaw ansible agent accept --invite-token <temp> --write-token-file ~/.openclaw/runtime/ansible/codex.token
+```
+
+Recommended policy:
+- Rotate every 30 days (or immediately after suspected exposure).
+- Prefer re-invite flow when you need explicit handoff/acceptance proof.
+
+### Automatic Token Storage Options
+
+Choose one primary storage path per coding agent:
+
+1. Environment variable (simple)
+```bash
+export OPENCLAW_ANSIBLE_TOKEN="<agent_token>"
+```
+
+2. Restricted runtime file (recommended baseline)
+```bash
+openclaw ansible agent accept --invite-token <temp> \
+  --write-token-file ~/.openclaw/runtime/ansible/codex.token
+chmod 600 ~/.openclaw/runtime/ansible/codex.token
+```
+
+3. OS key vault / secret manager (best for production)
+- macOS: Keychain
+- Linux: `pass`, Secret Service, or cloud secret manager
+- Windows: Credential Manager / DPAPI-backed store
+
+For automation, retrieve from vault at process start and export into `OPENCLAW_ANSIBLE_TOKEN` in-memory only.
+
 ## Updating (Maintainers + Users)
 
 ### Maintainers (this repo)
