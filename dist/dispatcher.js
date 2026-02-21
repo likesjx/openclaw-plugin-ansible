@@ -26,6 +26,30 @@ function calcBackoffMs(attempts) {
     const withJitter = raw + (Math.random() * 2 - 1) * jitter;
     return Math.max(250, Math.floor(withJitter));
 }
+const SUPPRESSED_REPLY_PATTERNS = [
+    /\bHTTP\s*(400|401|403|404|408|409|422|429|500|502|503|504)\b/i,
+    /\b(status|code)\s*(400|401|403|404|408|409|422|429|500|502|503|504)\b/i,
+    /\b(model|provider|gateway)\b.{0,24}\b(error|failed|failure|unavailable|timeout)\b/i,
+    /\brate[_\s-]?limit(ed|ing)?\b/i,
+    /\bunauthorized\b|\bforbidden\b|\binvalid api key\b/i,
+    /Invalid\s+['"]?input/i,
+    /\bcontext length\b|\btoken limit\b/i,
+];
+function shouldSuppressReplyText(text) {
+    const normalized = String(text || "").trim();
+    if (!normalized)
+        return false;
+    // Keep normal conversational/error discussion intact; only suppress
+    // replies that look like raw model/runtime transport failures.
+    let hits = 0;
+    for (const p of SUPPRESSED_REPLY_PATTERNS) {
+        if (p.test(normalized))
+            hits += 1;
+        if (hits >= 2)
+            return true;
+    }
+    return false;
+}
 function getDelivery(item, myId) {
     return item.delivery?.[myId];
 }
@@ -424,6 +448,10 @@ async function dispatchAnsibleMessage(api, reply, session, cfg, myNodeId, target
                     return;
                 if (!payload.text)
                     return;
+                if (shouldSuppressReplyText(payload.text)) {
+                    api.logger?.warn(`Ansible dispatcher: suppressed model/runtime error reply for msg ${messageId.slice(0, 8)} (${targetAgent} -> ${msg.from_agent})`);
+                    return;
+                }
                 const doc = getDoc();
                 if (!doc)
                     return;
@@ -512,6 +540,10 @@ async function dispatchAnsibleTask(api, reply, session, cfg, myNodeId, targetAge
                     return;
                 if (!payload.text)
                     return;
+                if (shouldSuppressReplyText(payload.text)) {
+                    api.logger?.warn(`Ansible dispatcher: suppressed model/runtime error task reply for task ${taskId.slice(0, 8)} (${targetAgent} -> ${task.createdBy_agent})`);
+                    return;
+                }
                 const doc = getDoc();
                 if (!doc)
                     return;
