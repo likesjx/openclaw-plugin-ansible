@@ -200,6 +200,46 @@ function requireAdmin(nodeId: string, doc: ReturnType<typeof getDoc>): void {
   }
 }
 
+/**
+ * Resolve the effective admin actor for a privileged operation.
+ *
+ * Secure path (always allowed): agent_token present → resolve via token hash.
+ * Bootstrap path (internal agents only): no token, but from_agent is an internal
+ * agent running on this node. Gateway-level auth is sufficient — internal agents
+ * cannot be impersonated by external callers.
+ * External agents must always supply agent_token.
+ */
+function resolveAdminActorOrError(
+  doc: ReturnType<typeof getDoc>,
+  nodeId: string,
+  token: string | undefined,
+  requestedFrom: string | undefined,
+): { actor: string; error?: never } | { actor?: never; error: string } {
+  if (token) {
+    const tokenActor = resolveAgentByToken(doc, token);
+    if (!tokenActor) return { error: "Invalid agent_token." };
+    if (requestedFrom && requestedFrom.trim() && requestedFrom.trim() !== tokenActor) {
+      return { error: "from_agent does not match token identity. Omit from_agent when using agent_token." };
+    }
+    return { actor: tokenActor };
+  }
+
+  // No token: only permit internal agents running on this node (bootstrap path).
+  const from = (requestedFrom || "").trim();
+  if (!from) {
+    return { error: "agent_token is required, or provide from_agent if acting as an internal agent on this node." };
+  }
+  const agents = doc?.getMap("agents");
+  const rec = agents?.get(from) as Record<string, unknown> | undefined;
+  if (!rec) {
+    return { error: `Agent '${from}' is not registered. Use agent_token or register the agent first.` };
+  }
+  if (rec.type !== "internal" || rec.gateway !== nodeId) {
+    return { error: `agent_token is required for '${from}' (external agents or agents on other nodes must provide a token).` };
+  }
+  return { actor: from };
+}
+
 function requireAdminActor(
   doc: ReturnType<typeof getDoc>,
   nodeId: string,
@@ -2538,15 +2578,9 @@ export function registerAnsibleTools(
           typeof params.agent_token === "string" && params.agent_token.trim().length > 0
             ? params.agent_token.trim()
             : undefined;
-        if (!token) return toolResult({ error: "agent_token is required for token issue." });
-        const tokenActor = resolveAgentByToken(doc, token);
-        if (!tokenActor) return toolResult({ error: "Invalid agent_token." });
-        if (requestedFrom && requestedFrom.trim() && requestedFrom.trim() !== tokenActor) {
-          return toolResult({
-            error: "from_agent does not match token identity. Omit from_agent when using agent_token.",
-          });
-        }
-        requireAdminActor(doc, nodeId, adminAgentId, tokenActor);
+        const actorResult = resolveAdminActorOrError(doc, nodeId, token, requestedFrom);
+        if (actorResult.error) return toolResult({ error: actorResult.error });
+        requireAdminActor(doc, nodeId, adminAgentId, actorResult.actor);
 
         const agentId = validateString(params.agent_id, 100, "agent_id");
         const agents = doc.getMap("agents");
@@ -2620,15 +2654,9 @@ export function registerAnsibleTools(
           typeof params.agent_token === "string" && params.agent_token.trim().length > 0
             ? params.agent_token.trim()
             : undefined;
-        if (!token) return toolResult({ error: "agent_token is required for invite." });
-        const tokenActor = resolveAgentByToken(doc, token);
-        if (!tokenActor) return toolResult({ error: "Invalid agent_token." });
-        const effectiveFrom = tokenActor;
-        if (tokenActor && requestedFrom && requestedFrom.trim() && requestedFrom.trim() !== tokenActor) {
-          return toolResult({
-            error: "from_agent does not match token identity. Omit from_agent when using agent_token.",
-          });
-        }
+        const actorResult = resolveAdminActorOrError(doc, nodeId, token, requestedFrom);
+        if (actorResult.error) return toolResult({ error: actorResult.error });
+        const effectiveFrom = actorResult.actor;
         requireAdminActor(doc, nodeId, adminAgentId, effectiveFrom);
 
         const agentId = validateString(params.agent_id, 100, "agent_id");

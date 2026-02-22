@@ -50,7 +50,10 @@ function readGatewayConfig(): GatewayConfig {
   const explicitUrl =
     process.env.OPENCLAW_GATEWAY_URL ||
     (typeof config?.gateway?.url === "string" ? config.gateway.url : "");
-  const bindHost = typeof config?.gateway?.bind === "string" ? config.gateway.bind : "127.0.0.1";
+  const rawBind = typeof config?.gateway?.bind === "string" ? config.gateway.bind : "127.0.0.1";
+  // "loopback" and "0.0.0.0" are valid server bind values but not routable hostnames for CLI calls.
+  const loopbackBindAliases = new Set(["loopback", "0.0.0.0", "::"]);
+  const bindHost = loopbackBindAliases.has(rawBind.toLowerCase()) ? "127.0.0.1" : rawBind;
 
   if (!token) {
     throw new Error("gateway.auth.token not set in openclaw config");
