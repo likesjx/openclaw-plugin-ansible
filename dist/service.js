@@ -179,6 +179,11 @@ export function createAnsibleService(_api, config) {
             }
             // Auto-register internal agents from config
             registerInternalAgents(config, nodeId, doc);
+            // Sync config capabilities into the nodes CRDT map.
+            // Capabilities are written to the nodes map only at bootstrap/join time, so
+            // they go stale when the config is updated (e.g. adding 'admin') without
+            // a fresh join. This keeps the CRDT current with the config on every startup.
+            syncNodeCapabilities(config, nodeId, doc);
             // Start pulse heartbeat
             startPulseHeartbeat(ctx);
             // Start message cleanup
@@ -490,6 +495,20 @@ function getOrCreatePulseMap(pulseRoot, id) {
         entry = m;
     }
     return entry;
+}
+function syncNodeCapabilities(config, nodeId, doc) {
+    const configCaps = Array.isArray(config.capabilities) ? config.capabilities : [];
+    if (configCaps.length === 0)
+        return;
+    const nodes = doc.getMap("nodes");
+    const existing = nodes.get(nodeId);
+    if (!existing)
+        return; // Not yet registered (bootstrap/join hasn't run); don't create a partial entry.
+    const crdtCaps = Array.isArray(existing.capabilities) ? existing.capabilities : [];
+    const missing = configCaps.filter((c) => !crdtCaps.includes(c));
+    if (missing.length === 0)
+        return;
+    nodes.set(nodeId, { ...existing, capabilities: [...crdtCaps, ...missing] });
 }
 function startPulseHeartbeat(ctx) {
     const updatePulse = () => {
