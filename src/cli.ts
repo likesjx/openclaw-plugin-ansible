@@ -70,9 +70,17 @@ function readGatewayConfig(): GatewayConfig {
   const host = parsed.hostname.toLowerCase();
   const loopbackHosts = new Set(["127.0.0.1", "localhost", "::1"]);
   const isLoopback = loopbackHosts.has(host);
-  if (parsed.protocol === "http:" && !isLoopback && process.env.OPENCLAW_ALLOW_INSECURE_REMOTE_HTTP !== "1") {
+  // Tailscale uses CGNAT range 100.64.0.0/10 (100.64.x.x – 100.127.x.x).
+  // WireGuard encrypts all traffic between Tailscale nodes, so HTTP over
+  // Tailscale IPs is as safe as HTTPS — no application-layer TLS needed.
+  const isTailscale = (() => {
+    const parts = host.split(".").map(Number);
+    return parts.length === 4 && parts[0] === 100 && parts[1] >= 64 && parts[1] <= 127;
+  })();
+  const isTrusted = isLoopback || isTailscale;
+  if (parsed.protocol === "http:" && !isTrusted && process.env.OPENCLAW_ALLOW_INSECURE_REMOTE_HTTP !== "1") {
     throw new Error(
-      "Refusing insecure remote HTTP gateway URL. Use https://... or set OPENCLAW_ALLOW_INSECURE_REMOTE_HTTP=1",
+      "Refusing insecure remote HTTP gateway URL. Use https://..., a Tailscale IP (100.64–127.x.x.x), or set OPENCLAW_ALLOW_INSECURE_REMOTE_HTTP=1",
     );
   }
 
