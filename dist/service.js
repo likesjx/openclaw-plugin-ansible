@@ -498,12 +498,24 @@ function getOrCreatePulseMap(pulseRoot, id) {
 }
 function syncNodeCapabilities(config, nodeId, doc) {
     const configCaps = Array.isArray(config.capabilities) ? config.capabilities : [];
-    if (configCaps.length === 0)
-        return;
     const nodes = doc.getMap("nodes");
     const existing = nodes.get(nodeId);
-    if (!existing)
-        return; // Not yet registered (bootstrap/join hasn't run); don't create a partial entry.
+    if (!existing) {
+        // Node not in the map — self-register. Handles cases where the nodes CRDT was
+        // cleared (e.g., state wipe) or bootstrap/join was never completed. Each node
+        // registers itself; CRDT merges automatically across the mesh.
+        nodes.set(nodeId, {
+            name: nodeId,
+            tier: config.tier,
+            capabilities: configCaps,
+            addedBy: nodeId,
+            addedAt: Date.now(),
+        });
+        return;
+    }
+    // Node exists — merge any config capabilities not yet in the CRDT entry.
+    if (configCaps.length === 0)
+        return;
     const crdtCaps = Array.isArray(existing.capabilities) ? existing.capabilities : [];
     const missing = configCaps.filter((c) => !crdtCaps.includes(c));
     if (missing.length === 0)
