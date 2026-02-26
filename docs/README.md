@@ -12,6 +12,12 @@
 - **[external-agent-auth-v1.md](external-agent-auth-v1.md)** — External agent interface spec (Codex/Claude), auth endpoints, short-lived session tokens, scopes, and terminology reference
 - **[runtime-protocol-v1.md](runtime-protocol-v1.md)** — Wire-level runtime contracts (events, ACKs, cursors, task lifecycle, capability publish, skill distribution, and conformance levels)
 - **[federation-merge-v1.md](federation-merge-v1.md)** — Safe multinode cluster merge/federation protocol (handshake, conflict resolution, commit/rollback, staged propagation, and outstanding work matrix)
+- **[skill-pair-dod-v1.md](skill-pair-dod-v1.md)** — Definition-of-done gates and recommended defaults for delegation/executor skill pair publish, update, rollback, and unpublish lifecycle
+- **[skill-pair-manifest-schema-v1.md](skill-pair-manifest-schema-v1.md)** — Canonical JSON schema for manifest contract between ansible-meta (author) and ansible-main (enforcer)
+- **[skill-pair-publish-executor-v1.md](skill-pair-publish-executor-v1.md)** — Normative gate execution order for publish/update/unpublish, including rollback and audit events
+- **[ansible-completion-checklist-v1.md](ansible-completion-checklist-v1.md)** — Remaining implementation + release checklist to reach commit/push/deploy readiness
+- **[documentation-status-v1.md](documentation-status-v1.md)** — Canonical vs historical doc map to prevent stale concepts from driving implementation
+- **[clawhub-publish-prep-v1.md](clawhub-publish-prep-v1.md)** — Packaging, security, docs, and quality gates for publishing this plugin/skill to Clawhub
 - **[setup.md](setup.md)** — Practical setup and operations guide (new agent, new gateway, coordinator sweep)
 - **[update-architecture.md](update-architecture.md)** — Source-of-truth update model (`setup` scope, plugin update path, config write safety, canonical defaults)
 

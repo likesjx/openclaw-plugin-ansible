@@ -1,5 +1,13 @@
 # Ansible Protocol & Reliability Notes (v1)
 
+> Superseded note (2026-02-26):
+> This document is retained as historical context. For current normative behavior, use:
+> - `docs/runtime-protocol-v1.md`
+> - `docs/distributed-pipes-v2.md`
+> - `docs/state-model-v2.md`
+>
+> Some sections below describe pre-refactor reliability limitations and should not be treated as current implementation truth.
+
 This document defines how to use Ansible as a dependable inter-agent communication substrate **today**, and what needs to change in the plugin for "always reliable" delivery without a human driving turns.
 
 ## Reality Check: What The Plugin Currently Does

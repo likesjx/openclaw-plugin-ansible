@@ -1397,6 +1397,36 @@ export function registerAnsibleCli(
         console.log(`  status=${out.capability?.status || "disabled"}`);
       });
 
+    // === ansible sla ===
+    const sla = ansible.command("sla").description("Task SLA monitoring and escalation") as CliCommand;
+    sla
+      .command("sweep")
+      .description("Evaluate task SLA windows and emit escalation events for breaches")
+      .option("--dry-run", "Report potential breaches without writing escalation state")
+      .option("--limit <n>", "Optional max tasks to inspect")
+      .action(async (...args: unknown[]) => {
+        const opts = (args[0] || {}) as { dryRun?: boolean; limit?: string };
+        const toolArgs: Record<string, unknown> = {};
+        if (opts.dryRun) toolArgs.dry_run = true;
+        if (opts.limit && Number.isFinite(Number(opts.limit))) toolArgs.limit = Math.floor(Number(opts.limit));
+        let out: any;
+        try {
+          out = await callGateway("ansible_sla_sweep", toolArgs);
+        } catch (err: any) {
+          console.log(`✗ ${err.message}`);
+          return;
+        }
+        if (out.error) {
+          console.log(`✗ ${out.error}`);
+          return;
+        }
+        console.log(`✓ SLA sweep complete (scanned=${out.scanned}, breaches=${out.breachCount})`);
+        const breaches = Array.isArray(out.breaches) ? out.breaches : [];
+        for (const b of breaches.slice(0, 20)) {
+          console.log(`  - [${b.breachType}] ${b.taskId.slice(0, 8)} ${b.title} (status=${b.status})`);
+        }
+      });
+
     // === ansible nodes ===
     ansible
       .command("nodes")
@@ -1488,12 +1518,32 @@ export function registerAnsibleCli(
       .command("claim <taskId>")
       .description("Claim a pending task to work on it")
       .option("--as <agentId>", "Claim as this external agent (e.g., claude-code)")
+      .option("--eta-at <iso>", "Expected completion time (ISO-8601)")
+      .option("--eta-seconds <n>", "Expected completion in seconds from now")
+      .option("--plan <text>", "Short execution plan summary")
+      .option("--requested-version <v>", "Requested capability version for accept-time negotiation")
+      .option("--idempotency-key <key>", "Optional idempotency key for claim transition")
       .option("--token <token>", "Auth token for actor (or set OPENCLAW_ANSIBLE_TOKEN)")
       .action(async (...args: unknown[]) => {
         const taskId = args[0] as string;
-        const opts = (args[1] || {}) as { as?: string; token?: string };
+        const opts = (args[1] || {}) as {
+          as?: string;
+          etaAt?: string;
+          etaSeconds?: string;
+          plan?: string;
+          requestedVersion?: string;
+          idempotencyKey?: string;
+          token?: string;
+        };
         const toolArgs: Record<string, unknown> = { taskId };
         if (opts.as) toolArgs.agentId = opts.as;
+        if (opts.etaAt) toolArgs.etaAt = opts.etaAt;
+        if (opts.etaSeconds && Number.isFinite(Number(opts.etaSeconds))) {
+          toolArgs.etaSeconds = Math.floor(Number(opts.etaSeconds));
+        }
+        if (opts.plan) toolArgs.planSummary = opts.plan;
+        if (opts.requestedVersion) toolArgs.requested_version = opts.requestedVersion;
+        if (opts.idempotencyKey) toolArgs.idempotency_key = opts.idempotencyKey;
         const token = resolveAgentToken(opts.token);
         if (token) toolArgs.agent_token = token;
 
@@ -1504,6 +1554,13 @@ export function registerAnsibleCli(
         if (result.error) { console.log(`✗ ${result.error}`); return; }
 
         console.log(`✓ Claimed: ${result.task?.title}`);
+        if (result.accepted?.etaAt) console.log(`ETA: ${result.accepted.etaAt}`);
+        if (result.accepted?.planSummary) console.log(`Plan: ${result.accepted.planSummary}`);
+        if (result.accepted?.versionNegotiation) {
+          console.log(
+            `Version: requested=${result.accepted.versionNegotiation.requestedVersion} resolved=${result.accepted.versionNegotiation.resolvedVersion} mode=${result.accepted.versionNegotiation.compatibilityMode}`,
+          );
+        }
         if (result.task?.description) console.log(`\nDescription:\n${result.task.description}`);
         if (result.task?.context) console.log(`\nContext:\n${result.task.context}`);
         if (result.task?.intent) console.log(`\nIntent: ${result.task.intent}`);
@@ -1520,10 +1577,19 @@ export function registerAnsibleCli(
       .option("--result <result>", "Result text (useful when status=failed)")
       .option("--notify", "Send update message to task creator")
       .option("--as <agentId>", "Update as this external agent (e.g., claude-code)")
+      .option("--idempotency-key <key>", "Optional idempotency key for update transition")
       .option("--token <token>", "Auth token for actor (or set OPENCLAW_ANSIBLE_TOKEN)")
       .action(async (...args: unknown[]) => {
         const taskId = args[0] as string;
-        const opts = (args[1] || {}) as { status?: string; note?: string; result?: string; notify?: boolean; as?: string; token?: string };
+        const opts = (args[1] || {}) as {
+          status?: string;
+          note?: string;
+          result?: string;
+          notify?: boolean;
+          as?: string;
+          idempotencyKey?: string;
+          token?: string;
+        };
         if (!opts.status) { console.log("✗ --status required (in_progress|failed)"); return; }
 
         const toolArgs: Record<string, unknown> = { taskId, status: opts.status };
@@ -1531,6 +1597,7 @@ export function registerAnsibleCli(
         if (opts.result) toolArgs.result = opts.result;
         if (opts.notify) toolArgs.notify = true;
         if (opts.as) toolArgs.agentId = opts.as;
+        if (opts.idempotencyKey) toolArgs.idempotency_key = opts.idempotencyKey;
         const token = resolveAgentToken(opts.token);
         if (token) toolArgs.agent_token = token;
 
@@ -1549,13 +1616,15 @@ export function registerAnsibleCli(
       .description("Mark a claimed task as completed")
       .option("--result <result>", "Result summary (what was done, output, links)")
       .option("--as <agentId>", "Complete as this external agent (e.g., claude-code)")
+      .option("--idempotency-key <key>", "Optional idempotency key for complete transition")
       .option("--token <token>", "Auth token for actor (or set OPENCLAW_ANSIBLE_TOKEN)")
       .action(async (...args: unknown[]) => {
         const taskId = args[0] as string;
-        const opts = (args[1] || {}) as { result?: string; as?: string; token?: string };
+        const opts = (args[1] || {}) as { result?: string; as?: string; idempotencyKey?: string; token?: string };
         const toolArgs: Record<string, unknown> = { taskId };
         if (opts.result) toolArgs.result = opts.result;
         if (opts.as) toolArgs.agentId = opts.as;
+        if (opts.idempotencyKey) toolArgs.idempotency_key = opts.idempotencyKey;
         const token = resolveAgentToken(opts.token);
         if (token) toolArgs.agent_token = token;
 

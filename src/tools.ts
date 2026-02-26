@@ -352,12 +352,139 @@ type CapabilityIndexRecord = {
   updatedAt: number;
 };
 
+type SkillPairManifestV1 = {
+  manifestVersion: "1.0.0";
+  capabilityId: string;
+  version: string;
+  ownerAgentId: string;
+  standbyOwnerAgentIds?: string[];
+  compatibilityMode: "strict" | "backward" | "legacy-window";
+  delegationSkillRef: CapabilitySkillRef & { source?: string };
+  executorSkillRef: CapabilitySkillRef & { source?: string };
+  contract: {
+    inputSchemaRef: string;
+    outputSchemaRef: string;
+    ackSchemaRef: string;
+  };
+  sla: {
+    acceptSlaSeconds: number;
+    progressSlaSeconds: number;
+    completeSlaSeconds: number;
+  };
+  riskClass: "low" | "medium" | "high";
+  rollout: {
+    mode: "canary" | "full";
+    canaryTargets?: string[];
+  };
+  governance: {
+    requiresHumanApprovalForHighRisk: boolean;
+    signedManifestRequired: boolean;
+  };
+  provenance: {
+    publishedByAgentId: string;
+    manifestChecksum: string;
+    manifestSignature: string;
+    publishedAt: string;
+  };
+};
+
+type CapabilityRevisionRecord = {
+  capabilityId: string;
+  activeVersion?: string;
+  pendingVersion?: string;
+  archivedVersions?: string[];
+  versions: string[];
+  currentOwnerAgentId?: string;
+  lastFailoverFromAgentId?: string;
+  lastFailoverAt?: number;
+  updatedAt: number;
+  updatedByAgentId: string;
+  lastAction: "published" | "unpublished";
+};
+
+const OWNER_LEASE_STALE_MS = 90_000;
+
+type PublishGateId =
+  | "G0_AUTHZ"
+  | "G1_SCHEMA"
+  | "G2_PROVENANCE"
+  | "G3_OWNER_LIVENESS"
+  | "G4_INSTALL_STAGE"
+  | "G5_WIRE_STAGE"
+  | "G6_SMOKE_TEST"
+  | "G7_ROLLOUT"
+  | "G8_INDEX_ACTIVATE"
+  | "G9_POSTCHECK";
+
+type UnpublishGateId =
+  | "U0_AUTHZ"
+  | "U1_DISABLE_ROUTING"
+  | "U2_UNWIRE"
+  | "U3_ARCHIVE"
+  | "U4_EMIT";
+
+type PublishGateStatus = "passed" | "failed" | "skipped";
+
+type PublishGateRecord = {
+  gate: PublishGateId;
+  status: PublishGateStatus;
+  at: number;
+  detail?: string;
+  error?: string;
+};
+
+type UnpublishGateRecord = {
+  gate: UnpublishGateId;
+  status: PublishGateStatus;
+  at: number;
+  detail?: string;
+  error?: string;
+};
+
+type PublishPipelineActivation = {
+  capability: CapabilityCatalogRecord;
+  index: CapabilityIndexRecord;
+  manifest: SkillPairManifestV1;
+  manifestKey: string;
+  revision: CapabilityRevisionRecord;
+  previousActiveVersion?: string;
+  rollbackPerformed?: boolean;
+  distribution: { created: boolean; taskId?: string; targets: string[] };
+  lifecycleMessageId: string | null;
+};
+
+type PublishPipelineResult = {
+  ok: boolean;
+  failedGate?: PublishGateId;
+  rollbackRequired: boolean;
+  rollbackPerformed?: boolean;
+  gateResults: PublishGateRecord[];
+  activation?: PublishPipelineActivation;
+};
+
+type UnpublishPipelineResult = {
+  ok: boolean;
+  failedGate?: UnpublishGateId;
+  gateResults: UnpublishGateRecord[];
+  capability?: CapabilityCatalogRecord;
+  revision?: CapabilityRevisionRecord;
+  lifecycleMessageId?: string | null;
+};
+
 function getCapabilityCatalogMap(doc: ReturnType<typeof getDoc>) {
   return doc?.getMap("capabilitiesCatalog");
 }
 
 function getCapabilityIndexMap(doc: ReturnType<typeof getDoc>) {
   return doc?.getMap("capabilitiesIndex");
+}
+
+function getCapabilityManifestMap(doc: ReturnType<typeof getDoc>) {
+  return doc?.getMap("capabilitiesManifests");
+}
+
+function getCapabilityRevisionMap(doc: ReturnType<typeof getDoc>) {
+  return doc?.getMap("capabilitiesRevisions");
 }
 
 function validateSkillRef(value: unknown, fieldName: string): CapabilitySkillRef {
@@ -367,6 +494,197 @@ function validateSkillRef(value: unknown, fieldName: string): CapabilitySkillRef
   const out: CapabilitySkillRef = { name, version };
   if (typeof v.path === "string" && v.path.trim().length > 0) out.path = v.path.trim();
   return out;
+}
+
+function deepSortObject(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map((v) => deepSortObject(v));
+  if (!value || typeof value !== "object") return value;
+  const entries = Object.entries(value as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b));
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of entries) out[k] = deepSortObject(v);
+  return out;
+}
+
+function checksumPayloadForManifest(manifest: SkillPairManifestV1): string {
+  const payload = JSON.parse(JSON.stringify(manifest)) as SkillPairManifestV1;
+  payload.provenance = {
+    ...payload.provenance,
+    manifestChecksum: "",
+    manifestSignature: "",
+  };
+  const canonical = JSON.stringify(deepSortObject(payload));
+  return `sha256:${createHash("sha256").update(canonical, "utf8").digest("hex")}`;
+}
+
+function validateSkillPairManifest(value: unknown): SkillPairManifestV1 {
+  const v = (value || {}) as Record<string, unknown>;
+  const manifestVersion = validateString(v.manifestVersion, 32, "manifestVersion");
+  if (manifestVersion !== "1.0.0") throw new Error("manifestVersion must be '1.0.0'");
+
+  const capabilityId = validateString(v.capabilityId, 160, "capabilityId").trim();
+  if (!/^cap\.[a-z0-9][a-z0-9._-]*$/.test(capabilityId)) {
+    throw new Error("capabilityId must match ^cap\\.[a-z0-9][a-z0-9._-]*$");
+  }
+  const version = validateString(v.version, 120, "version").trim();
+  if (!/^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][A-Za-z0-9.-]+)?$/.test(version)) {
+    throw new Error("version must be semver-like (x.y.z)");
+  }
+  const ownerAgentId = validateString(v.ownerAgentId, 100, "ownerAgentId").trim();
+  const standbyOwnerAgentIds = cleanStringArray(v.standbyOwnerAgentIds);
+  if (standbyOwnerAgentIds.includes(ownerAgentId)) {
+    throw new Error("standbyOwnerAgentIds cannot include ownerAgentId");
+  }
+
+  const compatibilityMode = validateString(v.compatibilityMode, 40, "compatibilityMode").trim() as SkillPairManifestV1["compatibilityMode"];
+  if (!["strict", "backward", "legacy-window"].includes(compatibilityMode)) {
+    throw new Error("compatibilityMode must be strict|backward|legacy-window");
+  }
+
+  const delegationSkillRef = validateSkillRef(v.delegationSkillRef, "delegationSkillRef") as SkillPairManifestV1["delegationSkillRef"];
+  const executorSkillRef = validateSkillRef(v.executorSkillRef, "executorSkillRef") as SkillPairManifestV1["executorSkillRef"];
+  if (v.delegationSkillRef && typeof (v.delegationSkillRef as Record<string, unknown>).source === "string") {
+    delegationSkillRef.source = validateString((v.delegationSkillRef as Record<string, unknown>).source, 400, "delegationSkillRef.source").trim();
+  }
+  if (v.executorSkillRef && typeof (v.executorSkillRef as Record<string, unknown>).source === "string") {
+    executorSkillRef.source = validateString((v.executorSkillRef as Record<string, unknown>).source, 400, "executorSkillRef.source").trim();
+  }
+
+  const contractRaw = (v.contract || {}) as Record<string, unknown>;
+  const contract = {
+    inputSchemaRef: validateString(contractRaw.inputSchemaRef, 400, "contract.inputSchemaRef").trim(),
+    outputSchemaRef: validateString(contractRaw.outputSchemaRef, 400, "contract.outputSchemaRef").trim(),
+    ackSchemaRef: validateString(contractRaw.ackSchemaRef, 400, "contract.ackSchemaRef").trim(),
+  };
+
+  const slaRaw = (v.sla || {}) as Record<string, unknown>;
+  const sla = {
+    acceptSlaSeconds: Math.floor(validateNumber(slaRaw.acceptSlaSeconds, "sla.acceptSlaSeconds")),
+    progressSlaSeconds: Math.floor(validateNumber(slaRaw.progressSlaSeconds, "sla.progressSlaSeconds")),
+    completeSlaSeconds: Math.floor(validateNumber(slaRaw.completeSlaSeconds, "sla.completeSlaSeconds")),
+  };
+  if (sla.acceptSlaSeconds < 10 || sla.acceptSlaSeconds > 3600) throw new Error("sla.acceptSlaSeconds out of range (10..3600)");
+  if (sla.progressSlaSeconds < 30 || sla.progressSlaSeconds > 86400) throw new Error("sla.progressSlaSeconds out of range (30..86400)");
+  if (sla.completeSlaSeconds < 60 || sla.completeSlaSeconds > 604800) throw new Error("sla.completeSlaSeconds out of range (60..604800)");
+
+  const riskClass = validateString(v.riskClass, 20, "riskClass").trim() as SkillPairManifestV1["riskClass"];
+  if (!["low", "medium", "high"].includes(riskClass)) throw new Error("riskClass must be low|medium|high");
+
+  const rolloutRaw = (v.rollout || {}) as Record<string, unknown>;
+  const rolloutMode = validateString(rolloutRaw.mode, 20, "rollout.mode").trim() as SkillPairManifestV1["rollout"]["mode"];
+  if (!["canary", "full"].includes(rolloutMode)) throw new Error("rollout.mode must be canary|full");
+  const rollout: SkillPairManifestV1["rollout"] = {
+    mode: rolloutMode,
+    canaryTargets: cleanStringArray(rolloutRaw.canaryTargets),
+  };
+
+  const governanceRaw = (v.governance || {}) as Record<string, unknown>;
+  if (typeof governanceRaw.requiresHumanApprovalForHighRisk !== "boolean") {
+    throw new Error("governance.requiresHumanApprovalForHighRisk must be boolean");
+  }
+  if (typeof governanceRaw.signedManifestRequired !== "boolean") {
+    throw new Error("governance.signedManifestRequired must be boolean");
+  }
+  const governance = {
+    requiresHumanApprovalForHighRisk: governanceRaw.requiresHumanApprovalForHighRisk,
+    signedManifestRequired: governanceRaw.signedManifestRequired,
+  };
+  if (riskClass === "high" && !governance.requiresHumanApprovalForHighRisk) {
+    throw new Error("riskClass=high requires governance.requiresHumanApprovalForHighRisk=true");
+  }
+
+  const provRaw = (v.provenance || {}) as Record<string, unknown>;
+  const provenance = {
+    publishedByAgentId: validateString(provRaw.publishedByAgentId, 100, "provenance.publishedByAgentId").trim(),
+    manifestChecksum: validateString(provRaw.manifestChecksum, 100, "provenance.manifestChecksum").trim(),
+    manifestSignature: validateString(provRaw.manifestSignature, 8192, "provenance.manifestSignature").trim(),
+    publishedAt: validateString(provRaw.publishedAt, 64, "provenance.publishedAt").trim(),
+  };
+  if (!/^sha256:[a-f0-9]{64}$/.test(provenance.manifestChecksum)) {
+    throw new Error("provenance.manifestChecksum must match sha256:<64-hex>");
+  }
+  if (Date.parse(provenance.publishedAt) !== Date.parse(provenance.publishedAt)) {
+    throw new Error("provenance.publishedAt must be ISO-8601 datetime");
+  }
+  if (governance.signedManifestRequired && provenance.manifestSignature.length < 32) {
+    throw new Error("provenance.manifestSignature too short for signed manifest");
+  }
+
+  const manifest: SkillPairManifestV1 = {
+    manifestVersion: "1.0.0",
+    capabilityId,
+    version,
+    ownerAgentId,
+    standbyOwnerAgentIds,
+    compatibilityMode,
+    delegationSkillRef,
+    executorSkillRef,
+    contract,
+    sla,
+    riskClass,
+    rollout,
+    governance,
+    provenance,
+  };
+  const expectedChecksum = checksumPayloadForManifest(manifest);
+  if (provenance.manifestChecksum !== expectedChecksum) {
+    throw new Error("provenance.manifestChecksum does not match canonicalized manifest payload");
+  }
+  return manifest;
+}
+
+function buildManifestFromLegacyParams(
+  params: Record<string, unknown>,
+  publishedByAgentId: string,
+  nowIso: string,
+): SkillPairManifestV1 {
+  const capabilityId = validateString(params.capability_id, 160, "capability_id").trim();
+  const version = validateString(params.version, 120, "version").trim();
+  const ownerAgentId = validateString(params.owner_agent_id, 100, "owner_agent_id").trim();
+  const delegationSkillRef = validateSkillRef(params.delegation_skill_ref, "delegation_skill_ref") as SkillPairManifestV1["delegationSkillRef"];
+  const executorSkillRef = validateSkillRef(params.executor_skill_ref, "executor_skill_ref") as SkillPairManifestV1["executorSkillRef"];
+  const contractSchemaRef = validateString(params.contract_schema_ref, 400, "contract_schema_ref").trim();
+  const etaRaw = params.default_eta_seconds === undefined ? 900 : validateNumber(params.default_eta_seconds, "default_eta_seconds");
+  const defaultEtaSeconds = Math.floor(etaRaw);
+  if (defaultEtaSeconds < 30 || defaultEtaSeconds > 86400) {
+    throw new Error("default_eta_seconds must be between 30 and 86400");
+  }
+  const manifest: SkillPairManifestV1 = {
+    manifestVersion: "1.0.0",
+    capabilityId,
+    version,
+    ownerAgentId,
+    standbyOwnerAgentIds: [],
+    compatibilityMode: "strict",
+    delegationSkillRef,
+    executorSkillRef,
+    contract: {
+      inputSchemaRef: contractSchemaRef,
+      outputSchemaRef: contractSchemaRef,
+      ackSchemaRef: "schema://ansible/ack/1.0.0",
+    },
+    sla: {
+      acceptSlaSeconds: 120,
+      progressSlaSeconds: Math.max(300, Math.min(86400, defaultEtaSeconds)),
+      completeSlaSeconds: Math.max(900, Math.min(604800, defaultEtaSeconds * 2)),
+    },
+    riskClass: "medium",
+    rollout: {
+      mode: "full",
+      canaryTargets: [],
+    },
+    governance: {
+      requiresHumanApprovalForHighRisk: true,
+      signedManifestRequired: false,
+    },
+    provenance: {
+      publishedByAgentId,
+      manifestChecksum: "",
+      manifestSignature: `unsigned:${publishedByAgentId}:${nowIso}`,
+      publishedAt: nowIso,
+    },
+  };
+  manifest.provenance.manifestChecksum = checksumPayloadForManifest(manifest);
+  return manifest;
 }
 
 function makePolicyVersion(): string {
@@ -417,7 +735,13 @@ function notifyTaskOwner(
   doc: ReturnType<typeof getDoc>,
   fromNodeId: string,
   task: Task,
-  payload: { kind: "update" | "completed" | "failed"; note?: string; result?: string }
+  payload: {
+    kind: "accepted" | "update" | "completed" | "failed";
+    note?: string;
+    result?: string;
+    etaAt?: string;
+    planSummary?: string;
+  }
 ): string | null {
   if (!doc) return null;
   if (!task.createdBy_agent) return null;
@@ -428,23 +752,415 @@ function notifyTaskOwner(
   lines.push(`[task:${task.id.slice(0, 8)}] ${task.title}`);
   lines.push(`status: ${task.status}`);
   if (payload.note) lines.push(`note: ${payload.note}`);
+  if (payload.etaAt) lines.push(`etaAt: ${payload.etaAt}`);
+  if (payload.planSummary) lines.push(`plan: ${payload.planSummary}`);
   const result = payload.result ?? task.result;
   if (result) lines.push(`result: ${result}`);
   lines.push(`from: ${fromNodeId}`);
 
   const now = Date.now();
+  const intent =
+    payload.kind === "accepted"
+      ? "task_accept"
+      : payload.kind === "completed"
+        ? "task_complete"
+        : payload.kind === "failed"
+          ? "task_failed"
+          : "task_update";
   const message: Message = {
     id: messageId,
     from_agent: fromNodeId,
     from_node: fromNodeId,
+    intent,
     to_agents: [task.createdBy_agent],
     content: lines.join("\n"),
     timestamp: now,
     updatedAt: now,
     readBy_agents: [fromNodeId],
+    metadata: {
+      kind: intent,
+      taskId: task.id,
+      taskStatus: task.status,
+      corr: task.id,
+      etaAt: payload.etaAt,
+    },
   };
   messages.set(message.id, message);
   return messageId;
+}
+
+function emitLifecycleEvent(
+  doc: ReturnType<typeof getDoc>,
+  fromNodeId: string,
+  intent: string,
+  content: string,
+  metadata?: Record<string, unknown>,
+): string | null {
+  if (!doc) return null;
+  const messages = doc.getMap("messages");
+  const now = Date.now();
+  const id = randomUUID();
+  const msg: Message = {
+    id,
+    from_agent: fromNodeId,
+    from_node: fromNodeId,
+    intent,
+    content,
+    timestamp: now,
+    updatedAt: now,
+    readBy_agents: [fromNodeId],
+    metadata: {
+      kind: intent,
+      ...(metadata || {}),
+    },
+  };
+  messages.set(id, msg);
+  return id;
+}
+
+function runPublishGate(
+  gateResults: PublishGateRecord[],
+  gate: PublishGateId,
+  fn: () => void,
+): { ok: true } | { ok: false; error: string } {
+  const at = Date.now();
+  try {
+    fn();
+    gateResults.push({ gate, status: "passed", at });
+    return { ok: true };
+  } catch (err: any) {
+    const error = err?.message || String(err);
+    gateResults.push({ gate, status: "failed", at, error });
+    return { ok: false, error };
+  }
+}
+
+function runPublishGateNoop(gateResults: PublishGateRecord[], gate: PublishGateId, detail: string): void {
+  gateResults.push({
+    gate,
+    status: "skipped",
+    at: Date.now(),
+    detail,
+  });
+}
+
+function executeCapabilityPublishPipeline(args: {
+  doc: ReturnType<typeof getDoc>;
+  nodeId: string;
+  publishedByAgentId: string;
+  capabilityId: string;
+  manifest: SkillPairManifestV1;
+  catalogRec: CapabilityCatalogRecord;
+  indexRec: CapabilityIndexRecord;
+}): PublishPipelineResult {
+  const gateResults: PublishGateRecord[] = [];
+  const { doc, nodeId, publishedByAgentId, capabilityId, manifest, catalogRec, indexRec } = args;
+  if (!doc) return { ok: false, failedGate: "G8_INDEX_ACTIVATE", rollbackRequired: false, gateResults };
+
+  // Skeleton placeholders; these gates are intentionally no-op until installers/validators land.
+  runPublishGateNoop(gateResults, "G4_INSTALL_STAGE", "skeleton: install stage not yet implemented");
+  runPublishGateNoop(gateResults, "G5_WIRE_STAGE", "skeleton: wire stage not yet implemented");
+  runPublishGateNoop(gateResults, "G6_SMOKE_TEST", "skeleton: smoke gate not yet implemented");
+  runPublishGateNoop(gateResults, "G7_ROLLOUT", "skeleton: rollout gate not yet implemented");
+
+  const catalogMap = getCapabilityCatalogMap(doc);
+  const indexMap = getCapabilityIndexMap(doc);
+  const manifestMap = getCapabilityManifestMap(doc);
+  const revisionMap = getCapabilityRevisionMap(doc);
+  if (!catalogMap || !indexMap || !manifestMap || !revisionMap) {
+    gateResults.push({
+      gate: "G8_INDEX_ACTIVATE",
+      status: "failed",
+      at: Date.now(),
+      error: "Capability maps unavailable",
+    });
+    return { ok: false, failedGate: "G8_INDEX_ACTIVATE", rollbackRequired: true, gateResults };
+  }
+
+  // Snapshot predecessor state for update safety + rollback.
+  const previousCatalog = catalogMap.get(capabilityId) as CapabilityCatalogRecord | undefined;
+  const previousIndex = indexMap.get(capabilityId) as CapabilityIndexRecord | undefined;
+  const previousRevision = revisionMap.get(capabilityId) as CapabilityRevisionRecord | undefined;
+  const previousActiveVersion = previousRevision?.activeVersion || previousCatalog?.version;
+  const manifestKey = `${capabilityId}:${manifest.version}`;
+  const previousManifestAtKey = manifestMap.get(manifestKey);
+  const hadManifestAtKey = previousManifestAtKey !== undefined;
+  let rollbackPerformed = false;
+
+  const activation = runPublishGate(gateResults, "G8_INDEX_ACTIVATE", () => {
+    const now = Date.now();
+    const existingRevision = (revisionMap.get(capabilityId) as CapabilityRevisionRecord | undefined) || undefined;
+    const versions = Array.from(new Set([...(existingRevision?.versions || []), manifest.version]));
+    const archivedVersions = new Set<string>(existingRevision?.archivedVersions || []);
+    if (previousActiveVersion && previousActiveVersion !== manifest.version) archivedVersions.add(previousActiveVersion);
+    const nextRevision: CapabilityRevisionRecord = {
+      capabilityId,
+      versions,
+      activeVersion: catalogRec.status === "active" ? manifest.version : existingRevision?.activeVersion,
+      pendingVersion: undefined,
+      archivedVersions: Array.from(archivedVersions),
+      currentOwnerAgentId: manifest.ownerAgentId,
+      updatedAt: now,
+      updatedByAgentId: publishedByAgentId,
+      lastAction: "published",
+    };
+    catalogMap.set(capabilityId, catalogRec);
+    indexMap.set(capabilityId, indexRec);
+    manifestMap.set(manifestKey, manifest);
+    revisionMap.set(capabilityId, nextRevision);
+  });
+  if (!activation.ok) {
+    return { ok: false, failedGate: "G8_INDEX_ACTIVATE", rollbackRequired: true, rollbackPerformed: false, gateResults };
+  }
+
+  const distribution = createSkillDistributionTask(
+    doc,
+    nodeId,
+    publishedByAgentId,
+    capabilityId,
+    manifest.ownerAgentId,
+    manifest.delegationSkillRef,
+  );
+  if (distribution.created) requestDispatcherReconcile("capability-skill-distribution");
+  const lifecycleMessageId = emitLifecycleEvent(
+    doc,
+    nodeId,
+    "capability_published",
+    `Capability '${capabilityId}' published (${manifest.version}, status=${catalogRec.status}) by ${publishedByAgentId}.`,
+    {
+      capabilityId,
+      version: manifest.version,
+      status: catalogRec.status,
+      ownerAgentId: manifest.ownerAgentId,
+      policyVersion: indexRec.policyVersion,
+      contractSchemaRef: catalogRec.contractSchemaRef,
+      delegationSkillRef: manifest.delegationSkillRef,
+      executorSkillRef: manifest.executorSkillRef,
+      manifestKey,
+      previousActiveVersion,
+      skillDistributionTaskId: distribution.taskId,
+    },
+  );
+
+  const postcheck = runPublishGate(gateResults, "G9_POSTCHECK", () => {
+    const readCatalog = catalogMap.get(capabilityId) as CapabilityCatalogRecord | undefined;
+    const readIndex = indexMap.get(capabilityId) as CapabilityIndexRecord | undefined;
+    if (!readCatalog || !readIndex) throw new Error("Postcheck failed: missing catalog/index record");
+    if (readCatalog.version !== manifest.version) throw new Error("Postcheck failed: catalog version mismatch");
+    if (readIndex.capabilityId !== capabilityId) throw new Error("Postcheck failed: index capabilityId mismatch");
+  });
+  if (!postcheck.ok) {
+    // Roll back activation to predecessor snapshot.
+    try {
+      if (previousCatalog) catalogMap.set(capabilityId, previousCatalog);
+      else catalogMap.delete(capabilityId);
+
+      if (previousIndex) indexMap.set(capabilityId, previousIndex);
+      else indexMap.delete(capabilityId);
+
+      if (previousRevision) revisionMap.set(capabilityId, previousRevision);
+      else revisionMap.delete(capabilityId);
+
+      if (hadManifestAtKey) manifestMap.set(manifestKey, previousManifestAtKey as any);
+      else manifestMap.delete(manifestKey);
+      rollbackPerformed = true;
+    } catch {
+      rollbackPerformed = false;
+    }
+    return { ok: false, failedGate: "G9_POSTCHECK", rollbackRequired: true, rollbackPerformed, gateResults };
+  }
+
+  const revision = (revisionMap.get(capabilityId) as CapabilityRevisionRecord | undefined)!;
+  return {
+    ok: true,
+    rollbackRequired: false,
+    gateResults,
+    activation: {
+      capability: catalogRec,
+      index: indexRec,
+      manifest,
+      manifestKey,
+      revision,
+      previousActiveVersion,
+      rollbackPerformed,
+      distribution,
+      lifecycleMessageId,
+    },
+  };
+}
+
+function runUnpublishGate(
+  gateResults: UnpublishGateRecord[],
+  gate: UnpublishGateId,
+  fn: () => void,
+): { ok: true } | { ok: false; error: string } {
+  const at = Date.now();
+  try {
+    fn();
+    gateResults.push({ gate, status: "passed", at });
+    return { ok: true };
+  } catch (err: any) {
+    const error = err?.message || String(err);
+    gateResults.push({ gate, status: "failed", at, error });
+    return { ok: false, error };
+  }
+}
+
+function runUnpublishGateNoop(gateResults: UnpublishGateRecord[], gate: UnpublishGateId, detail: string): void {
+  gateResults.push({ gate, status: "skipped", at: Date.now(), detail });
+}
+
+function executeCapabilityUnpublishPipeline(args: {
+  doc: ReturnType<typeof getDoc>;
+  nodeId: string;
+  actingAdmin: string;
+  capabilityId: string;
+  existing: CapabilityCatalogRecord;
+}): UnpublishPipelineResult {
+  const { doc, nodeId, actingAdmin, capabilityId, existing } = args;
+  const gateResults: UnpublishGateRecord[] = [];
+  if (!doc) return { ok: false, failedGate: "U1_DISABLE_ROUTING", gateResults };
+
+  const catalogMap = getCapabilityCatalogMap(doc);
+  const indexMap = getCapabilityIndexMap(doc);
+  const revisionMap = getCapabilityRevisionMap(doc);
+  if (!catalogMap || !indexMap || !revisionMap) {
+    gateResults.push({
+      gate: "U1_DISABLE_ROUTING",
+      status: "failed",
+      at: Date.now(),
+      error: "Capability maps unavailable",
+    });
+    return { ok: false, failedGate: "U1_DISABLE_ROUTING", gateResults };
+  }
+
+  const now = Date.now();
+  const next: CapabilityCatalogRecord = {
+    ...existing,
+    status: "disabled",
+    publishedAt: now,
+    publishedByAgentId: actingAdmin,
+  };
+  const policyVersion = makePolicyVersion();
+  const disable = runUnpublishGate(gateResults, "U1_DISABLE_ROUTING", () => {
+    catalogMap.set(capabilityId, next);
+    indexMap.set(capabilityId, {
+      capabilityId,
+      eligibleAgentIds: [],
+      policyVersion,
+      updatedAt: now,
+    } satisfies CapabilityIndexRecord);
+  });
+  if (!disable.ok) return { ok: false, failedGate: "U1_DISABLE_ROUTING", gateResults };
+
+  runUnpublishGateNoop(gateResults, "U2_UNWIRE", "skeleton: workspace unwire not yet implemented");
+
+  const archive = runUnpublishGate(gateResults, "U3_ARCHIVE", () => {
+    const existingRevision = (revisionMap.get(capabilityId) as CapabilityRevisionRecord | undefined) || undefined;
+    const nextRevision: CapabilityRevisionRecord = {
+      capabilityId,
+      versions: existingRevision?.versions || [existing.version],
+      activeVersion:
+        existingRevision?.activeVersion && existingRevision.activeVersion === existing.version
+          ? undefined
+          : existingRevision?.activeVersion,
+      pendingVersion: undefined,
+      archivedVersions: Array.from(new Set([...(existingRevision?.archivedVersions || []), existing.version])),
+      currentOwnerAgentId: undefined,
+      updatedAt: now,
+      updatedByAgentId: actingAdmin,
+      lastAction: "unpublished",
+    };
+    revisionMap.set(capabilityId, nextRevision);
+  });
+  if (!archive.ok) return { ok: false, failedGate: "U3_ARCHIVE", gateResults };
+
+  let lifecycleMessageId: string | null = null;
+  const emit = runUnpublishGate(gateResults, "U4_EMIT", () => {
+    lifecycleMessageId = emitLifecycleEvent(
+      doc,
+      nodeId,
+      "capability_unpublished",
+      `Capability '${capabilityId}' unpublished by ${actingAdmin}.`,
+      {
+        capabilityId,
+        status: "disabled",
+        ownerAgentId: existing.ownerAgentId,
+        version: existing.version,
+        policyVersion,
+      },
+    );
+  });
+  if (!emit.ok) return { ok: false, failedGate: "U4_EMIT", gateResults };
+
+  const revision = revisionMap.get(capabilityId) as CapabilityRevisionRecord | undefined;
+  return {
+    ok: true,
+    gateResults,
+    capability: next,
+    revision,
+    lifecycleMessageId,
+  };
+}
+
+function readTaskIdempotency(task: Task): Record<string, { at: number; action: string; byAgent: string }> {
+  const ansible = ((task.metadata || {}) as Record<string, unknown>).ansible as Record<string, unknown> | undefined;
+  const idempotency = (ansible?.idempotency || {}) as Record<string, { at: number; action: string; byAgent: string }>;
+  return idempotency && typeof idempotency === "object" ? idempotency : {};
+}
+
+function attachTaskIdempotency(
+  task: Task,
+  key: string,
+  action: string,
+  byAgent: string,
+  at: number,
+): Task {
+  const metadata = ((task.metadata || {}) as Record<string, unknown>) || {};
+  const ansible = ((metadata.ansible || {}) as Record<string, unknown>) || {};
+  const idempotency = readTaskIdempotency(task);
+  const nextIdempotency = {
+    ...idempotency,
+    [key]: { at, action, byAgent },
+  };
+  return {
+    ...task,
+    metadata: {
+      ...metadata,
+      ansible: {
+        ...ansible,
+        idempotency: nextIdempotency,
+      },
+    },
+  };
+}
+
+function resolveTaskIdempotencyKey(
+  params: Record<string, unknown>,
+  taskId: string,
+  action: "claim" | "update" | "complete",
+  agentId: string,
+): string {
+  if (typeof params.idempotency_key === "string" && params.idempotency_key.trim().length > 0) {
+    return validateString(params.idempotency_key, 200, "idempotency_key").trim();
+  }
+  return `${taskId}:${action}:${agentId}`;
+}
+
+function computeTaskSlaMetadata(task: Task, acceptedAt?: number): Record<string, unknown> | undefined {
+  const ansible = ((task.metadata || {}) as Record<string, unknown>).ansible as Record<string, unknown> | undefined;
+  if (!ansible) return undefined;
+  const contractCaps =
+    (((ansible.contract || {}) as Record<string, unknown>).capabilities as Array<Record<string, unknown>> | undefined) || [];
+  if (!Array.isArray(contractCaps) || contractCaps.length === 0) return undefined;
+  const now = acceptedAt || Date.now();
+  // Defaults until manifest-level SLA wiring is expanded per capability.
+  return {
+    acceptByAt: task.createdAt + 120 * 1000,
+    progressByAt: now + 900 * 1000,
+    completeByAt: now + Math.max(1800 * 1000, ((ansible.defaultEtaSeconds as number | undefined) || 1800) * 1000),
+    escalations: {},
+  };
 }
 
 function resolveTaskKey(
@@ -544,12 +1260,13 @@ function resolveAssignedTargets(
   nodeId: string,
   explicitAssignedTo: string | undefined,
   requires: string[],
-): { assignees: string[]; error?: never } | { assignees?: never; error: string } {
+): { assignees: string[]; capabilityMatches: string[]; skillMatches: string[]; error?: never } | { assignees?: never; error: string } {
   if (!doc) return { error: "Ansible not initialized" };
   const assignedTo = explicitAssignedTo?.trim();
   const agents = doc.getMap("agents");
   const context = doc.getMap("context");
   const nodes = doc.getMap("nodes");
+  const capabilityIndex = getCapabilityIndexMap(doc);
 
   if (!assignedTo && requires.length === 0) {
     return { error: "Task must include assignedTo or requires (or both)." };
@@ -557,21 +1274,39 @@ function resolveAssignedTargets(
 
   if (assignedTo) {
     const direct = agents.get(assignedTo);
-    if (direct) return { assignees: [assignedTo] };
+    if (direct) return { assignees: [assignedTo], capabilityMatches: [], skillMatches: [] };
 
     // Back-compat: caller passed a gateway/node id. Resolve to first local internal agent.
     const nodeExists = nodes.get(assignedTo) !== undefined;
     if (nodeExists) {
       const candidates = getInternalAgentsByGateway(doc, assignedTo);
-      if (candidates.length > 0) return { assignees: [candidates[0]] };
-      return { assignees: [assignedTo] };
+      if (candidates.length > 0) return { assignees: [candidates[0]], capabilityMatches: [], skillMatches: [] };
+      return { assignees: [assignedTo], capabilityMatches: [], skillMatches: [] };
     }
 
     return { error: `assignedTo '${assignedTo}' is not a known agent or node.` };
   }
 
   const skillToAgents = new Map<string, string[]>();
+  const capabilityToAgents = new Map<string, string[]>();
+  const capabilityMatches = new Set<string>();
+  const skillMatches = new Set<string>();
   for (const skill of requires) {
+    if (capabilityIndex?.has(skill)) {
+      const idx = capabilityIndex.get(skill) as CapabilityIndexRecord | undefined;
+      const eligible = cleanStringArray(idx?.eligibleAgentIds).filter((agentId) => agents.get(agentId) !== undefined);
+      if (eligible.length === 0) {
+        return { error: `No eligible agent in capability index for '${skill}'.` };
+      }
+      const ownerResolution = resolveCapabilityOwnerWithFailover(doc, nodeId, skill, eligible);
+      if (!ownerResolution.selectedOwner) {
+        return { error: `No live owner/standby available for capability '${skill}'.` };
+      }
+      capabilityToAgents.set(skill, [ownerResolution.selectedOwner, ...eligible.filter((id) => id !== ownerResolution.selectedOwner)]);
+      capabilityMatches.add(skill);
+      continue;
+    }
+
     const matches = new Set<string>();
     for (const [agentId, raw] of agents.entries()) {
       const rec = raw as { type?: string; gateway?: string | null } | undefined;
@@ -591,20 +1326,177 @@ function resolveAssignedTargets(
     const ordered = Array.from(matches).sort((a, b) => a.localeCompare(b));
     if (ordered.length === 0) return { error: `No registered agent advertises required skill '${skill}'.` };
     skillToAgents.set(skill, ordered);
+    skillMatches.add(skill);
   }
 
   if (requires.length === 1) {
-    return { assignees: [skillToAgents.get(requires[0])![0]] };
+    const k = requires[0];
+    const byCapability = capabilityToAgents.get(k);
+    if (byCapability && byCapability.length > 0) {
+      return { assignees: [byCapability[0]], capabilityMatches: Array.from(capabilityMatches), skillMatches: Array.from(skillMatches) };
+    }
+    const bySkill = skillToAgents.get(k);
+    if (bySkill && bySkill.length > 0) {
+      return { assignees: [bySkill[0]], capabilityMatches: Array.from(capabilityMatches), skillMatches: Array.from(skillMatches) };
+    }
+    return { error: `No assignees resolved for '${k}'.` };
   }
 
   const union = new Set<string>();
   for (const skill of requires) {
+    for (const id of capabilityToAgents.get(skill) || []) union.add(id);
     for (const id of skillToAgents.get(skill) || []) union.add(id);
   }
   const assignees = Array.from(union).sort((a, b) => a.localeCompare(b));
   return assignees.length > 0
-    ? { assignees }
+    ? { assignees, capabilityMatches: Array.from(capabilityMatches), skillMatches: Array.from(skillMatches) }
     : { error: "No assignees resolved from requires." };
+}
+
+function parseEtaAtFromClaim(params: Record<string, unknown>, fallbackSeconds: number): { etaAtIso?: string; error?: string } {
+  const now = Date.now();
+  const etaAtRaw = typeof params.etaAt === "string" ? params.etaAt.trim() : "";
+  const etaSecondsRaw = params.etaSeconds;
+  if (etaAtRaw) {
+    const parsed = Date.parse(etaAtRaw);
+    if (!Number.isFinite(parsed)) return { error: "etaAt must be an ISO-8601 datetime" };
+    if (parsed <= now) return { error: "etaAt must be in the future" };
+    return { etaAtIso: new Date(parsed).toISOString() };
+  }
+  if (typeof etaSecondsRaw === "number") {
+    if (!Number.isFinite(etaSecondsRaw)) return { error: "etaSeconds must be a finite number" };
+    const etaSeconds = Math.floor(etaSecondsRaw);
+    if (etaSeconds < 1 || etaSeconds > 86400 * 14) return { error: "etaSeconds must be between 1 and 1209600" };
+    return { etaAtIso: new Date(now + etaSeconds * 1000).toISOString() };
+  }
+  if (fallbackSeconds > 0) {
+    return { etaAtIso: new Date(now + fallbackSeconds * 1000).toISOString() };
+  }
+  return {};
+}
+
+function taskNeedsContractEta(task: Task): boolean {
+  const ansible = ((task.metadata || {}) as Record<string, unknown>).ansible as Record<string, unknown> | undefined;
+  if (!ansible || typeof ansible !== "object") return false;
+  if (ansible.responseRequired === true) return true;
+  const contract = ansible.contract as Record<string, unknown> | undefined;
+  if (!contract || typeof contract !== "object") return false;
+  const capabilities = contract.capabilities;
+  return Array.isArray(capabilities) && capabilities.length > 0;
+}
+
+function getPulseSnapshot(doc: ReturnType<typeof getDoc>, gatewayId: string): { status: string; lastSeen: number } | null {
+  if (!doc) return null;
+  const pulse = doc.getMap("pulse");
+  const raw = pulse.get(gatewayId) as any;
+  if (!raw) return null;
+  if (raw instanceof Map || typeof raw?.get === "function") {
+    const status = String(raw.get("status") || "offline");
+    const lastSeen = typeof raw.get("lastSeen") === "number" ? Number(raw.get("lastSeen")) : 0;
+    return { status, lastSeen };
+  }
+  const status = typeof raw.status === "string" ? raw.status : "offline";
+  const lastSeen = typeof raw.lastSeen === "number" ? raw.lastSeen : 0;
+  return { status, lastSeen };
+}
+
+function isAgentLive(doc: ReturnType<typeof getDoc>, agentId: string, nowMs: number): boolean {
+  if (!doc) return false;
+  const agents = doc.getMap("agents");
+  const rec = agents.get(agentId) as { type?: string; gateway?: string | null } | undefined;
+  if (!rec) return false;
+  if (rec.type === "external") return true;
+  if (rec.type !== "internal") return false;
+  const gateway = typeof rec.gateway === "string" ? rec.gateway : "";
+  if (!gateway) return false;
+  const p = getPulseSnapshot(doc, gateway);
+  if (!p) return false;
+  if (p.status === "offline") return false;
+  const age = Math.max(0, nowMs - p.lastSeen);
+  return age <= OWNER_LEASE_STALE_MS;
+}
+
+function resolveCapabilityOwnerWithFailover(
+  doc: ReturnType<typeof getDoc>,
+  nodeId: string,
+  capabilityId: string,
+  baseEligible: string[],
+): { selectedOwner: string | null; primaryOwner: string | null; failoverApplied: boolean } {
+  if (!doc) return { selectedOwner: null, primaryOwner: null, failoverApplied: false };
+  const now = Date.now();
+  const catalogMap = getCapabilityCatalogMap(doc);
+  const manifestMap = getCapabilityManifestMap(doc);
+  const indexMap = getCapabilityIndexMap(doc);
+  const revisionMap = getCapabilityRevisionMap(doc);
+  const catalog = catalogMap?.get(capabilityId) as CapabilityCatalogRecord | undefined;
+  const primaryOwner = catalog?.ownerAgentId || (baseEligible[0] || null);
+  const candidates = new Set<string>();
+  if (primaryOwner) candidates.add(primaryOwner);
+  if (catalog) {
+    const manifestKey = `${capabilityId}:${catalog.version}`;
+    const manifest = manifestMap?.get(manifestKey) as SkillPairManifestV1 | undefined;
+    for (const standby of cleanStringArray(manifest?.standbyOwnerAgentIds)) candidates.add(standby);
+  }
+  for (const id of baseEligible) candidates.add(id);
+
+  let selectedOwner: string | null = null;
+  for (const agentId of candidates) {
+    if (!agentId) continue;
+    if (isAgentLive(doc, agentId, now)) {
+      selectedOwner = agentId;
+      break;
+    }
+  }
+  if (!selectedOwner && primaryOwner) selectedOwner = primaryOwner;
+  if (!selectedOwner) return { selectedOwner: null, primaryOwner, failoverApplied: false };
+
+  const failoverApplied = !!primaryOwner && selectedOwner !== primaryOwner;
+  if (failoverApplied && indexMap) {
+    const existingRevision = (revisionMap?.get(capabilityId) as CapabilityRevisionRecord | undefined) || undefined;
+    const alreadyFailedOver =
+      existingRevision?.currentOwnerAgentId === selectedOwner &&
+      existingRevision?.lastFailoverFromAgentId === primaryOwner;
+    if (alreadyFailedOver) {
+      return { selectedOwner, primaryOwner, failoverApplied: true };
+    }
+    const existingIndex = indexMap.get(capabilityId) as CapabilityIndexRecord | undefined;
+    if (existingIndex) {
+      const nextEligible = Array.from(new Set([selectedOwner, ...cleanStringArray(existingIndex.eligibleAgentIds)]));
+      indexMap.set(capabilityId, {
+        ...existingIndex,
+        eligibleAgentIds: nextEligible,
+        policyVersion: makePolicyVersion(),
+        updatedAt: now,
+      } satisfies CapabilityIndexRecord);
+    }
+    if (revisionMap) {
+      const r = existingRevision;
+      if (r) {
+        revisionMap.set(capabilityId, {
+          ...r,
+          currentOwnerAgentId: selectedOwner,
+          lastFailoverFromAgentId: primaryOwner || undefined,
+          lastFailoverAt: now,
+          updatedAt: now,
+          updatedByAgentId: nodeId,
+        } satisfies CapabilityRevisionRecord);
+      }
+    }
+    emitLifecycleEvent(
+      doc,
+      nodeId,
+      "capability_owner_failover",
+      `Capability '${capabilityId}' failover from '${primaryOwner}' to '${selectedOwner}'.`,
+      {
+        capabilityId,
+        primaryOwner,
+        selectedOwner,
+        staleMsThreshold: OWNER_LEASE_STALE_MS,
+      },
+    );
+  }
+
+  return { selectedOwner, primaryOwner, failoverApplied };
 }
 
 export function registerAnsibleTools(
@@ -1121,6 +2013,11 @@ export function registerAnsibleTools(
     parameters: {
       type: "object",
       properties: {
+        manifest: {
+          type: "object",
+          description:
+            "Optional SkillPairManifest v1 payload. When provided, schema/provenance validation is enforced and legacy flat fields are optional.",
+        },
         capability_id: { type: "string", description: "Stable capability id (e.g., cap.fs.diff-apply)" },
         name: { type: "string", description: "Human-readable capability name" },
         version: { type: "string", description: "Capability contract version" },
@@ -1149,21 +2046,15 @@ export function registerAnsibleTools(
         from_agent: { type: "string", description: "Acting admin agent id (must match configured admin agent)" },
         agent_token: { type: "string", description: "Auth token for acting admin agent" },
       },
-      required: [
-        "capability_id",
-        "name",
-        "version",
-        "owner_agent_id",
-        "delegation_skill_ref",
-        "executor_skill_ref",
-        "contract_schema_ref",
-      ],
     },
     async execute(_id, params) {
       const doc = getDoc();
       const nodeId = getNodeId();
       if (!doc || !nodeId) return toolResult({ error: "Ansible not initialized" });
+      let gate = "G0_AUTHZ";
+      let capabilityIdHint = "";
       try {
+        gate = "G0_AUTHZ";
         requireAuth(nodeId);
         requireAdmin(nodeId, doc);
 
@@ -1182,28 +2073,37 @@ export function registerAnsibleTools(
         if (!publishedByAgentId) return toolResult({ error: "Failed to resolve publishing actor." });
         requireAdminActor(doc, nodeId, adminAgentId, publishedByAgentId);
 
-        const capabilityId = validateString(params.capability_id, 160, "capability_id").trim();
-        const name = validateString(params.name, 200, "name").trim();
-        const version = validateString(params.version, 120, "version").trim();
-        const ownerAgentId = validateString(params.owner_agent_id, 100, "owner_agent_id").trim();
-        const delegationSkillRef = validateSkillRef(params.delegation_skill_ref, "delegation_skill_ref");
-        const executorSkillRef = validateSkillRef(params.executor_skill_ref, "executor_skill_ref");
-        const contractSchemaRef = validateString(params.contract_schema_ref, 400, "contract_schema_ref").trim();
-        const status = (typeof params.status === "string" ? params.status : "active") as CapabilityCatalogRecord["status"];
-        const etaRaw = params.default_eta_seconds === undefined ? 900 : validateNumber(params.default_eta_seconds, "default_eta_seconds");
-        const defaultEtaSeconds = Math.floor(etaRaw);
-        if (defaultEtaSeconds < 30 || defaultEtaSeconds > 86400) {
-          return toolResult({ error: "default_eta_seconds must be between 30 and 86400" });
+        gate = "G1_SCHEMA";
+        const nowIso = new Date().toISOString();
+        const manifest = params.manifest
+          ? validateSkillPairManifest(params.manifest)
+          : buildManifestFromLegacyParams(params, publishedByAgentId, nowIso);
+        if (manifest.provenance.publishedByAgentId !== publishedByAgentId) {
+          return toolResult({
+            error: `manifest provenance publisher '${manifest.provenance.publishedByAgentId}' does not match acting admin '${publishedByAgentId}'`,
+          });
         }
 
+        gate = "G2_PROVENANCE";
+        const capabilityId = manifest.capabilityId;
+        capabilityIdHint = capabilityId;
+        const version = manifest.version;
+        const ownerAgentId = manifest.ownerAgentId;
+        const delegationSkillRef = manifest.delegationSkillRef;
+        const executorSkillRef = manifest.executorSkillRef;
+        const contractSchemaRef = manifest.contract.inputSchemaRef;
+        const defaultEtaSeconds = manifest.sla.completeSlaSeconds;
+        const name =
+          typeof params.name === "string" && params.name.trim().length > 0
+            ? validateString(params.name, 200, "name").trim()
+            : capabilityId;
+        const status = (typeof params.status === "string" ? params.status : "active") as CapabilityCatalogRecord["status"];
+
+        gate = "G3_OWNER_LIVENESS";
         const agents = doc.getMap("agents");
         if (!agents.has(ownerAgentId)) {
           return toolResult({ error: `owner_agent_id '${ownerAgentId}' is not registered` });
         }
-
-        const catalogMap = getCapabilityCatalogMap(doc);
-        const indexMap = getCapabilityIndexMap(doc);
-        if (!catalogMap || !indexMap) return toolResult({ error: "Capability maps unavailable" });
 
         const policyVersion = makePolicyVersion();
         const now = Date.now();
@@ -1227,29 +2127,96 @@ export function registerAnsibleTools(
           policyVersion,
           updatedAt: now,
         };
-
-        catalogMap.set(capabilityId, catalogRec);
-        indexMap.set(capabilityId, indexRec);
-
-        const distribution = createSkillDistributionTask(
+        gate = "G4_INSTALL_STAGE";
+        const pipeline = executeCapabilityPublishPipeline({
           doc,
           nodeId,
           publishedByAgentId,
           capabilityId,
-          ownerAgentId,
-          delegationSkillRef,
-        );
-        if (distribution.created) requestDispatcherReconcile("capability-skill-distribution");
+          manifest,
+          catalogRec,
+          indexRec,
+        });
+        const gateFailed = pipeline.gateResults.find((g) => g.status === "failed");
+        if (gateFailed) gate = gateFailed.gate;
+        if (!pipeline.ok || !pipeline.activation) {
+          const failedGate = pipeline.failedGate || gate;
+          emitLifecycleEvent(
+            doc,
+            nodeId,
+            "capability_publish_gate_failed",
+            `Capability publish failed at ${failedGate}${capabilityId ? ` (${capabilityId})` : ""}.`,
+            {
+              gate: failedGate,
+              capabilityId: capabilityId || undefined,
+              publishPipeline: pipeline.gateResults,
+            },
+          );
+          if (pipeline.rollbackRequired) {
+            emitLifecycleEvent(
+              doc,
+              nodeId,
+              "capability_publish_rollback",
+              `Rollback required after publish failure at ${failedGate}${capabilityId ? ` (${capabilityId})` : ""}.`,
+              {
+              gate: failedGate,
+              capabilityId: capabilityId || undefined,
+              rollbackState: "required",
+              rollbackPerformed: pipeline.rollbackPerformed === true,
+              publishPipeline: pipeline.gateResults,
+            },
+          );
+        }
+        return toolResult({
+          error: `Publish pipeline failed at ${failedGate}`,
+          publishPipeline: pipeline.gateResults,
+          rollbackRequired: pipeline.rollbackRequired,
+          rollbackPerformed: pipeline.rollbackPerformed === true,
+        });
+      }
+        const { activation } = pipeline;
 
         return toolResult({
           success: true,
-          capability: catalogRec,
-          index: indexRec,
-          skillDistributionTask: distribution.created
-            ? { taskId: distribution.taskId, targets: distribution.targets }
+          manifest: activation.manifest,
+          manifestKey: activation.manifestKey,
+          capability: activation.capability,
+          index: activation.index,
+          revision: activation.revision,
+          previousActiveVersion: activation.previousActiveVersion,
+          lifecycleMessageId: activation.lifecycleMessageId,
+          publishPipeline: pipeline.gateResults,
+          skillDistributionTask: activation.distribution.created
+            ? { taskId: activation.distribution.taskId, targets: activation.distribution.targets }
             : null,
         });
       } catch (err: any) {
+        const errorMessage = err?.message || String(err);
+        emitLifecycleEvent(
+          doc,
+          nodeId,
+          "capability_publish_gate_failed",
+          `Capability publish failed at ${gate}${capabilityIdHint ? ` (${capabilityIdHint})` : ""}: ${errorMessage}`,
+          {
+            gate,
+            capabilityId: capabilityIdHint || undefined,
+            error: errorMessage,
+          },
+        );
+        if (["G4_INDEX_STAGE", "G5_DISTRIBUTION", "G8_INDEX_ACTIVATE"].includes(gate)) {
+          emitLifecycleEvent(
+            doc,
+            nodeId,
+            "capability_publish_rollback",
+            `Rollback required after publish failure at ${gate}${capabilityIdHint ? ` (${capabilityIdHint})` : ""}.`,
+            {
+              gate,
+              capabilityId: capabilityIdHint || undefined,
+              error: errorMessage,
+              rollbackState: "required",
+            },
+          );
+        }
         return toolResult({ error: err.message });
       }
     },
@@ -1294,25 +2261,30 @@ export function registerAnsibleTools(
         const capabilityId = validateString(params.capability_id, 160, "capability_id").trim();
         const catalogMap = getCapabilityCatalogMap(doc);
         const indexMap = getCapabilityIndexMap(doc);
-        if (!catalogMap || !indexMap) return toolResult({ error: "Capability maps unavailable" });
+        const revisionMap = getCapabilityRevisionMap(doc);
+        if (!catalogMap || !indexMap || !revisionMap) return toolResult({ error: "Capability maps unavailable" });
         const existing = catalogMap.get(capabilityId) as CapabilityCatalogRecord | undefined;
         if (!existing) return toolResult({ error: `Capability '${capabilityId}' not found` });
-
-        const next: CapabilityCatalogRecord = {
-          ...existing,
-          status: "disabled",
-          publishedAt: Date.now(),
-          publishedByAgentId: actingAdmin,
-        };
-        catalogMap.set(capabilityId, next);
-        indexMap.set(capabilityId, {
+        const pipeline = executeCapabilityUnpublishPipeline({
+          doc,
+          nodeId,
+          actingAdmin,
           capabilityId,
-          eligibleAgentIds: [],
-          policyVersion: makePolicyVersion(),
-          updatedAt: Date.now(),
-        } satisfies CapabilityIndexRecord);
-
-        return toolResult({ success: true, capability: next });
+          existing,
+        });
+        if (!pipeline.ok || !pipeline.capability || !pipeline.revision) {
+          return toolResult({
+            error: `Unpublish pipeline failed at ${pipeline.failedGate || "unknown"}`,
+            unpublishPipeline: pipeline.gateResults,
+          });
+        }
+        return toolResult({
+          success: true,
+          capability: pipeline.capability,
+          revision: pipeline.revision,
+          lifecycleMessageId: pipeline.lifecycleMessageId,
+          unpublishPipeline: pipeline.gateResults,
+        });
       } catch (err: any) {
         return toolResult({ error: err.message });
       }
@@ -1423,6 +2395,51 @@ export function registerAnsibleTools(
         const resolvedTargets = resolveAssignedTargets(doc, nodeId, explicitAssignedTo, requires);
         if ("error" in resolvedTargets) return toolResult({ error: resolvedTargets.error });
         const assignees = resolvedTargets.assignees;
+        const catalogMap = getCapabilityCatalogMap(doc);
+        const manifestMap = getCapabilityManifestMap(doc);
+        const capabilityContracts = resolvedTargets.capabilityMatches
+          .map((capabilityId) => {
+            const rec = catalogMap?.get(capabilityId) as CapabilityCatalogRecord | undefined;
+            if (!rec) return null;
+            const manifestKey = `${capabilityId}:${rec.version}`;
+            const manifest = manifestMap?.get(manifestKey) as SkillPairManifestV1 | undefined;
+            return {
+              capabilityId: rec.capabilityId,
+              version: rec.version,
+              contractSchemaRef: rec.contractSchemaRef,
+              defaultEtaSeconds: rec.defaultEtaSeconds,
+              compatibilityMode: manifest?.compatibilityMode || "strict",
+            };
+          })
+          .filter(Boolean) as Array<{
+          capabilityId: string;
+          version: string;
+          contractSchemaRef: string;
+          defaultEtaSeconds: number;
+          compatibilityMode: "strict" | "backward" | "legacy-window";
+        }>;
+        const defaultEtaSeconds = capabilityContracts.length > 0
+          ? Math.min(...capabilityContracts.map((c) => c.defaultEtaSeconds))
+          : 0;
+        const existingMetadata = ((params.metadata as Record<string, unknown> | undefined) || {}) as Record<string, unknown>;
+        const mergedMetadata: Record<string, unknown> = {
+          ...existingMetadata,
+          ansible: {
+            responseRequired: true,
+            routingMode: explicitAssignedTo ? "explicit" : resolvedTargets.capabilityMatches.length > 0 ? "capability" : "skill",
+            requiredCapabilities: resolvedTargets.capabilityMatches,
+            requiredSkills: resolvedTargets.skillMatches,
+            defaultEtaSeconds,
+            ack: {
+              state: "pending",
+              required: true,
+              requireEta: true,
+            },
+            contract: {
+              capabilities: capabilityContracts,
+            },
+          },
+        };
 
         const task: Task = {
           id: randomUUID(),
@@ -1440,7 +2457,7 @@ export function registerAnsibleTools(
           requires: requires.length > 0 ? requires : undefined,
           intent: params.intent as string | undefined,
           skillRequired: params.skillRequired as string | undefined,
-          metadata: params.metadata as Record<string, unknown> | undefined,
+          metadata: mergedMetadata,
         };
 
         const tasks = doc.getMap("tasks");
@@ -2199,6 +3216,27 @@ export function registerAnsibleTools(
           type: "string",
           description: "Auth token for caller agent. Preferred over agentId.",
         },
+        etaAt: {
+          type: "string",
+          description: "Expected completion timestamp (ISO-8601). Required for contract-bound tasks unless default ETA exists.",
+        },
+        etaSeconds: {
+          type: "number",
+          description: "Expected completion in seconds from now. Alternative to etaAt.",
+        },
+        planSummary: {
+          type: "string",
+          description: "Optional short execution plan for requester visibility.",
+        },
+        idempotency_key: {
+          type: "string",
+          description: "Optional idempotency key. Reusing the same key prevents duplicate claim transitions.",
+        },
+        requested_version: {
+          type: "string",
+          description:
+            "Optional requested capability version for negotiation (currently supported for single-capability contract tasks).",
+        },
       },
       required: ["taskId"],
     },
@@ -2221,6 +3259,7 @@ export function registerAnsibleTools(
         );
         if (resolved.error) return toolResult({ error: resolved.error });
         const effectiveAgent = resolved.effectiveAgent;
+        if (!effectiveAgent) return toolResult({ error: "Failed to resolve effective agent." });
 
         const tasks = doc.getMap("tasks");
         const resolvedKey = resolveTaskKey(tasks as any, params.taskId as string);
@@ -2234,23 +3273,145 @@ export function registerAnsibleTools(
         if (task.status !== "pending") {
           return toolResult({ error: `Task is already ${task.status}` });
         }
+        const idempotencyKey = resolveTaskIdempotencyKey(params as Record<string, unknown>, task.id, "claim", effectiveAgent);
+        const seenIdempotency = readTaskIdempotency(task);
+        if (seenIdempotency[idempotencyKey]) {
+          return toolResult({
+            success: true,
+            idempotent: true,
+            message: `Idempotent replay ignored for claim: ${task.title}`,
+            task: { id: task.id, title: task.title, status: task.status },
+          });
+        }
 
-        tasks.set(resolvedKey, {
+        const ansibleMeta = (((task.metadata || {}) as Record<string, unknown>).ansible || {}) as Record<string, unknown>;
+        const defaultEtaSeconds =
+          typeof ansibleMeta.defaultEtaSeconds === "number" && Number.isFinite(ansibleMeta.defaultEtaSeconds)
+            ? Math.floor(ansibleMeta.defaultEtaSeconds)
+            : 0;
+        const needsEta = taskNeedsContractEta(task);
+        const eta = parseEtaAtFromClaim(params as Record<string, unknown>, defaultEtaSeconds);
+        if (eta.error) return toolResult({ error: eta.error });
+        if (needsEta && !eta.etaAtIso) {
+          return toolResult({ error: "This task requires etaAt or etaSeconds on claim (ACK accepted contract)." });
+        }
+        const planSummary =
+          typeof params.planSummary === "string" && params.planSummary.trim().length > 0
+            ? validateString(params.planSummary, VALIDATION_LIMITS.maxDescriptionLength, "planSummary").trim()
+            : undefined;
+        const requestedVersion =
+          typeof params.requested_version === "string" && params.requested_version.trim().length > 0
+            ? validateString(params.requested_version, 120, "requested_version").trim()
+            : undefined;
+
+        const contractCapabilitiesRaw =
+          ((ansibleMeta.contract as Record<string, unknown> | undefined)?.capabilities as unknown[] | undefined) || [];
+        const contractCapabilities = contractCapabilitiesRaw.filter((c) => !!c && typeof c === "object") as Array<{
+          capabilityId?: string;
+          version?: string;
+          compatibilityMode?: "strict" | "backward" | "legacy-window";
+        }>;
+        let versionNegotiation:
+          | {
+              capabilityId: string;
+              requestedVersion: string;
+              resolvedVersion: string;
+              compatibilityMode: "strict" | "backward" | "legacy-window";
+            }
+          | undefined;
+        if (requestedVersion) {
+          if (contractCapabilities.length === 0) {
+            return toolResult({ error: "requested_version supplied but task has no capability contract metadata." });
+          }
+          if (contractCapabilities.length > 1) {
+            return toolResult({
+              error:
+                "requested_version for multi-capability tasks is not supported yet. Use explicit to-agent routing or single capability contract.",
+            });
+          }
+          const c = contractCapabilities[0];
+          const capabilityId = typeof c.capabilityId === "string" ? c.capabilityId : "unknown";
+          const resolvedVersion = typeof c.version === "string" ? c.version : requestedVersion;
+          const compatibilityMode = c.compatibilityMode || "strict";
+          if (requestedVersion !== resolvedVersion && compatibilityMode === "strict") {
+            return toolResult({
+              error:
+                `requested_version '${requestedVersion}' is incompatible with published version '${resolvedVersion}' for '${capabilityId}' (strict mode).`,
+            });
+          }
+          versionNegotiation = {
+            capabilityId,
+            requestedVersion,
+            resolvedVersion,
+            compatibilityMode,
+          };
+        }
+        const now = Date.now();
+        const nextMetadata: Record<string, unknown> = {
+          ...((task.metadata as Record<string, unknown> | undefined) || {}),
+          ansible: {
+            ...ansibleMeta,
+            ack: {
+              state: "accepted",
+              required: true,
+              requireEta: true,
+              acceptedAt: now,
+              acceptedByAgentId: effectiveAgent,
+              acceptedByNodeId: nodeId,
+              etaAt: eta.etaAtIso,
+              planSummary,
+              versionNegotiation,
+            },
+          },
+        };
+        const claimedBase: Task = {
           ...task,
           status: "claimed",
           claimedBy_agent: effectiveAgent,
           claimedBy_node: nodeId,
-          claimedAt: Date.now(),
-          updatedAt: Date.now(),
+          claimedAt: now,
+          metadata: nextMetadata,
+          updatedAt: now,
           updates: [
-            { at: Date.now(), by_agent: effectiveAgent, status: "claimed", note: "claimed" },
+            { at: now, by_agent: effectiveAgent, status: "claimed", note: "claimed" },
             ...((task.updates as any) || []),
           ].slice(0, 50),
+        };
+        const claimed = attachTaskIdempotency(claimedBase, idempotencyKey, "claim", effectiveAgent, now);
+        const slaMeta = computeTaskSlaMetadata(claimed, now);
+        const claimedWithSla =
+          slaMeta
+            ? {
+                ...claimed,
+                metadata: {
+                  ...((claimed.metadata as Record<string, unknown>) || {}),
+                  ansible: {
+                    ...((((claimed.metadata as Record<string, unknown>) || {}).ansible as Record<string, unknown>) || {}),
+                    sla: slaMeta,
+                  },
+                },
+              }
+            : claimed;
+        tasks.set(resolvedKey, claimedWithSla);
+
+        const notifyMessageId = notifyTaskOwner(doc, nodeId, claimedWithSla, {
+          kind: "accepted",
+          note: "task accepted",
+          etaAt: eta.etaAtIso,
+          planSummary,
         });
 
         return toolResult({
           success: true,
           message: `Claimed task: ${task.title}`,
+          notifyMessageId,
+          accepted: {
+            byAgentId: effectiveAgent,
+            byNodeId: nodeId,
+            etaAt: eta.etaAtIso,
+            planSummary,
+            versionNegotiation,
+          },
           task: {
             id: task.id,
             title: task.title,
@@ -2299,6 +3460,10 @@ export function registerAnsibleTools(
           type: "string",
           description: "Auth token for caller agent. Preferred over agentId.",
         },
+        idempotency_key: {
+          type: "string",
+          description: "Optional idempotency key. Reusing the same key prevents duplicate update transitions.",
+        },
       },
       required: ["taskId", "status"],
     },
@@ -2321,12 +3486,23 @@ export function registerAnsibleTools(
         );
         if (resolved.error) return toolResult({ error: resolved.error });
         const effectiveAgent = resolved.effectiveAgent;
+        if (!effectiveAgent) return toolResult({ error: "Failed to resolve effective agent." });
 
         const tasks = doc.getMap("tasks");
         const resolvedKey = resolveTaskKey(tasks as any, params.taskId as string);
         if (typeof resolvedKey !== "string") return toolResult(resolvedKey);
         const task = tasks.get(resolvedKey) as Task | undefined;
         if (!task) return toolResult({ error: "Task not found" });
+        const idempotencyKey = resolveTaskIdempotencyKey(params as Record<string, unknown>, task.id, "update", effectiveAgent);
+        const seenIdempotency = readTaskIdempotency(task);
+        if (seenIdempotency[idempotencyKey]) {
+          return toolResult({
+            success: true,
+            idempotent: true,
+            message: `Idempotent replay ignored for update: ${task.title}`,
+            task: { id: task.id, title: task.title, status: task.status },
+          });
+        }
         if (task.claimedBy_agent !== effectiveAgent) {
           return toolResult({ error: "You don't have this task claimed" });
         }
@@ -2334,6 +3510,11 @@ export function registerAnsibleTools(
         const status = params.status as string;
         if (status !== "in_progress" && status !== "failed") {
           return toolResult({ error: "status must be in_progress or failed" });
+        }
+        const ansibleMeta = (((task.metadata || {}) as Record<string, unknown>).ansible || {}) as Record<string, unknown>;
+        const ackMeta = (ansibleMeta.ack || {}) as Record<string, unknown>;
+        if (taskNeedsContractEta(task) && status === "in_progress" && ackMeta.state !== "accepted") {
+          return toolResult({ error: "Task contract requires accepted ACK before in_progress updates." });
         }
 
         const note = params.note
@@ -2343,8 +3524,11 @@ export function registerAnsibleTools(
         const result = params.result
           ? validateString(params.result, VALIDATION_LIMITS.maxResultLength, "result")
           : undefined;
+        if (status === "failed" && !note && !result) {
+          return toolResult({ error: "failed status requires note or result for diagnostics" });
+        }
 
-        const updated: Task = {
+        const updatedBase: Task = {
           ...task,
           status: status as any,
           updatedAt: Date.now(),
@@ -2354,6 +3538,27 @@ export function registerAnsibleTools(
             ...((task.updates as any) || []),
           ].slice(0, 50),
         };
+        const now = Date.now();
+        let updated = attachTaskIdempotency(updatedBase, idempotencyKey, "update", effectiveAgent, now);
+        const ansible = (((updated.metadata || {}) as Record<string, unknown>).ansible || {}) as Record<string, unknown>;
+        const sla = ((ansible.sla || {}) as Record<string, unknown>) || {};
+        if (status === "in_progress") {
+          updated = {
+            ...updated,
+            metadata: {
+              ...((updated.metadata as Record<string, unknown>) || {}),
+              ansible: {
+                ...ansible,
+                sla: {
+                  ...sla,
+                  lastProgressAt: now,
+                  progressByAt:
+                    typeof sla.progressByAt === "number" ? Math.max(sla.progressByAt, now + 900 * 1000) : now + 900 * 1000,
+                },
+              },
+            },
+          };
+        }
 
         tasks.set(resolvedKey, updated);
 
@@ -2398,6 +3603,10 @@ export function registerAnsibleTools(
           type: "string",
           description: "Auth token for caller agent. Preferred over agentId.",
         },
+        idempotency_key: {
+          type: "string",
+          description: "Optional idempotency key. Reusing the same key prevents duplicate complete transitions.",
+        },
       },
       required: ["taskId"],
     },
@@ -2420,6 +3629,7 @@ export function registerAnsibleTools(
         );
         if (resolved.error) return toolResult({ error: resolved.error });
         const effectiveAgent = resolved.effectiveAgent;
+        if (!effectiveAgent) return toolResult({ error: "Failed to resolve effective agent." });
 
         const tasks = doc.getMap("tasks");
         const resolvedKey = resolveTaskKey(tasks as any, params.taskId as string);
@@ -2429,14 +3639,27 @@ export function registerAnsibleTools(
         if (!task) {
           return toolResult({ error: "Task not found" });
         }
+        const idempotencyKey = resolveTaskIdempotencyKey(params as Record<string, unknown>, task.id, "complete", effectiveAgent);
+        const seenIdempotency = readTaskIdempotency(task);
+        if (seenIdempotency[idempotencyKey]) {
+          return toolResult({
+            success: true,
+            idempotent: true,
+            message: `Idempotent replay ignored for complete: ${task.title}`,
+            task: { id: task.id, title: task.title, status: task.status },
+          });
+        }
 
         if (task.claimedBy_agent !== effectiveAgent) {
           return toolResult({ error: "You don't have this task claimed" });
         }
 
         const result = params.result ? validateString(params.result, VALIDATION_LIMITS.maxResultLength, "result") : undefined;
+        if (taskNeedsContractEta(task) && !result) {
+          return toolResult({ error: "Contract-bound task completion requires --result" });
+        }
 
-        const completed: Task = {
+        const completedBase: Task = {
           ...task,
           status: "completed",
           completedAt: Date.now(),
@@ -2447,6 +3670,7 @@ export function registerAnsibleTools(
             ...((task.updates as any) || []),
           ].slice(0, 50),
         };
+        const completed = attachTaskIdempotency(completedBase, idempotencyKey, "complete", effectiveAgent, Date.now());
 
         tasks.set(resolvedKey, completed);
 
@@ -2457,6 +3681,130 @@ export function registerAnsibleTools(
           success: true,
           message: `Completed task: ${task.title}`,
           notifyMessageId,
+        });
+      } catch (err: any) {
+        return toolResult({ error: err.message });
+      }
+    },
+  });
+
+  // === ansible_sla_sweep ===
+  api.registerTool({
+    name: "ansible_sla_sweep",
+    label: "Ansible SLA Sweep",
+    description:
+      "Evaluate task SLA windows (accept/progress/complete) and emit escalation events for overdue tasks.",
+    parameters: {
+      type: "object",
+      properties: {
+        dry_run: {
+          type: "boolean",
+          description: "If true, report breaches without writing escalations.",
+        },
+        limit: {
+          type: "number",
+          description: "Optional max task records to inspect.",
+        },
+      },
+    },
+    async execute(_id, params) {
+      const doc = getDoc();
+      const nodeId = getNodeId();
+      if (!doc || !nodeId) return toolResult({ error: "Ansible not initialized" });
+
+      try {
+        requireAuth(nodeId);
+        const dryRun = params.dry_run === true;
+        const limitRaw = typeof params.limit === "number" && Number.isFinite(params.limit) ? Math.floor(params.limit) : undefined;
+        const now = Date.now();
+        const tasks = doc.getMap("tasks");
+        const breaches: Array<{ taskId: string; title: string; breachType: "accept" | "progress" | "complete"; dueAt: number; status: string }> = [];
+        let scanned = 0;
+
+        for (const [key, raw] of tasks.entries()) {
+          if (limitRaw && scanned >= limitRaw) break;
+          scanned += 1;
+          const task = raw as Task | undefined;
+          if (!task) continue;
+          const metadata = ((task.metadata || {}) as Record<string, unknown>) || {};
+          const ansible = ((metadata.ansible || {}) as Record<string, unknown>) || {};
+          const sla = ((ansible.sla || {}) as Record<string, unknown>) || {};
+          if (Object.keys(sla).length === 0) continue;
+          const escalations = ((sla.escalations || {}) as Record<string, unknown>) || {};
+          const breachTypes: Array<{ breachType: "accept" | "progress" | "complete"; dueAt: number }> = [];
+
+          const acceptByAt = typeof sla.acceptByAt === "number" ? sla.acceptByAt : undefined;
+          const progressByAt = typeof sla.progressByAt === "number" ? sla.progressByAt : undefined;
+          const completeByAt = typeof sla.completeByAt === "number" ? sla.completeByAt : undefined;
+
+          if (task.status === "pending" && acceptByAt && now > acceptByAt && typeof escalations.acceptAt !== "number") {
+            breachTypes.push({ breachType: "accept", dueAt: acceptByAt });
+          }
+          if ((task.status === "claimed" || task.status === "in_progress") && progressByAt && now > progressByAt && typeof escalations.progressAt !== "number") {
+            breachTypes.push({ breachType: "progress", dueAt: progressByAt });
+          }
+          if ((task.status === "claimed" || task.status === "in_progress") && completeByAt && now > completeByAt && typeof escalations.completeAt !== "number") {
+            breachTypes.push({ breachType: "complete", dueAt: completeByAt });
+          }
+
+          if (breachTypes.length === 0) continue;
+
+          for (const breach of breachTypes) {
+            breaches.push({
+              taskId: task.id || String(key),
+              title: task.title,
+              breachType: breach.breachType,
+              dueAt: breach.dueAt,
+              status: task.status,
+            });
+          }
+
+          if (dryRun) continue;
+          const nextEscalations = { ...escalations };
+          for (const breach of breachTypes) {
+            if (breach.breachType === "accept") nextEscalations.acceptAt = now;
+            if (breach.breachType === "progress") nextEscalations.progressAt = now;
+            if (breach.breachType === "complete") nextEscalations.completeAt = now;
+            emitLifecycleEvent(
+              doc,
+              nodeId,
+              "task_sla_breached",
+              `Task '${task.id}' breached ${breach.breachType} SLA.`,
+              {
+                taskId: task.id,
+                breachType: breach.breachType,
+                dueAt: breach.dueAt,
+                status: task.status,
+              },
+            );
+            notifyTaskOwner(doc, nodeId, task, {
+              kind: "update",
+              note: `SLA breach detected: ${breach.breachType} (due ${new Date(breach.dueAt).toISOString()})`,
+            });
+          }
+          const updatedTask: Task = {
+            ...task,
+            updatedAt: now,
+            metadata: {
+              ...metadata,
+              ansible: {
+                ...ansible,
+                sla: {
+                  ...sla,
+                  escalations: nextEscalations,
+                },
+              },
+            },
+          };
+          tasks.set(String(key), updatedTask);
+        }
+
+        return toolResult({
+          success: true,
+          dryRun,
+          scanned,
+          breaches,
+          breachCount: breaches.length,
         });
       } catch (err: any) {
         return toolResult({ error: err.message });

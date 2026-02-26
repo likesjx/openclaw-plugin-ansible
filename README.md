@@ -336,6 +336,7 @@ openclaw ansible delegation ack      # ACK current policy
 openclaw ansible capability list     # List published capability contracts + eligibility
 openclaw ansible capability publish --id cap.example --name "Example" --version 1.0.0 --owner executor --delegation-skill-name ansible-delegate-example --delegation-skill-version 1.0.0 --executor-skill-name ansible-executor-example --executor-skill-version 1.0.0 --contract schema://ansible/cap.example/1.0.0
 openclaw ansible capability unpublish --id cap.example
+openclaw ansible tasks claim <taskId> --eta-seconds 900 --plan "scan, patch, validate"   # emits accepted ACK contract
 openclaw ansible bootstrap           # Initialize as first node
 openclaw ansible invite --tier edge --node <expected-node-id>  # Generate node-bound invite token
 openclaw ansible join --token <tok>  # Join with invite token
