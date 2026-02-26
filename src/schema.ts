@@ -94,6 +94,50 @@ export interface AnsibleConfig {
    * Default: "admin"
    */
   adminAgentId?: string;
+
+  /**
+   * Optional WebSocket admission gate for yjs connections.
+   *
+   * When enabled, unknown nodes must present a valid invite token during the
+   * websocket handshake (query params) before they can access the shared room.
+   * Existing authorized nodes can reconnect with nodeId only.
+   */
+  authGate?: {
+    /** Enable pre-Yjs websocket admission checks. Default: false */
+    enabled?: boolean;
+    /**
+     * Query parameter name for presented node id. Default: "nodeId".
+     * Example handshake: ws://host:1234/?nodeId=mbp-jane&invite=<token>
+     */
+    nodeIdParam?: string;
+    /** Query parameter name for invite token. Default: "invite". */
+    inviteParam?: string;
+    /** Query parameter name for websocket ticket. Default: "ticket". */
+    ticketParam?: string;
+    /**
+     * When true, unknown nodes must present a websocket ticket.
+     * Legacy invite query admission is disabled.
+     */
+    requireTicketForUnknown?: boolean;
+    /**
+     * Optional auth exchange HTTP port. Defaults to listenPort + 1.
+     * Used for POST /ansible/auth/exchange style ticket minting.
+     */
+    authPort?: number;
+    /** Auth exchange path. Default: "/ansible/auth/exchange". */
+    exchangePath?: string;
+    /** Default ticket TTL in seconds for exchange endpoint. Default: 60. */
+    ticketTtlSeconds?: number;
+    /**
+     * Require proof-of-possession for auth exchange.
+     * Clients must send clientPubKey + clientProof signature.
+     */
+    requireNodeProof?: boolean;
+    /** Fixed-window exchange rate limit max requests per window. Default: 30. */
+    rateLimitMax?: number;
+    /** Fixed-window size in seconds. Default: 60. */
+    rateLimitWindowSeconds?: number;
+  };
 }
 
 // ============================================================================
@@ -131,6 +175,12 @@ export interface PendingInvite {
   tier: "backbone" | "edge";
   expiresAt: number;
   createdBy: TailscaleId;
+  /** Optional node binding for targeted invites. */
+  expectedNodeId?: TailscaleId;
+  /** Populated when consumed for audit/debug visibility. */
+  usedByNode?: TailscaleId;
+  /** Populated when consumed for audit/debug visibility. */
+  usedAt?: number;
 }
 
 // ============================================================================

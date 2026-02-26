@@ -20,6 +20,7 @@ import {
   joinWithToken,
   bootstrapFirstNode,
   revokeNode,
+  exchangeInviteForWsTicket,
 } from "./auth.js";
 
 // ---------------------------------------------------------------------------
@@ -1236,6 +1237,166 @@ export function registerAnsibleCli(
         console.log(`  checksum=${out.checksum}`);
       });
 
+    // === ansible capability ===
+    const capability = ansible.command("capability").description("Capability contract lifecycle") as CliCommand;
+
+    capability
+      .command("list")
+      .description("List published capability contracts and eligibility")
+      .option("--status <status>", "Filter by status: active|deprecated|disabled")
+      .action(async (...args: unknown[]) => {
+        const opts = (args[0] || {}) as { status?: string };
+        let out: any;
+        try {
+          out = await callGateway("ansible_list_capabilities", { status: opts.status });
+        } catch (err: any) {
+          console.log(`✗ ${err.message}`);
+          return;
+        }
+        if (out.error) {
+          console.log(`✗ ${out.error}`);
+          return;
+        }
+        const rows = Array.isArray(out.capabilities) ? out.capabilities : [];
+        console.log(`\n=== Capabilities (${rows.length}) ===\n`);
+        if (rows.length === 0) {
+          console.log("No capabilities found.");
+          return;
+        }
+        for (const row of rows) {
+          const c = row.catalog || {};
+          const i = row.index || {};
+          console.log(`${c.capabilityId}  [${c.status}]  v${c.version}`);
+          console.log(`  owner=${c.ownerAgentId}  eta=${c.defaultEtaSeconds}s`);
+          console.log(`  delegation=${c.delegationSkillRef?.name || "?"}@${c.delegationSkillRef?.version || "?"}`);
+          console.log(`  executor=${c.executorSkillRef?.name || "?"}@${c.executorSkillRef?.version || "?"}`);
+          console.log(`  eligible=${Array.isArray(i.eligibleAgentIds) ? i.eligibleAgentIds.join(", ") : ""}`);
+          console.log();
+        }
+      });
+
+    capability
+      .command("publish")
+      .description("Publish or update a capability contract")
+      .option("--id <capabilityId>", "Capability id (e.g., cap.fs.diff-apply)")
+      .option("--name <name>", "Capability display name")
+      .option("--version <version>", "Capability version")
+      .option("--owner <agentId>", "Owner/executor agent id")
+      .option("--delegation-skill-name <name>", "Delegation skill name")
+      .option("--delegation-skill-version <version>", "Delegation skill version")
+      .option("--executor-skill-name <name>", "Executor skill name")
+      .option("--executor-skill-version <version>", "Executor skill version")
+      .option("--contract <ref>", "Contract schema reference")
+      .option("--eta <seconds>", "Default ETA seconds", "900")
+      .option("--status <status>", "Capability status: active|deprecated|disabled", "active")
+      .option("--as <agentId>", "Acting admin agent id", "admin")
+      .option("--token <token>", "Auth token for acting admin (or set OPENCLAW_ANSIBLE_TOKEN)")
+      .action(async (...args: unknown[]) => {
+        const opts = (args[0] || {}) as {
+          id?: string;
+          name?: string;
+          version?: string;
+          owner?: string;
+          delegationSkillName?: string;
+          delegationSkillVersion?: string;
+          executorSkillName?: string;
+          executorSkillVersion?: string;
+          contract?: string;
+          eta?: string;
+          status?: string;
+          as?: string;
+          token?: string;
+        };
+        if (!opts.id || !opts.name || !opts.version || !opts.owner) {
+          console.log("✗ --id, --name, --version, and --owner are required.");
+          return;
+        }
+        if (!opts.delegationSkillName || !opts.delegationSkillVersion) {
+          console.log("✗ --delegation-skill-name and --delegation-skill-version are required.");
+          return;
+        }
+        if (!opts.executorSkillName || !opts.executorSkillVersion) {
+          console.log("✗ --executor-skill-name and --executor-skill-version are required.");
+          return;
+        }
+        if (!opts.contract) {
+          console.log("✗ --contract is required.");
+          return;
+        }
+        const toolArgs: Record<string, unknown> = {
+          capability_id: opts.id,
+          name: opts.name,
+          version: opts.version,
+          owner_agent_id: opts.owner,
+          delegation_skill_ref: {
+            name: opts.delegationSkillName,
+            version: opts.delegationSkillVersion,
+          },
+          executor_skill_ref: {
+            name: opts.executorSkillName,
+            version: opts.executorSkillVersion,
+          },
+          contract_schema_ref: opts.contract,
+          default_eta_seconds: Number(opts.eta || "900"),
+          status: opts.status || "active",
+          from_agent: opts.as || "admin",
+        };
+        const token = resolveAgentToken(opts.token);
+        if (token) toolArgs.agent_token = token;
+        let out: any;
+        try {
+          out = await callGateway("ansible_capability_publish", toolArgs);
+        } catch (err: any) {
+          console.log(`✗ ${err.message}`);
+          return;
+        }
+        if (out.error) {
+          console.log(`✗ ${out.error}`);
+          return;
+        }
+        console.log("✓ Capability published");
+        console.log(`  id=${out.capability?.capabilityId || opts.id}`);
+        console.log(`  status=${out.capability?.status || opts.status}`);
+        if (out.skillDistributionTask?.taskId) {
+          console.log(`  skillDistributionTask=${out.skillDistributionTask.taskId}`);
+          console.log(`  targets=${(out.skillDistributionTask.targets || []).join(", ")}`);
+        }
+      });
+
+    capability
+      .command("unpublish")
+      .description("Disable a capability contract and remove eligibility")
+      .option("--id <capabilityId>", "Capability id")
+      .option("--as <agentId>", "Acting admin agent id", "admin")
+      .option("--token <token>", "Auth token for acting admin (or set OPENCLAW_ANSIBLE_TOKEN)")
+      .action(async (...args: unknown[]) => {
+        const opts = (args[0] || {}) as { id?: string; as?: string; token?: string };
+        if (!opts.id) {
+          console.log("✗ --id is required.");
+          return;
+        }
+        const toolArgs: Record<string, unknown> = {
+          capability_id: opts.id,
+          from_agent: opts.as || "admin",
+        };
+        const token = resolveAgentToken(opts.token);
+        if (token) toolArgs.agent_token = token;
+        let out: any;
+        try {
+          out = await callGateway("ansible_capability_unpublish", toolArgs);
+        } catch (err: any) {
+          console.log(`✗ ${err.message}`);
+          return;
+        }
+        if (out.error) {
+          console.log(`✗ ${out.error}`);
+          return;
+        }
+        console.log("✓ Capability unpublished");
+        console.log(`  id=${out.capability?.capabilityId || opts.id}`);
+        console.log(`  status=${out.capability?.status || "disabled"}`);
+      });
+
     // === ansible nodes ===
     ansible
       .command("nodes")
@@ -1684,11 +1845,13 @@ export function registerAnsibleCli(
       .command("invite")
       .description("Generate an invite token for a new node")
       .option("-t, --tier <tier>", "Node tier: backbone or edge", "edge")
+      .option("--node <nodeId>", "Bind invite token to a specific node id (recommended)")
       .action(async (...args: unknown[]) => {
-        const opts = (args[0] || { tier: "edge" }) as { tier: string };
+        const opts = (args[0] || { tier: "edge" }) as { tier: string; node?: string };
         const tier = opts.tier as "backbone" | "edge";
+        const expectedNodeId = String(opts.node || "").trim();
 
-        const result = generateInviteToken(tier);
+        const result = generateInviteToken(tier, { expectedNodeId });
 
         if ("error" in result) {
           console.log(`✗ Failed to generate invite: ${result.error}`);
@@ -1698,6 +1861,9 @@ export function registerAnsibleCli(
         console.log("\n=== Invite Token Generated ===\n");
         console.log(`Token: ${result.token}`);
         console.log(`Tier: ${tier}`);
+        if (expectedNodeId) {
+          console.log(`Bound node: ${expectedNodeId}`);
+        }
         console.log(`Expires: ${new Date(result.expiresAt).toLocaleString()}`);
         console.log("\nOn the new node, run:");
         console.log(`  openclaw ansible join --token ${result.token}`);
@@ -1725,6 +1891,39 @@ export function registerAnsibleCli(
         } else {
           console.log(`✗ Failed to join: ${result.error}`);
         }
+      });
+
+    // === ansible ws-ticket ===
+    ansible
+      .command("ws-ticket")
+      .description("Exchange invite token for short-lived websocket admission ticket")
+      .option("--token <token>", "Invite token")
+      .option("--node <nodeId>", "Expected joining node id")
+      .option("--ttl-seconds <seconds>", "Ticket TTL in seconds (default 60)", "60")
+      .action(async (...args: unknown[]) => {
+        const opts = (args[0] || {}) as { token?: string; node?: string; ttlSeconds?: string };
+        const token = String(opts.token || "").trim();
+        const node = String(opts.node || "").trim();
+        if (!token) {
+          console.log("✗ Invite token required. Use: openclaw ansible ws-ticket --token <token> --node <nodeId>");
+          return;
+        }
+        if (!node) {
+          console.log("✗ Node ID required. Use: openclaw ansible ws-ticket --token <token> --node <nodeId>");
+          return;
+        }
+        const ttlSeconds = Number(opts.ttlSeconds || "60");
+        const result = exchangeInviteForWsTicket(token, node, ttlSeconds);
+        if ("error" in result) {
+          console.log(`✗ Failed to mint ws ticket: ${result.error}`);
+          return;
+        }
+        console.log("\n=== WebSocket Ticket Generated ===\n");
+        console.log(`Node: ${node}`);
+        console.log(`Ticket: ${result.ticket}`);
+        console.log(`Expires: ${new Date(result.expiresAt).toLocaleString()}`);
+        console.log("\nExample connection URL:");
+        console.log(`  ws://<backbone-host>:<port>/?nodeId=${encodeURIComponent(node)}&ticket=${result.ticket}`);
       });
 
     // === ansible revoke ===

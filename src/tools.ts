@@ -324,6 +324,95 @@ function readDelegationAcks(m: any): Record<string, { version?: string; checksum
   return out;
 }
 
+type CapabilitySkillRef = {
+  name: string;
+  version: string;
+  path?: string;
+};
+
+type CapabilityCatalogRecord = {
+  capabilityId: string;
+  name: string;
+  version: string;
+  status: "active" | "deprecated" | "disabled";
+  ownerAgentId: string;
+  ownerNodeId: string;
+  delegationSkillRef: CapabilitySkillRef;
+  executorSkillRef: CapabilitySkillRef;
+  contractSchemaRef: string;
+  defaultEtaSeconds: number;
+  publishedAt: number;
+  publishedByAgentId: string;
+};
+
+type CapabilityIndexRecord = {
+  capabilityId: string;
+  eligibleAgentIds: string[];
+  policyVersion: string;
+  updatedAt: number;
+};
+
+function getCapabilityCatalogMap(doc: ReturnType<typeof getDoc>) {
+  return doc?.getMap("capabilitiesCatalog");
+}
+
+function getCapabilityIndexMap(doc: ReturnType<typeof getDoc>) {
+  return doc?.getMap("capabilitiesIndex");
+}
+
+function validateSkillRef(value: unknown, fieldName: string): CapabilitySkillRef {
+  const v = (value || {}) as Record<string, unknown>;
+  const name = validateString(v.name, 200, `${fieldName}.name`).trim();
+  const version = validateString(v.version, 120, `${fieldName}.version`).trim();
+  const out: CapabilitySkillRef = { name, version };
+  if (typeof v.path === "string" && v.path.trim().length > 0) out.path = v.path.trim();
+  return out;
+}
+
+function makePolicyVersion(): string {
+  return `cpv_${new Date().toISOString()}`;
+}
+
+function createSkillDistributionTask(
+  doc: ReturnType<typeof getDoc>,
+  nodeId: string,
+  createdByAgentId: string,
+  capabilityId: string,
+  ownerAgentId: string,
+  delegationSkillRef: CapabilitySkillRef
+): { created: boolean; taskId?: string; targets: string[] } {
+  if (!doc) return { created: false, targets: [] };
+  const agents = doc.getMap("agents");
+  const targets = Array.from(agents.keys())
+    .map((k) => String(k))
+    .filter((id) => id && id !== ownerAgentId);
+  if (targets.length === 0) return { created: false, targets: [] };
+
+  const task: Task = {
+    id: randomUUID(),
+    title: `Skill distribution: ${capabilityId}`,
+    description: `Install/update delegation skill '${delegationSkillRef.name}@${delegationSkillRef.version}' for capability '${capabilityId}'.`,
+    status: "pending",
+    createdBy_agent: createdByAgentId,
+    createdBy_node: nodeId,
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    updates: [],
+    assignedTo_agent: targets[0],
+    assignedTo_agents: targets,
+    intent: "skill_distribution",
+    metadata: {
+      kind: "skill_distribution",
+      capabilityId,
+      delegationSkillRef,
+      requiredResponse: "install_status_with_timestamp",
+    },
+  };
+  const tasks = doc.getMap("tasks");
+  tasks.set(task.id, task);
+  return { created: true, taskId: task.id, targets };
+}
+
 function notifyTaskOwner(
   doc: ReturnType<typeof getDoc>,
   fromNodeId: string,
@@ -1017,6 +1106,250 @@ export function registerAnsibleTools(
           checksum,
           ackAt: now,
         });
+      } catch (err: any) {
+        return toolResult({ error: err.message });
+      }
+    },
+  });
+
+  // === ansible_capability_publish ===
+  api.registerTool({
+    name: "ansible_capability_publish",
+    label: "Ansible Capability Publish",
+    description:
+      "Publish or update a capability contract and activate routing. Also creates a skill-distribution task for all non-owner agents.",
+    parameters: {
+      type: "object",
+      properties: {
+        capability_id: { type: "string", description: "Stable capability id (e.g., cap.fs.diff-apply)" },
+        name: { type: "string", description: "Human-readable capability name" },
+        version: { type: "string", description: "Capability contract version" },
+        owner_agent_id: { type: "string", description: "Executor owner agent id (must exist)" },
+        delegation_skill_ref: {
+          type: "object",
+          description: "Delegation skill reference",
+          properties: {
+            name: { type: "string" },
+            version: { type: "string" },
+            path: { type: "string" },
+          },
+        },
+        executor_skill_ref: {
+          type: "object",
+          description: "Executor skill reference",
+          properties: {
+            name: { type: "string" },
+            version: { type: "string" },
+            path: { type: "string" },
+          },
+        },
+        contract_schema_ref: { type: "string", description: "Schema reference for request/result contract" },
+        default_eta_seconds: { type: "number", description: "Default expected completion time (seconds)" },
+        status: { type: "string", enum: ["active", "deprecated", "disabled"] },
+        from_agent: { type: "string", description: "Acting admin agent id (must match configured admin agent)" },
+        agent_token: { type: "string", description: "Auth token for acting admin agent" },
+      },
+      required: [
+        "capability_id",
+        "name",
+        "version",
+        "owner_agent_id",
+        "delegation_skill_ref",
+        "executor_skill_ref",
+        "contract_schema_ref",
+      ],
+    },
+    async execute(_id, params) {
+      const doc = getDoc();
+      const nodeId = getNodeId();
+      if (!doc || !nodeId) return toolResult({ error: "Ansible not initialized" });
+      try {
+        requireAuth(nodeId);
+        requireAdmin(nodeId, doc);
+
+        const adminAgentId =
+          typeof (config as any)?.adminAgentId === "string" && (config as any).adminAgentId.trim().length > 0
+            ? (config as any).adminAgentId.trim()
+            : "admin";
+        const requestedFrom = typeof params.from_agent === "string" ? String(params.from_agent) : undefined;
+        const token =
+          typeof params.agent_token === "string" && params.agent_token.trim().length > 0
+            ? params.agent_token.trim()
+            : undefined;
+        const actorResult = resolveAdminActorOrError(doc, nodeId, token, requestedFrom);
+        if (actorResult.error) return toolResult({ error: actorResult.error });
+        const publishedByAgentId = actorResult.actor;
+        if (!publishedByAgentId) return toolResult({ error: "Failed to resolve publishing actor." });
+        requireAdminActor(doc, nodeId, adminAgentId, publishedByAgentId);
+
+        const capabilityId = validateString(params.capability_id, 160, "capability_id").trim();
+        const name = validateString(params.name, 200, "name").trim();
+        const version = validateString(params.version, 120, "version").trim();
+        const ownerAgentId = validateString(params.owner_agent_id, 100, "owner_agent_id").trim();
+        const delegationSkillRef = validateSkillRef(params.delegation_skill_ref, "delegation_skill_ref");
+        const executorSkillRef = validateSkillRef(params.executor_skill_ref, "executor_skill_ref");
+        const contractSchemaRef = validateString(params.contract_schema_ref, 400, "contract_schema_ref").trim();
+        const status = (typeof params.status === "string" ? params.status : "active") as CapabilityCatalogRecord["status"];
+        const etaRaw = params.default_eta_seconds === undefined ? 900 : validateNumber(params.default_eta_seconds, "default_eta_seconds");
+        const defaultEtaSeconds = Math.floor(etaRaw);
+        if (defaultEtaSeconds < 30 || defaultEtaSeconds > 86400) {
+          return toolResult({ error: "default_eta_seconds must be between 30 and 86400" });
+        }
+
+        const agents = doc.getMap("agents");
+        if (!agents.has(ownerAgentId)) {
+          return toolResult({ error: `owner_agent_id '${ownerAgentId}' is not registered` });
+        }
+
+        const catalogMap = getCapabilityCatalogMap(doc);
+        const indexMap = getCapabilityIndexMap(doc);
+        if (!catalogMap || !indexMap) return toolResult({ error: "Capability maps unavailable" });
+
+        const policyVersion = makePolicyVersion();
+        const now = Date.now();
+        const catalogRec: CapabilityCatalogRecord = {
+          capabilityId,
+          name,
+          version,
+          status,
+          ownerAgentId,
+          ownerNodeId: nodeId,
+          delegationSkillRef,
+          executorSkillRef,
+          contractSchemaRef,
+          defaultEtaSeconds,
+          publishedAt: now,
+          publishedByAgentId,
+        };
+        const indexRec: CapabilityIndexRecord = {
+          capabilityId,
+          eligibleAgentIds: status === "active" ? [ownerAgentId] : [],
+          policyVersion,
+          updatedAt: now,
+        };
+
+        catalogMap.set(capabilityId, catalogRec);
+        indexMap.set(capabilityId, indexRec);
+
+        const distribution = createSkillDistributionTask(
+          doc,
+          nodeId,
+          publishedByAgentId,
+          capabilityId,
+          ownerAgentId,
+          delegationSkillRef,
+        );
+        if (distribution.created) requestDispatcherReconcile("capability-skill-distribution");
+
+        return toolResult({
+          success: true,
+          capability: catalogRec,
+          index: indexRec,
+          skillDistributionTask: distribution.created
+            ? { taskId: distribution.taskId, targets: distribution.targets }
+            : null,
+        });
+      } catch (err: any) {
+        return toolResult({ error: err.message });
+      }
+    },
+  });
+
+  // === ansible_capability_unpublish ===
+  api.registerTool({
+    name: "ansible_capability_unpublish",
+    label: "Ansible Capability Unpublish",
+    description: "Disable a capability and remove routing eligibility from the capability index.",
+    parameters: {
+      type: "object",
+      properties: {
+        capability_id: { type: "string", description: "Capability id to disable" },
+        from_agent: { type: "string", description: "Acting admin agent id (must match configured admin agent)" },
+        agent_token: { type: "string", description: "Auth token for acting admin agent" },
+      },
+      required: ["capability_id"],
+    },
+    async execute(_id, params) {
+      const doc = getDoc();
+      const nodeId = getNodeId();
+      if (!doc || !nodeId) return toolResult({ error: "Ansible not initialized" });
+      try {
+        requireAuth(nodeId);
+        requireAdmin(nodeId, doc);
+        const adminAgentId =
+          typeof (config as any)?.adminAgentId === "string" && (config as any).adminAgentId.trim().length > 0
+            ? (config as any).adminAgentId.trim()
+            : "admin";
+        const requestedFrom = typeof params.from_agent === "string" ? String(params.from_agent) : undefined;
+        const token =
+          typeof params.agent_token === "string" && params.agent_token.trim().length > 0
+            ? params.agent_token.trim()
+            : undefined;
+        const actorResult = resolveAdminActorOrError(doc, nodeId, token, requestedFrom);
+        if (actorResult.error) return toolResult({ error: actorResult.error });
+        const actingAdmin = actorResult.actor;
+        if (!actingAdmin) return toolResult({ error: "Failed to resolve admin actor." });
+        requireAdminActor(doc, nodeId, adminAgentId, actingAdmin);
+
+        const capabilityId = validateString(params.capability_id, 160, "capability_id").trim();
+        const catalogMap = getCapabilityCatalogMap(doc);
+        const indexMap = getCapabilityIndexMap(doc);
+        if (!catalogMap || !indexMap) return toolResult({ error: "Capability maps unavailable" });
+        const existing = catalogMap.get(capabilityId) as CapabilityCatalogRecord | undefined;
+        if (!existing) return toolResult({ error: `Capability '${capabilityId}' not found` });
+
+        const next: CapabilityCatalogRecord = {
+          ...existing,
+          status: "disabled",
+          publishedAt: Date.now(),
+          publishedByAgentId: actingAdmin,
+        };
+        catalogMap.set(capabilityId, next);
+        indexMap.set(capabilityId, {
+          capabilityId,
+          eligibleAgentIds: [],
+          policyVersion: makePolicyVersion(),
+          updatedAt: Date.now(),
+        } satisfies CapabilityIndexRecord);
+
+        return toolResult({ success: true, capability: next });
+      } catch (err: any) {
+        return toolResult({ error: err.message });
+      }
+    },
+  });
+
+  // === ansible_list_capabilities ===
+  api.registerTool({
+    name: "ansible_list_capabilities",
+    label: "Ansible List Capabilities",
+    description: "List published capability contracts and their current routing eligibility.",
+    parameters: {
+      type: "object",
+      properties: {
+        status: { type: "string", enum: ["active", "deprecated", "disabled"], description: "Optional status filter" },
+      },
+    },
+    async execute(_id, params) {
+      const doc = getDoc();
+      const nodeId = getNodeId();
+      if (!doc || !nodeId) return toolResult({ error: "Ansible not initialized" });
+      try {
+        requireAuth(nodeId);
+        const statusFilter = typeof params.status === "string" ? params.status : undefined;
+        const catalogMap = getCapabilityCatalogMap(doc);
+        const indexMap = getCapabilityIndexMap(doc);
+        if (!catalogMap || !indexMap) return toolResult({ capabilities: [], total: 0 });
+        const capabilities: Array<{ catalog: CapabilityCatalogRecord; index?: CapabilityIndexRecord }> = [];
+        for (const [id, raw] of catalogMap.entries()) {
+          const catalog = raw as CapabilityCatalogRecord;
+          if (!catalog) continue;
+          if (statusFilter && catalog.status !== statusFilter) continue;
+          const index = indexMap.get(String(id)) as CapabilityIndexRecord | undefined;
+          capabilities.push({ catalog, index });
+        }
+        capabilities.sort((a, b) => a.catalog.capabilityId.localeCompare(b.catalog.capabilityId));
+        return toolResult({ capabilities, total: capabilities.length });
       } catch (err: any) {
         return toolResult({ error: err.message });
       }

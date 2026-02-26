@@ -7,6 +7,11 @@
 - **[delegation-directory.md](delegation-directory.md)** — Delegation table standard for `IDENTITY.md`, coordinator distribution protocol, ACK model, and SLA enforcement rules
 - **[identity-delegation-template.md](identity-delegation-template.md)** — Copy/paste template section for each agent `IDENTITY.md`
 - **[protocol.md](protocol.md)** — Inter-agent messaging conventions, delivery semantics, current limitations, and the concrete reliability improvement plan
+- **[state-model-v2.md](state-model-v2.md)** — RFC for state-only control plane and per-gateway data pipes (no message payloads in shared state)
+- **[distributed-pipes-v2.md](distributed-pipes-v2.md)** — Mermaid architecture diagrams and end-to-end lifecycle for write-only gateway outboxes, routing, ACKs, replies, and failure handling
+- **[external-agent-auth-v1.md](external-agent-auth-v1.md)** — External agent interface spec (Codex/Claude), auth endpoints, short-lived session tokens, scopes, and terminology reference
+- **[runtime-protocol-v1.md](runtime-protocol-v1.md)** — Wire-level runtime contracts (events, ACKs, cursors, task lifecycle, capability publish, skill distribution, and conformance levels)
+- **[federation-merge-v1.md](federation-merge-v1.md)** — Safe multinode cluster merge/federation protocol (handshake, conflict resolution, commit/rollback, staged propagation, and outstanding work matrix)
 - **[setup.md](setup.md)** — Practical setup and operations guide (new agent, new gateway, coordinator sweep)
 - **[update-architecture.md](update-architecture.md)** — Source-of-truth update model (`setup` scope, plugin update path, config write safety, canonical defaults)
 

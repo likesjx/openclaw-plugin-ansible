@@ -60,6 +60,23 @@
           "everySeconds": { "type": "number", "default": 60, "description": "Sweep interval seconds (default 60)", "minimum": 30 },
           "staleSeconds": { "type": "number", "default": 300, "description": "Remove stale lock files older than this many seconds (default 300)", "minimum": 30 }
         }
+      },
+      "authGate": {
+        "type": "object",
+        "description": "Optional pre-Yjs websocket admission gate (invite token for unknown nodes)",
+        "properties": {
+          "enabled": { "type": "boolean", "default": false, "description": "Enable websocket admission checks" },
+          "nodeIdParam": { "type": "string", "default": "nodeId", "description": "Query parameter name for node id" },
+          "inviteParam": { "type": "string", "default": "invite", "description": "Query parameter name for invite token" },
+          "ticketParam": { "type": "string", "default": "ticket", "description": "Query parameter name for websocket ticket" },
+          "requireTicketForUnknown": { "type": "boolean", "default": false, "description": "Require ticket for unknown nodes (disable direct invite query admission)" },
+          "authPort": { "type": "number", "description": "HTTP auth exchange port (defaults to listenPort + 1)" },
+          "exchangePath": { "type": "string", "default": "/ansible/auth/exchange", "description": "HTTP auth exchange endpoint path" },
+          "ticketTtlSeconds": { "type": "number", "default": 60, "description": "Default websocket ticket TTL issued by exchange endpoint" },
+          "requireNodeProof": { "type": "boolean", "default": false, "description": "Require client key proof at auth exchange" },
+          "rateLimitMax": { "type": "number", "default": 30, "description": "Auth exchange max requests per window (fixed-window)" },
+          "rateLimitWindowSeconds": { "type": "number", "default": 60, "description": "Auth exchange fixed-window seconds" }
+        }
       }
     },
     "required": ["tier"]
@@ -110,6 +127,11 @@
     "lockSweep": {
       "label": "Lock Sweep",
       "help": "Automatically clears stale session lock files that can block agent turns (recommended).",
+      "advanced": true
+    },
+    "authGate": {
+      "label": "Auth Gate",
+      "help": "Optional websocket admission gate for unknown nodes (invite token at handshake).",
       "advanced": true
     }
   }

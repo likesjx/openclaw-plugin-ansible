@@ -121,6 +121,19 @@ Add the `ansible` plugin to `~/.openclaw/openclaw.json` on each node.
           "tier": "backbone",
           "listenPort": 1235,
           "listenHost": "0.0.0.0",
+          "authGate": {
+            "enabled": true,
+            "nodeIdParam": "nodeId",
+            "inviteParam": "invite",
+            "ticketParam": "ticket",
+            "requireTicketForUnknown": true,
+            "authPort": 1236,
+            "exchangePath": "/ansible/auth/exchange",
+            "ticketTtlSeconds": 60,
+            "requireNodeProof": true,
+            "rateLimitMax": 30,
+            "rateLimitWindowSeconds": 60
+          },
           "capabilities": ["always-on"]
         }
       }
@@ -163,6 +176,41 @@ services:
 ```
 
 `backbonePeers` must use Tailscale MagicDNS hostnames or Tailscale IPs. SSH config aliases do NOT work here.
+
+When `authGate.enabled=true`, unknown nodes can be admitted in two ways:
+
+`ws://jane-vps:1235/?nodeId=<new-node-id>&invite=<invite-token>`
+
+Known authorized nodes reconnect with `nodeId` only.
+
+For stricter admission, set `requireTicketForUnknown=true` and use one-time short-lived tickets:
+
+```bash
+# on inviter/backbone
+openclaw ansible ws-ticket --token <invite-token> --node <new-node-id> --ttl-seconds 60
+```
+
+Then connect with:
+
+`ws://jane-vps:1235/?nodeId=<new-node-id>&ticket=<ws-ticket>`
+
+You can also mint tickets via HTTP exchange (no gateway admin token required):
+
+```bash
+curl -sS -X POST http://jane-vps:1236/ansible/auth/exchange \
+  -H 'content-type: application/json' \
+  -d '{
+    "inviteToken": "<invite-token>",
+    "nodeId": "<new-node-id>",
+    "nonce": "n-123456",
+    "clientPubKey": "<PEM-public-key>",
+    "clientProof": "<base64-signature>"
+  }'
+```
+
+Then connect with returned `ticket`:
+
+`ws://jane-vps:1235/?nodeId=<new-node-id>&ticket=<ticket>`
 
 ### Architect-Managed (Recommended for Multi-Agent Ops)
 
@@ -221,7 +269,7 @@ For the practical "how do I add a new agent/gateway" guide, see `docs/setup.md`.
    ```
 3. **Invite edge nodes** (run on backbone):
    ```bash
-   openclaw ansible invite --tier edge
+   openclaw ansible invite --tier edge --node <expected-node-id>
    ```
 4. **Join** (run on each edge node):
    ```bash
@@ -285,8 +333,11 @@ openclaw ansible messages-delete --dry-run --from architect --reason "Emergency 
 openclaw ansible delegation show     # Show policy + ACK status
 openclaw ansible delegation set      # Publish policy from markdown file (coordinator-only)
 openclaw ansible delegation ack      # ACK current policy
+openclaw ansible capability list     # List published capability contracts + eligibility
+openclaw ansible capability publish --id cap.example --name "Example" --version 1.0.0 --owner executor --delegation-skill-name ansible-delegate-example --delegation-skill-version 1.0.0 --executor-skill-name ansible-executor-example --executor-skill-version 1.0.0 --contract schema://ansible/cap.example/1.0.0
+openclaw ansible capability unpublish --id cap.example
 openclaw ansible bootstrap           # Initialize as first node
-openclaw ansible invite --tier edge  # Generate invite token
+openclaw ansible invite --tier edge --node <expected-node-id>  # Generate node-bound invite token
 openclaw ansible join --token <tok>  # Join with invite token
 ```
 
