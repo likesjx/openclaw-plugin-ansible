@@ -1403,12 +1403,24 @@ export function registerAnsibleCli(
       .command("sweep")
       .description("Evaluate task SLA windows and emit escalation events for breaches")
       .option("--dry-run", "Report potential breaches without writing escalation state")
+      .option("--record-only", "Record escalation outcomes without sending escalation messages")
       .option("--limit <n>", "Optional max tasks to inspect")
+      .option("--max-messages <n>", "Cap escalation messages emitted in this run")
+      .option("--fyi <agents>", "Fallback FYI agents (comma-separated) when no direct handler target exists")
       .action(async (...args: unknown[]) => {
-        const opts = (args[0] || {}) as { dryRun?: boolean; limit?: string };
+        const opts = (args[0] || {}) as {
+          dryRun?: boolean;
+          recordOnly?: boolean;
+          limit?: string;
+          maxMessages?: string;
+          fyi?: string;
+        };
         const toolArgs: Record<string, unknown> = {};
         if (opts.dryRun) toolArgs.dry_run = true;
+        if (opts.recordOnly) toolArgs.record_only = true;
         if (opts.limit && Number.isFinite(Number(opts.limit))) toolArgs.limit = Math.floor(Number(opts.limit));
+        if (opts.maxMessages && Number.isFinite(Number(opts.maxMessages))) toolArgs.max_messages = Math.floor(Number(opts.maxMessages));
+        if (opts.fyi) toolArgs.fyi_agents = parseCsvOrRepeat(opts.fyi);
         let out: any;
         try {
           out = await callGateway("ansible_sla_sweep", toolArgs);

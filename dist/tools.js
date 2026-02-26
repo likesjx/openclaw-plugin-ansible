@@ -9,6 +9,7 @@ import { getDoc, getNodeId, getAnsibleState } from "./service.js";
 import { requestDispatcherReconcile } from "./dispatcher.js";
 import { isNodeAuthorized } from "./auth.js";
 import { getLockSweepStatus } from "./lock-sweep.js";
+import { runSlaSweep } from "./sla.js";
 /**
  * Wrap a tool result in the AgentToolResult format expected by pi-agent-core.
  * Tools must return { content: [{type: "text", text: "..."}], details: T }
@@ -277,6 +278,246 @@ function readDelegationAcks(m) {
     }
     return out;
 }
+const OWNER_LEASE_STALE_MS = 90_000;
+function getCapabilityCatalogMap(doc) {
+    return doc?.getMap("capabilitiesCatalog");
+}
+function getCapabilityIndexMap(doc) {
+    return doc?.getMap("capabilitiesIndex");
+}
+function getCapabilityManifestMap(doc) {
+    return doc?.getMap("capabilitiesManifests");
+}
+function getCapabilityRevisionMap(doc) {
+    return doc?.getMap("capabilitiesRevisions");
+}
+function validateSkillRef(value, fieldName) {
+    const v = (value || {});
+    const name = validateString(v.name, 200, `${fieldName}.name`).trim();
+    const version = validateString(v.version, 120, `${fieldName}.version`).trim();
+    const out = { name, version };
+    if (typeof v.path === "string" && v.path.trim().length > 0)
+        out.path = v.path.trim();
+    return out;
+}
+function deepSortObject(value) {
+    if (Array.isArray(value))
+        return value.map((v) => deepSortObject(v));
+    if (!value || typeof value !== "object")
+        return value;
+    const entries = Object.entries(value).sort(([a], [b]) => a.localeCompare(b));
+    const out = {};
+    for (const [k, v] of entries)
+        out[k] = deepSortObject(v);
+    return out;
+}
+function checksumPayloadForManifest(manifest) {
+    const payload = JSON.parse(JSON.stringify(manifest));
+    payload.provenance = {
+        ...payload.provenance,
+        manifestChecksum: "",
+        manifestSignature: "",
+    };
+    const canonical = JSON.stringify(deepSortObject(payload));
+    return `sha256:${createHash("sha256").update(canonical, "utf8").digest("hex")}`;
+}
+function validateSkillPairManifest(value) {
+    const v = (value || {});
+    const manifestVersion = validateString(v.manifestVersion, 32, "manifestVersion");
+    if (manifestVersion !== "1.0.0")
+        throw new Error("manifestVersion must be '1.0.0'");
+    const capabilityId = validateString(v.capabilityId, 160, "capabilityId").trim();
+    if (!/^cap\.[a-z0-9][a-z0-9._-]*$/.test(capabilityId)) {
+        throw new Error("capabilityId must match ^cap\\.[a-z0-9][a-z0-9._-]*$");
+    }
+    const version = validateString(v.version, 120, "version").trim();
+    if (!/^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][A-Za-z0-9.-]+)?$/.test(version)) {
+        throw new Error("version must be semver-like (x.y.z)");
+    }
+    const ownerAgentId = validateString(v.ownerAgentId, 100, "ownerAgentId").trim();
+    const standbyOwnerAgentIds = cleanStringArray(v.standbyOwnerAgentIds);
+    if (standbyOwnerAgentIds.includes(ownerAgentId)) {
+        throw new Error("standbyOwnerAgentIds cannot include ownerAgentId");
+    }
+    const compatibilityMode = validateString(v.compatibilityMode, 40, "compatibilityMode").trim();
+    if (!["strict", "backward", "legacy-window"].includes(compatibilityMode)) {
+        throw new Error("compatibilityMode must be strict|backward|legacy-window");
+    }
+    const delegationSkillRef = validateSkillRef(v.delegationSkillRef, "delegationSkillRef");
+    const executorSkillRef = validateSkillRef(v.executorSkillRef, "executorSkillRef");
+    if (v.delegationSkillRef && typeof v.delegationSkillRef.source === "string") {
+        delegationSkillRef.source = validateString(v.delegationSkillRef.source, 400, "delegationSkillRef.source").trim();
+    }
+    if (v.executorSkillRef && typeof v.executorSkillRef.source === "string") {
+        executorSkillRef.source = validateString(v.executorSkillRef.source, 400, "executorSkillRef.source").trim();
+    }
+    const contractRaw = (v.contract || {});
+    const contract = {
+        inputSchemaRef: validateString(contractRaw.inputSchemaRef, 400, "contract.inputSchemaRef").trim(),
+        outputSchemaRef: validateString(contractRaw.outputSchemaRef, 400, "contract.outputSchemaRef").trim(),
+        ackSchemaRef: validateString(contractRaw.ackSchemaRef, 400, "contract.ackSchemaRef").trim(),
+    };
+    const slaRaw = (v.sla || {});
+    const sla = {
+        acceptSlaSeconds: Math.floor(validateNumber(slaRaw.acceptSlaSeconds, "sla.acceptSlaSeconds")),
+        progressSlaSeconds: Math.floor(validateNumber(slaRaw.progressSlaSeconds, "sla.progressSlaSeconds")),
+        completeSlaSeconds: Math.floor(validateNumber(slaRaw.completeSlaSeconds, "sla.completeSlaSeconds")),
+    };
+    if (sla.acceptSlaSeconds < 10 || sla.acceptSlaSeconds > 3600)
+        throw new Error("sla.acceptSlaSeconds out of range (10..3600)");
+    if (sla.progressSlaSeconds < 30 || sla.progressSlaSeconds > 86400)
+        throw new Error("sla.progressSlaSeconds out of range (30..86400)");
+    if (sla.completeSlaSeconds < 60 || sla.completeSlaSeconds > 604800)
+        throw new Error("sla.completeSlaSeconds out of range (60..604800)");
+    const riskClass = validateString(v.riskClass, 20, "riskClass").trim();
+    if (!["low", "medium", "high"].includes(riskClass))
+        throw new Error("riskClass must be low|medium|high");
+    const rolloutRaw = (v.rollout || {});
+    const rolloutMode = validateString(rolloutRaw.mode, 20, "rollout.mode").trim();
+    if (!["canary", "full"].includes(rolloutMode))
+        throw new Error("rollout.mode must be canary|full");
+    const rollout = {
+        mode: rolloutMode,
+        canaryTargets: cleanStringArray(rolloutRaw.canaryTargets),
+    };
+    const governanceRaw = (v.governance || {});
+    if (typeof governanceRaw.requiresHumanApprovalForHighRisk !== "boolean") {
+        throw new Error("governance.requiresHumanApprovalForHighRisk must be boolean");
+    }
+    if (typeof governanceRaw.signedManifestRequired !== "boolean") {
+        throw new Error("governance.signedManifestRequired must be boolean");
+    }
+    const governance = {
+        requiresHumanApprovalForHighRisk: governanceRaw.requiresHumanApprovalForHighRisk,
+        signedManifestRequired: governanceRaw.signedManifestRequired,
+    };
+    if (riskClass === "high" && !governance.requiresHumanApprovalForHighRisk) {
+        throw new Error("riskClass=high requires governance.requiresHumanApprovalForHighRisk=true");
+    }
+    const provRaw = (v.provenance || {});
+    const provenance = {
+        publishedByAgentId: validateString(provRaw.publishedByAgentId, 100, "provenance.publishedByAgentId").trim(),
+        manifestChecksum: validateString(provRaw.manifestChecksum, 100, "provenance.manifestChecksum").trim(),
+        manifestSignature: validateString(provRaw.manifestSignature, 8192, "provenance.manifestSignature").trim(),
+        publishedAt: validateString(provRaw.publishedAt, 64, "provenance.publishedAt").trim(),
+    };
+    if (!/^sha256:[a-f0-9]{64}$/.test(provenance.manifestChecksum)) {
+        throw new Error("provenance.manifestChecksum must match sha256:<64-hex>");
+    }
+    if (Date.parse(provenance.publishedAt) !== Date.parse(provenance.publishedAt)) {
+        throw new Error("provenance.publishedAt must be ISO-8601 datetime");
+    }
+    if (governance.signedManifestRequired && provenance.manifestSignature.length < 32) {
+        throw new Error("provenance.manifestSignature too short for signed manifest");
+    }
+    const manifest = {
+        manifestVersion: "1.0.0",
+        capabilityId,
+        version,
+        ownerAgentId,
+        standbyOwnerAgentIds,
+        compatibilityMode,
+        delegationSkillRef,
+        executorSkillRef,
+        contract,
+        sla,
+        riskClass,
+        rollout,
+        governance,
+        provenance,
+    };
+    const expectedChecksum = checksumPayloadForManifest(manifest);
+    if (provenance.manifestChecksum !== expectedChecksum) {
+        throw new Error("provenance.manifestChecksum does not match canonicalized manifest payload");
+    }
+    return manifest;
+}
+function buildManifestFromLegacyParams(params, publishedByAgentId, nowIso) {
+    const capabilityId = validateString(params.capability_id, 160, "capability_id").trim();
+    const version = validateString(params.version, 120, "version").trim();
+    const ownerAgentId = validateString(params.owner_agent_id, 100, "owner_agent_id").trim();
+    const delegationSkillRef = validateSkillRef(params.delegation_skill_ref, "delegation_skill_ref");
+    const executorSkillRef = validateSkillRef(params.executor_skill_ref, "executor_skill_ref");
+    const contractSchemaRef = validateString(params.contract_schema_ref, 400, "contract_schema_ref").trim();
+    const etaRaw = params.default_eta_seconds === undefined ? 900 : validateNumber(params.default_eta_seconds, "default_eta_seconds");
+    const defaultEtaSeconds = Math.floor(etaRaw);
+    if (defaultEtaSeconds < 30 || defaultEtaSeconds > 86400) {
+        throw new Error("default_eta_seconds must be between 30 and 86400");
+    }
+    const manifest = {
+        manifestVersion: "1.0.0",
+        capabilityId,
+        version,
+        ownerAgentId,
+        standbyOwnerAgentIds: [],
+        compatibilityMode: "strict",
+        delegationSkillRef,
+        executorSkillRef,
+        contract: {
+            inputSchemaRef: contractSchemaRef,
+            outputSchemaRef: contractSchemaRef,
+            ackSchemaRef: "schema://ansible/ack/1.0.0",
+        },
+        sla: {
+            acceptSlaSeconds: 120,
+            progressSlaSeconds: Math.max(300, Math.min(86400, defaultEtaSeconds)),
+            completeSlaSeconds: Math.max(900, Math.min(604800, defaultEtaSeconds * 2)),
+        },
+        riskClass: "medium",
+        rollout: {
+            mode: "full",
+            canaryTargets: [],
+        },
+        governance: {
+            requiresHumanApprovalForHighRisk: true,
+            signedManifestRequired: false,
+        },
+        provenance: {
+            publishedByAgentId,
+            manifestChecksum: "",
+            manifestSignature: `unsigned:${publishedByAgentId}:${nowIso}`,
+            publishedAt: nowIso,
+        },
+    };
+    manifest.provenance.manifestChecksum = checksumPayloadForManifest(manifest);
+    return manifest;
+}
+function makePolicyVersion() {
+    return `cpv_${new Date().toISOString()}`;
+}
+function createSkillDistributionTask(doc, nodeId, createdByAgentId, capabilityId, ownerAgentId, delegationSkillRef) {
+    if (!doc)
+        return { created: false, targets: [] };
+    const agents = doc.getMap("agents");
+    const targets = Array.from(agents.keys())
+        .map((k) => String(k))
+        .filter((id) => id && id !== ownerAgentId);
+    if (targets.length === 0)
+        return { created: false, targets: [] };
+    const task = {
+        id: randomUUID(),
+        title: `Skill distribution: ${capabilityId}`,
+        description: `Install/update delegation skill '${delegationSkillRef.name}@${delegationSkillRef.version}' for capability '${capabilityId}'.`,
+        status: "pending",
+        createdBy_agent: createdByAgentId,
+        createdBy_node: nodeId,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        updates: [],
+        assignedTo_agent: targets[0],
+        assignedTo_agents: targets,
+        intent: "skill_distribution",
+        metadata: {
+            kind: "skill_distribution",
+            capabilityId,
+            delegationSkillRef,
+            requiredResponse: "install_status_with_timestamp",
+        },
+    };
+    const tasks = doc.getMap("tasks");
+    tasks.set(task.id, task);
+    return { created: true, taskId: task.id, targets };
+}
 function notifyTaskOwner(doc, fromNodeId, task, payload) {
     if (!doc)
         return null;
@@ -289,23 +530,353 @@ function notifyTaskOwner(doc, fromNodeId, task, payload) {
     lines.push(`status: ${task.status}`);
     if (payload.note)
         lines.push(`note: ${payload.note}`);
+    if (payload.etaAt)
+        lines.push(`etaAt: ${payload.etaAt}`);
+    if (payload.planSummary)
+        lines.push(`plan: ${payload.planSummary}`);
     const result = payload.result ?? task.result;
     if (result)
         lines.push(`result: ${result}`);
     lines.push(`from: ${fromNodeId}`);
     const now = Date.now();
+    const intent = payload.kind === "accepted"
+        ? "task_accept"
+        : payload.kind === "completed"
+            ? "task_complete"
+            : payload.kind === "failed"
+                ? "task_failed"
+                : "task_update";
     const message = {
         id: messageId,
         from_agent: fromNodeId,
         from_node: fromNodeId,
+        intent,
         to_agents: [task.createdBy_agent],
         content: lines.join("\n"),
         timestamp: now,
         updatedAt: now,
         readBy_agents: [fromNodeId],
+        metadata: {
+            kind: intent,
+            taskId: task.id,
+            taskStatus: task.status,
+            corr: task.id,
+            etaAt: payload.etaAt,
+        },
     };
     messages.set(message.id, message);
     return messageId;
+}
+function emitLifecycleEvent(doc, fromNodeId, intent, content, metadata) {
+    if (!doc)
+        return null;
+    const messages = doc.getMap("messages");
+    const now = Date.now();
+    const id = randomUUID();
+    const msg = {
+        id,
+        from_agent: fromNodeId,
+        from_node: fromNodeId,
+        intent,
+        content,
+        timestamp: now,
+        updatedAt: now,
+        readBy_agents: [fromNodeId],
+        metadata: {
+            kind: intent,
+            ...(metadata || {}),
+        },
+    };
+    messages.set(id, msg);
+    return id;
+}
+function runPublishGate(gateResults, gate, fn) {
+    const at = Date.now();
+    try {
+        fn();
+        gateResults.push({ gate, status: "passed", at });
+        return { ok: true };
+    }
+    catch (err) {
+        const error = err?.message || String(err);
+        gateResults.push({ gate, status: "failed", at, error });
+        return { ok: false, error };
+    }
+}
+function runPublishGateNoop(gateResults, gate, detail) {
+    gateResults.push({
+        gate,
+        status: "skipped",
+        at: Date.now(),
+        detail,
+    });
+}
+function executeCapabilityPublishPipeline(args) {
+    const gateResults = [];
+    const { doc, nodeId, publishedByAgentId, capabilityId, manifest, catalogRec, indexRec } = args;
+    if (!doc)
+        return { ok: false, failedGate: "G8_INDEX_ACTIVATE", rollbackRequired: false, gateResults };
+    // Skeleton placeholders; these gates are intentionally no-op until installers/validators land.
+    runPublishGateNoop(gateResults, "G4_INSTALL_STAGE", "skeleton: install stage not yet implemented");
+    runPublishGateNoop(gateResults, "G5_WIRE_STAGE", "skeleton: wire stage not yet implemented");
+    runPublishGateNoop(gateResults, "G6_SMOKE_TEST", "skeleton: smoke gate not yet implemented");
+    runPublishGateNoop(gateResults, "G7_ROLLOUT", "skeleton: rollout gate not yet implemented");
+    const catalogMap = getCapabilityCatalogMap(doc);
+    const indexMap = getCapabilityIndexMap(doc);
+    const manifestMap = getCapabilityManifestMap(doc);
+    const revisionMap = getCapabilityRevisionMap(doc);
+    if (!catalogMap || !indexMap || !manifestMap || !revisionMap) {
+        gateResults.push({
+            gate: "G8_INDEX_ACTIVATE",
+            status: "failed",
+            at: Date.now(),
+            error: "Capability maps unavailable",
+        });
+        return { ok: false, failedGate: "G8_INDEX_ACTIVATE", rollbackRequired: true, gateResults };
+    }
+    // Snapshot predecessor state for update safety + rollback.
+    const previousCatalog = catalogMap.get(capabilityId);
+    const previousIndex = indexMap.get(capabilityId);
+    const previousRevision = revisionMap.get(capabilityId);
+    const previousActiveVersion = previousRevision?.activeVersion || previousCatalog?.version;
+    const manifestKey = `${capabilityId}:${manifest.version}`;
+    const previousManifestAtKey = manifestMap.get(manifestKey);
+    const hadManifestAtKey = previousManifestAtKey !== undefined;
+    let rollbackPerformed = false;
+    const activation = runPublishGate(gateResults, "G8_INDEX_ACTIVATE", () => {
+        const now = Date.now();
+        const existingRevision = revisionMap.get(capabilityId) || undefined;
+        const versions = Array.from(new Set([...(existingRevision?.versions || []), manifest.version]));
+        const archivedVersions = new Set(existingRevision?.archivedVersions || []);
+        if (previousActiveVersion && previousActiveVersion !== manifest.version)
+            archivedVersions.add(previousActiveVersion);
+        const nextRevision = {
+            capabilityId,
+            versions,
+            activeVersion: catalogRec.status === "active" ? manifest.version : existingRevision?.activeVersion,
+            pendingVersion: undefined,
+            archivedVersions: Array.from(archivedVersions),
+            currentOwnerAgentId: manifest.ownerAgentId,
+            updatedAt: now,
+            updatedByAgentId: publishedByAgentId,
+            lastAction: "published",
+        };
+        catalogMap.set(capabilityId, catalogRec);
+        indexMap.set(capabilityId, indexRec);
+        manifestMap.set(manifestKey, manifest);
+        revisionMap.set(capabilityId, nextRevision);
+    });
+    if (!activation.ok) {
+        return { ok: false, failedGate: "G8_INDEX_ACTIVATE", rollbackRequired: true, rollbackPerformed: false, gateResults };
+    }
+    const distribution = createSkillDistributionTask(doc, nodeId, publishedByAgentId, capabilityId, manifest.ownerAgentId, manifest.delegationSkillRef);
+    if (distribution.created)
+        requestDispatcherReconcile("capability-skill-distribution");
+    const lifecycleMessageId = emitLifecycleEvent(doc, nodeId, "capability_published", `Capability '${capabilityId}' published (${manifest.version}, status=${catalogRec.status}) by ${publishedByAgentId}.`, {
+        capabilityId,
+        version: manifest.version,
+        status: catalogRec.status,
+        ownerAgentId: manifest.ownerAgentId,
+        policyVersion: indexRec.policyVersion,
+        contractSchemaRef: catalogRec.contractSchemaRef,
+        delegationSkillRef: manifest.delegationSkillRef,
+        executorSkillRef: manifest.executorSkillRef,
+        manifestKey,
+        previousActiveVersion,
+        skillDistributionTaskId: distribution.taskId,
+    });
+    const postcheck = runPublishGate(gateResults, "G9_POSTCHECK", () => {
+        const readCatalog = catalogMap.get(capabilityId);
+        const readIndex = indexMap.get(capabilityId);
+        if (!readCatalog || !readIndex)
+            throw new Error("Postcheck failed: missing catalog/index record");
+        if (readCatalog.version !== manifest.version)
+            throw new Error("Postcheck failed: catalog version mismatch");
+        if (readIndex.capabilityId !== capabilityId)
+            throw new Error("Postcheck failed: index capabilityId mismatch");
+    });
+    if (!postcheck.ok) {
+        // Roll back activation to predecessor snapshot.
+        try {
+            if (previousCatalog)
+                catalogMap.set(capabilityId, previousCatalog);
+            else
+                catalogMap.delete(capabilityId);
+            if (previousIndex)
+                indexMap.set(capabilityId, previousIndex);
+            else
+                indexMap.delete(capabilityId);
+            if (previousRevision)
+                revisionMap.set(capabilityId, previousRevision);
+            else
+                revisionMap.delete(capabilityId);
+            if (hadManifestAtKey)
+                manifestMap.set(manifestKey, previousManifestAtKey);
+            else
+                manifestMap.delete(manifestKey);
+            rollbackPerformed = true;
+        }
+        catch {
+            rollbackPerformed = false;
+        }
+        return { ok: false, failedGate: "G9_POSTCHECK", rollbackRequired: true, rollbackPerformed, gateResults };
+    }
+    const revision = revisionMap.get(capabilityId);
+    return {
+        ok: true,
+        rollbackRequired: false,
+        gateResults,
+        activation: {
+            capability: catalogRec,
+            index: indexRec,
+            manifest,
+            manifestKey,
+            revision,
+            previousActiveVersion,
+            rollbackPerformed,
+            distribution,
+            lifecycleMessageId,
+        },
+    };
+}
+function runUnpublishGate(gateResults, gate, fn) {
+    const at = Date.now();
+    try {
+        fn();
+        gateResults.push({ gate, status: "passed", at });
+        return { ok: true };
+    }
+    catch (err) {
+        const error = err?.message || String(err);
+        gateResults.push({ gate, status: "failed", at, error });
+        return { ok: false, error };
+    }
+}
+function runUnpublishGateNoop(gateResults, gate, detail) {
+    gateResults.push({ gate, status: "skipped", at: Date.now(), detail });
+}
+function executeCapabilityUnpublishPipeline(args) {
+    const { doc, nodeId, actingAdmin, capabilityId, existing } = args;
+    const gateResults = [];
+    if (!doc)
+        return { ok: false, failedGate: "U1_DISABLE_ROUTING", gateResults };
+    const catalogMap = getCapabilityCatalogMap(doc);
+    const indexMap = getCapabilityIndexMap(doc);
+    const revisionMap = getCapabilityRevisionMap(doc);
+    if (!catalogMap || !indexMap || !revisionMap) {
+        gateResults.push({
+            gate: "U1_DISABLE_ROUTING",
+            status: "failed",
+            at: Date.now(),
+            error: "Capability maps unavailable",
+        });
+        return { ok: false, failedGate: "U1_DISABLE_ROUTING", gateResults };
+    }
+    const now = Date.now();
+    const next = {
+        ...existing,
+        status: "disabled",
+        publishedAt: now,
+        publishedByAgentId: actingAdmin,
+    };
+    const policyVersion = makePolicyVersion();
+    const disable = runUnpublishGate(gateResults, "U1_DISABLE_ROUTING", () => {
+        catalogMap.set(capabilityId, next);
+        indexMap.set(capabilityId, {
+            capabilityId,
+            eligibleAgentIds: [],
+            policyVersion,
+            updatedAt: now,
+        });
+    });
+    if (!disable.ok)
+        return { ok: false, failedGate: "U1_DISABLE_ROUTING", gateResults };
+    runUnpublishGateNoop(gateResults, "U2_UNWIRE", "skeleton: workspace unwire not yet implemented");
+    const archive = runUnpublishGate(gateResults, "U3_ARCHIVE", () => {
+        const existingRevision = revisionMap.get(capabilityId) || undefined;
+        const nextRevision = {
+            capabilityId,
+            versions: existingRevision?.versions || [existing.version],
+            activeVersion: existingRevision?.activeVersion && existingRevision.activeVersion === existing.version
+                ? undefined
+                : existingRevision?.activeVersion,
+            pendingVersion: undefined,
+            archivedVersions: Array.from(new Set([...(existingRevision?.archivedVersions || []), existing.version])),
+            currentOwnerAgentId: undefined,
+            updatedAt: now,
+            updatedByAgentId: actingAdmin,
+            lastAction: "unpublished",
+        };
+        revisionMap.set(capabilityId, nextRevision);
+    });
+    if (!archive.ok)
+        return { ok: false, failedGate: "U3_ARCHIVE", gateResults };
+    let lifecycleMessageId = null;
+    const emit = runUnpublishGate(gateResults, "U4_EMIT", () => {
+        lifecycleMessageId = emitLifecycleEvent(doc, nodeId, "capability_unpublished", `Capability '${capabilityId}' unpublished by ${actingAdmin}.`, {
+            capabilityId,
+            status: "disabled",
+            ownerAgentId: existing.ownerAgentId,
+            version: existing.version,
+            policyVersion,
+        });
+    });
+    if (!emit.ok)
+        return { ok: false, failedGate: "U4_EMIT", gateResults };
+    const revision = revisionMap.get(capabilityId);
+    return {
+        ok: true,
+        gateResults,
+        capability: next,
+        revision,
+        lifecycleMessageId,
+    };
+}
+function readTaskIdempotency(task) {
+    const ansible = (task.metadata || {}).ansible;
+    const idempotency = (ansible?.idempotency || {});
+    return idempotency && typeof idempotency === "object" ? idempotency : {};
+}
+function attachTaskIdempotency(task, key, action, byAgent, at) {
+    const metadata = (task.metadata || {}) || {};
+    const ansible = (metadata.ansible || {}) || {};
+    const idempotency = readTaskIdempotency(task);
+    const nextIdempotency = {
+        ...idempotency,
+        [key]: { at, action, byAgent },
+    };
+    return {
+        ...task,
+        metadata: {
+            ...metadata,
+            ansible: {
+                ...ansible,
+                idempotency: nextIdempotency,
+            },
+        },
+    };
+}
+function resolveTaskIdempotencyKey(params, taskId, action, agentId) {
+    if (typeof params.idempotency_key === "string" && params.idempotency_key.trim().length > 0) {
+        return validateString(params.idempotency_key, 200, "idempotency_key").trim();
+    }
+    return `${taskId}:${action}:${agentId}`;
+}
+function computeTaskSlaMetadata(task, acceptedAt) {
+    const ansible = (task.metadata || {}).ansible;
+    if (!ansible)
+        return undefined;
+    const contractCaps = (ansible.contract || {}).capabilities || [];
+    if (!Array.isArray(contractCaps) || contractCaps.length === 0)
+        return undefined;
+    const now = acceptedAt || Date.now();
+    // Defaults until manifest-level SLA wiring is expanded per capability.
+    return {
+        acceptByAt: task.createdAt + 120 * 1000,
+        progressByAt: now + 900 * 1000,
+        completeByAt: now + Math.max(1800 * 1000, (ansible.defaultEtaSeconds || 1800) * 1000),
+        escalations: {},
+    };
 }
 function resolveTaskKey(tasks, idOrPrefix) {
     const needle = String(idOrPrefix || "").trim();
@@ -399,25 +970,43 @@ function resolveAssignedTargets(doc, nodeId, explicitAssignedTo, requires) {
     const agents = doc.getMap("agents");
     const context = doc.getMap("context");
     const nodes = doc.getMap("nodes");
+    const capabilityIndex = getCapabilityIndexMap(doc);
     if (!assignedTo && requires.length === 0) {
         return { error: "Task must include assignedTo or requires (or both)." };
     }
     if (assignedTo) {
         const direct = agents.get(assignedTo);
         if (direct)
-            return { assignees: [assignedTo] };
+            return { assignees: [assignedTo], capabilityMatches: [], skillMatches: [] };
         // Back-compat: caller passed a gateway/node id. Resolve to first local internal agent.
         const nodeExists = nodes.get(assignedTo) !== undefined;
         if (nodeExists) {
             const candidates = getInternalAgentsByGateway(doc, assignedTo);
             if (candidates.length > 0)
-                return { assignees: [candidates[0]] };
-            return { assignees: [assignedTo] };
+                return { assignees: [candidates[0]], capabilityMatches: [], skillMatches: [] };
+            return { assignees: [assignedTo], capabilityMatches: [], skillMatches: [] };
         }
         return { error: `assignedTo '${assignedTo}' is not a known agent or node.` };
     }
     const skillToAgents = new Map();
+    const capabilityToAgents = new Map();
+    const capabilityMatches = new Set();
+    const skillMatches = new Set();
     for (const skill of requires) {
+        if (capabilityIndex?.has(skill)) {
+            const idx = capabilityIndex.get(skill);
+            const eligible = cleanStringArray(idx?.eligibleAgentIds).filter((agentId) => agents.get(agentId) !== undefined);
+            if (eligible.length === 0) {
+                return { error: `No eligible agent in capability index for '${skill}'.` };
+            }
+            const ownerResolution = resolveCapabilityOwnerWithFailover(doc, nodeId, skill, eligible);
+            if (!ownerResolution.selectedOwner) {
+                return { error: `No live owner/standby available for capability '${skill}'.` };
+            }
+            capabilityToAgents.set(skill, [ownerResolution.selectedOwner, ...eligible.filter((id) => id !== ownerResolution.selectedOwner)]);
+            capabilityMatches.add(skill);
+            continue;
+        }
         const matches = new Set();
         for (const [agentId, raw] of agents.entries()) {
             const rec = raw;
@@ -438,19 +1027,180 @@ function resolveAssignedTargets(doc, nodeId, explicitAssignedTo, requires) {
         if (ordered.length === 0)
             return { error: `No registered agent advertises required skill '${skill}'.` };
         skillToAgents.set(skill, ordered);
+        skillMatches.add(skill);
     }
     if (requires.length === 1) {
-        return { assignees: [skillToAgents.get(requires[0])[0]] };
+        const k = requires[0];
+        const byCapability = capabilityToAgents.get(k);
+        if (byCapability && byCapability.length > 0) {
+            return { assignees: [byCapability[0]], capabilityMatches: Array.from(capabilityMatches), skillMatches: Array.from(skillMatches) };
+        }
+        const bySkill = skillToAgents.get(k);
+        if (bySkill && bySkill.length > 0) {
+            return { assignees: [bySkill[0]], capabilityMatches: Array.from(capabilityMatches), skillMatches: Array.from(skillMatches) };
+        }
+        return { error: `No assignees resolved for '${k}'.` };
     }
     const union = new Set();
     for (const skill of requires) {
+        for (const id of capabilityToAgents.get(skill) || [])
+            union.add(id);
         for (const id of skillToAgents.get(skill) || [])
             union.add(id);
     }
     const assignees = Array.from(union).sort((a, b) => a.localeCompare(b));
     return assignees.length > 0
-        ? { assignees }
+        ? { assignees, capabilityMatches: Array.from(capabilityMatches), skillMatches: Array.from(skillMatches) }
         : { error: "No assignees resolved from requires." };
+}
+function parseEtaAtFromClaim(params, fallbackSeconds) {
+    const now = Date.now();
+    const etaAtRaw = typeof params.etaAt === "string" ? params.etaAt.trim() : "";
+    const etaSecondsRaw = params.etaSeconds;
+    if (etaAtRaw) {
+        const parsed = Date.parse(etaAtRaw);
+        if (!Number.isFinite(parsed))
+            return { error: "etaAt must be an ISO-8601 datetime" };
+        if (parsed <= now)
+            return { error: "etaAt must be in the future" };
+        return { etaAtIso: new Date(parsed).toISOString() };
+    }
+    if (typeof etaSecondsRaw === "number") {
+        if (!Number.isFinite(etaSecondsRaw))
+            return { error: "etaSeconds must be a finite number" };
+        const etaSeconds = Math.floor(etaSecondsRaw);
+        if (etaSeconds < 1 || etaSeconds > 86400 * 14)
+            return { error: "etaSeconds must be between 1 and 1209600" };
+        return { etaAtIso: new Date(now + etaSeconds * 1000).toISOString() };
+    }
+    if (fallbackSeconds > 0) {
+        return { etaAtIso: new Date(now + fallbackSeconds * 1000).toISOString() };
+    }
+    return {};
+}
+function taskNeedsContractEta(task) {
+    const ansible = (task.metadata || {}).ansible;
+    if (!ansible || typeof ansible !== "object")
+        return false;
+    if (ansible.responseRequired === true)
+        return true;
+    const contract = ansible.contract;
+    if (!contract || typeof contract !== "object")
+        return false;
+    const capabilities = contract.capabilities;
+    return Array.isArray(capabilities) && capabilities.length > 0;
+}
+function getPulseSnapshot(doc, gatewayId) {
+    if (!doc)
+        return null;
+    const pulse = doc.getMap("pulse");
+    const raw = pulse.get(gatewayId);
+    if (!raw)
+        return null;
+    if (raw instanceof Map || typeof raw?.get === "function") {
+        const status = String(raw.get("status") || "offline");
+        const lastSeen = typeof raw.get("lastSeen") === "number" ? Number(raw.get("lastSeen")) : 0;
+        return { status, lastSeen };
+    }
+    const status = typeof raw.status === "string" ? raw.status : "offline";
+    const lastSeen = typeof raw.lastSeen === "number" ? raw.lastSeen : 0;
+    return { status, lastSeen };
+}
+function isAgentLive(doc, agentId, nowMs) {
+    if (!doc)
+        return false;
+    const agents = doc.getMap("agents");
+    const rec = agents.get(agentId);
+    if (!rec)
+        return false;
+    if (rec.type === "external")
+        return true;
+    if (rec.type !== "internal")
+        return false;
+    const gateway = typeof rec.gateway === "string" ? rec.gateway : "";
+    if (!gateway)
+        return false;
+    const p = getPulseSnapshot(doc, gateway);
+    if (!p)
+        return false;
+    if (p.status === "offline")
+        return false;
+    const age = Math.max(0, nowMs - p.lastSeen);
+    return age <= OWNER_LEASE_STALE_MS;
+}
+function resolveCapabilityOwnerWithFailover(doc, nodeId, capabilityId, baseEligible) {
+    if (!doc)
+        return { selectedOwner: null, primaryOwner: null, failoverApplied: false };
+    const now = Date.now();
+    const catalogMap = getCapabilityCatalogMap(doc);
+    const manifestMap = getCapabilityManifestMap(doc);
+    const indexMap = getCapabilityIndexMap(doc);
+    const revisionMap = getCapabilityRevisionMap(doc);
+    const catalog = catalogMap?.get(capabilityId);
+    const primaryOwner = catalog?.ownerAgentId || (baseEligible[0] || null);
+    const candidates = new Set();
+    if (primaryOwner)
+        candidates.add(primaryOwner);
+    if (catalog) {
+        const manifestKey = `${capabilityId}:${catalog.version}`;
+        const manifest = manifestMap?.get(manifestKey);
+        for (const standby of cleanStringArray(manifest?.standbyOwnerAgentIds))
+            candidates.add(standby);
+    }
+    for (const id of baseEligible)
+        candidates.add(id);
+    let selectedOwner = null;
+    for (const agentId of candidates) {
+        if (!agentId)
+            continue;
+        if (isAgentLive(doc, agentId, now)) {
+            selectedOwner = agentId;
+            break;
+        }
+    }
+    if (!selectedOwner && primaryOwner)
+        selectedOwner = primaryOwner;
+    if (!selectedOwner)
+        return { selectedOwner: null, primaryOwner, failoverApplied: false };
+    const failoverApplied = !!primaryOwner && selectedOwner !== primaryOwner;
+    if (failoverApplied && indexMap) {
+        const existingRevision = revisionMap?.get(capabilityId) || undefined;
+        const alreadyFailedOver = existingRevision?.currentOwnerAgentId === selectedOwner &&
+            existingRevision?.lastFailoverFromAgentId === primaryOwner;
+        if (alreadyFailedOver) {
+            return { selectedOwner, primaryOwner, failoverApplied: true };
+        }
+        const existingIndex = indexMap.get(capabilityId);
+        if (existingIndex) {
+            const nextEligible = Array.from(new Set([selectedOwner, ...cleanStringArray(existingIndex.eligibleAgentIds)]));
+            indexMap.set(capabilityId, {
+                ...existingIndex,
+                eligibleAgentIds: nextEligible,
+                policyVersion: makePolicyVersion(),
+                updatedAt: now,
+            });
+        }
+        if (revisionMap) {
+            const r = existingRevision;
+            if (r) {
+                revisionMap.set(capabilityId, {
+                    ...r,
+                    currentOwnerAgentId: selectedOwner,
+                    lastFailoverFromAgentId: primaryOwner || undefined,
+                    lastFailoverAt: now,
+                    updatedAt: now,
+                    updatedByAgentId: nodeId,
+                });
+            }
+        }
+        emitLifecycleEvent(doc, nodeId, "capability_owner_failover", `Capability '${capabilityId}' failover from '${primaryOwner}' to '${selectedOwner}'.`, {
+            capabilityId,
+            primaryOwner,
+            selectedOwner,
+            staleMsThreshold: OWNER_LEASE_STALE_MS,
+        });
+    }
+    return { selectedOwner, primaryOwner, failoverApplied };
 }
 export function registerAnsibleTools(api, config) {
     // === ansible_find_task ===
@@ -925,6 +1675,305 @@ export function registerAnsibleTools(api, config) {
             }
         },
     });
+    // === ansible_capability_publish ===
+    api.registerTool({
+        name: "ansible_capability_publish",
+        label: "Ansible Capability Publish",
+        description: "Publish or update a capability contract and activate routing. Also creates a skill-distribution task for all non-owner agents.",
+        parameters: {
+            type: "object",
+            properties: {
+                manifest: {
+                    type: "object",
+                    description: "Optional SkillPairManifest v1 payload. When provided, schema/provenance validation is enforced and legacy flat fields are optional.",
+                },
+                capability_id: { type: "string", description: "Stable capability id (e.g., cap.fs.diff-apply)" },
+                name: { type: "string", description: "Human-readable capability name" },
+                version: { type: "string", description: "Capability contract version" },
+                owner_agent_id: { type: "string", description: "Executor owner agent id (must exist)" },
+                delegation_skill_ref: {
+                    type: "object",
+                    description: "Delegation skill reference",
+                    properties: {
+                        name: { type: "string" },
+                        version: { type: "string" },
+                        path: { type: "string" },
+                    },
+                },
+                executor_skill_ref: {
+                    type: "object",
+                    description: "Executor skill reference",
+                    properties: {
+                        name: { type: "string" },
+                        version: { type: "string" },
+                        path: { type: "string" },
+                    },
+                },
+                contract_schema_ref: { type: "string", description: "Schema reference for request/result contract" },
+                default_eta_seconds: { type: "number", description: "Default expected completion time (seconds)" },
+                status: { type: "string", enum: ["active", "deprecated", "disabled"] },
+                from_agent: { type: "string", description: "Acting admin agent id (must match configured admin agent)" },
+                agent_token: { type: "string", description: "Auth token for acting admin agent" },
+            },
+        },
+        async execute(_id, params) {
+            const doc = getDoc();
+            const nodeId = getNodeId();
+            if (!doc || !nodeId)
+                return toolResult({ error: "Ansible not initialized" });
+            let gate = "G0_AUTHZ";
+            let capabilityIdHint = "";
+            try {
+                gate = "G0_AUTHZ";
+                requireAuth(nodeId);
+                requireAdmin(nodeId, doc);
+                const adminAgentId = typeof config?.adminAgentId === "string" && config.adminAgentId.trim().length > 0
+                    ? config.adminAgentId.trim()
+                    : "admin";
+                const requestedFrom = typeof params.from_agent === "string" ? String(params.from_agent) : undefined;
+                const token = typeof params.agent_token === "string" && params.agent_token.trim().length > 0
+                    ? params.agent_token.trim()
+                    : undefined;
+                const actorResult = resolveAdminActorOrError(doc, nodeId, token, requestedFrom);
+                if (actorResult.error)
+                    return toolResult({ error: actorResult.error });
+                const publishedByAgentId = actorResult.actor;
+                if (!publishedByAgentId)
+                    return toolResult({ error: "Failed to resolve publishing actor." });
+                requireAdminActor(doc, nodeId, adminAgentId, publishedByAgentId);
+                gate = "G1_SCHEMA";
+                const nowIso = new Date().toISOString();
+                const manifest = params.manifest
+                    ? validateSkillPairManifest(params.manifest)
+                    : buildManifestFromLegacyParams(params, publishedByAgentId, nowIso);
+                if (manifest.provenance.publishedByAgentId !== publishedByAgentId) {
+                    return toolResult({
+                        error: `manifest provenance publisher '${manifest.provenance.publishedByAgentId}' does not match acting admin '${publishedByAgentId}'`,
+                    });
+                }
+                gate = "G2_PROVENANCE";
+                const capabilityId = manifest.capabilityId;
+                capabilityIdHint = capabilityId;
+                const version = manifest.version;
+                const ownerAgentId = manifest.ownerAgentId;
+                const delegationSkillRef = manifest.delegationSkillRef;
+                const executorSkillRef = manifest.executorSkillRef;
+                const contractSchemaRef = manifest.contract.inputSchemaRef;
+                const defaultEtaSeconds = manifest.sla.completeSlaSeconds;
+                const name = typeof params.name === "string" && params.name.trim().length > 0
+                    ? validateString(params.name, 200, "name").trim()
+                    : capabilityId;
+                const status = (typeof params.status === "string" ? params.status : "active");
+                gate = "G3_OWNER_LIVENESS";
+                const agents = doc.getMap("agents");
+                if (!agents.has(ownerAgentId)) {
+                    return toolResult({ error: `owner_agent_id '${ownerAgentId}' is not registered` });
+                }
+                const policyVersion = makePolicyVersion();
+                const now = Date.now();
+                const catalogRec = {
+                    capabilityId,
+                    name,
+                    version,
+                    status,
+                    ownerAgentId,
+                    ownerNodeId: nodeId,
+                    delegationSkillRef,
+                    executorSkillRef,
+                    contractSchemaRef,
+                    defaultEtaSeconds,
+                    publishedAt: now,
+                    publishedByAgentId,
+                };
+                const indexRec = {
+                    capabilityId,
+                    eligibleAgentIds: status === "active" ? [ownerAgentId] : [],
+                    policyVersion,
+                    updatedAt: now,
+                };
+                gate = "G4_INSTALL_STAGE";
+                const pipeline = executeCapabilityPublishPipeline({
+                    doc,
+                    nodeId,
+                    publishedByAgentId,
+                    capabilityId,
+                    manifest,
+                    catalogRec,
+                    indexRec,
+                });
+                const gateFailed = pipeline.gateResults.find((g) => g.status === "failed");
+                if (gateFailed)
+                    gate = gateFailed.gate;
+                if (!pipeline.ok || !pipeline.activation) {
+                    const failedGate = pipeline.failedGate || gate;
+                    emitLifecycleEvent(doc, nodeId, "capability_publish_gate_failed", `Capability publish failed at ${failedGate}${capabilityId ? ` (${capabilityId})` : ""}.`, {
+                        gate: failedGate,
+                        capabilityId: capabilityId || undefined,
+                        publishPipeline: pipeline.gateResults,
+                    });
+                    if (pipeline.rollbackRequired) {
+                        emitLifecycleEvent(doc, nodeId, "capability_publish_rollback", `Rollback required after publish failure at ${failedGate}${capabilityId ? ` (${capabilityId})` : ""}.`, {
+                            gate: failedGate,
+                            capabilityId: capabilityId || undefined,
+                            rollbackState: "required",
+                            rollbackPerformed: pipeline.rollbackPerformed === true,
+                            publishPipeline: pipeline.gateResults,
+                        });
+                    }
+                    return toolResult({
+                        error: `Publish pipeline failed at ${failedGate}`,
+                        publishPipeline: pipeline.gateResults,
+                        rollbackRequired: pipeline.rollbackRequired,
+                        rollbackPerformed: pipeline.rollbackPerformed === true,
+                    });
+                }
+                const { activation } = pipeline;
+                return toolResult({
+                    success: true,
+                    manifest: activation.manifest,
+                    manifestKey: activation.manifestKey,
+                    capability: activation.capability,
+                    index: activation.index,
+                    revision: activation.revision,
+                    previousActiveVersion: activation.previousActiveVersion,
+                    lifecycleMessageId: activation.lifecycleMessageId,
+                    publishPipeline: pipeline.gateResults,
+                    skillDistributionTask: activation.distribution.created
+                        ? { taskId: activation.distribution.taskId, targets: activation.distribution.targets }
+                        : null,
+                });
+            }
+            catch (err) {
+                const errorMessage = err?.message || String(err);
+                emitLifecycleEvent(doc, nodeId, "capability_publish_gate_failed", `Capability publish failed at ${gate}${capabilityIdHint ? ` (${capabilityIdHint})` : ""}: ${errorMessage}`, {
+                    gate,
+                    capabilityId: capabilityIdHint || undefined,
+                    error: errorMessage,
+                });
+                if (["G4_INDEX_STAGE", "G5_DISTRIBUTION", "G8_INDEX_ACTIVATE"].includes(gate)) {
+                    emitLifecycleEvent(doc, nodeId, "capability_publish_rollback", `Rollback required after publish failure at ${gate}${capabilityIdHint ? ` (${capabilityIdHint})` : ""}.`, {
+                        gate,
+                        capabilityId: capabilityIdHint || undefined,
+                        error: errorMessage,
+                        rollbackState: "required",
+                    });
+                }
+                return toolResult({ error: err.message });
+            }
+        },
+    });
+    // === ansible_capability_unpublish ===
+    api.registerTool({
+        name: "ansible_capability_unpublish",
+        label: "Ansible Capability Unpublish",
+        description: "Disable a capability and remove routing eligibility from the capability index.",
+        parameters: {
+            type: "object",
+            properties: {
+                capability_id: { type: "string", description: "Capability id to disable" },
+                from_agent: { type: "string", description: "Acting admin agent id (must match configured admin agent)" },
+                agent_token: { type: "string", description: "Auth token for acting admin agent" },
+            },
+            required: ["capability_id"],
+        },
+        async execute(_id, params) {
+            const doc = getDoc();
+            const nodeId = getNodeId();
+            if (!doc || !nodeId)
+                return toolResult({ error: "Ansible not initialized" });
+            try {
+                requireAuth(nodeId);
+                requireAdmin(nodeId, doc);
+                const adminAgentId = typeof config?.adminAgentId === "string" && config.adminAgentId.trim().length > 0
+                    ? config.adminAgentId.trim()
+                    : "admin";
+                const requestedFrom = typeof params.from_agent === "string" ? String(params.from_agent) : undefined;
+                const token = typeof params.agent_token === "string" && params.agent_token.trim().length > 0
+                    ? params.agent_token.trim()
+                    : undefined;
+                const actorResult = resolveAdminActorOrError(doc, nodeId, token, requestedFrom);
+                if (actorResult.error)
+                    return toolResult({ error: actorResult.error });
+                const actingAdmin = actorResult.actor;
+                if (!actingAdmin)
+                    return toolResult({ error: "Failed to resolve admin actor." });
+                requireAdminActor(doc, nodeId, adminAgentId, actingAdmin);
+                const capabilityId = validateString(params.capability_id, 160, "capability_id").trim();
+                const catalogMap = getCapabilityCatalogMap(doc);
+                const indexMap = getCapabilityIndexMap(doc);
+                const revisionMap = getCapabilityRevisionMap(doc);
+                if (!catalogMap || !indexMap || !revisionMap)
+                    return toolResult({ error: "Capability maps unavailable" });
+                const existing = catalogMap.get(capabilityId);
+                if (!existing)
+                    return toolResult({ error: `Capability '${capabilityId}' not found` });
+                const pipeline = executeCapabilityUnpublishPipeline({
+                    doc,
+                    nodeId,
+                    actingAdmin,
+                    capabilityId,
+                    existing,
+                });
+                if (!pipeline.ok || !pipeline.capability || !pipeline.revision) {
+                    return toolResult({
+                        error: `Unpublish pipeline failed at ${pipeline.failedGate || "unknown"}`,
+                        unpublishPipeline: pipeline.gateResults,
+                    });
+                }
+                return toolResult({
+                    success: true,
+                    capability: pipeline.capability,
+                    revision: pipeline.revision,
+                    lifecycleMessageId: pipeline.lifecycleMessageId,
+                    unpublishPipeline: pipeline.gateResults,
+                });
+            }
+            catch (err) {
+                return toolResult({ error: err.message });
+            }
+        },
+    });
+    // === ansible_list_capabilities ===
+    api.registerTool({
+        name: "ansible_list_capabilities",
+        label: "Ansible List Capabilities",
+        description: "List published capability contracts and their current routing eligibility.",
+        parameters: {
+            type: "object",
+            properties: {
+                status: { type: "string", enum: ["active", "deprecated", "disabled"], description: "Optional status filter" },
+            },
+        },
+        async execute(_id, params) {
+            const doc = getDoc();
+            const nodeId = getNodeId();
+            if (!doc || !nodeId)
+                return toolResult({ error: "Ansible not initialized" });
+            try {
+                requireAuth(nodeId);
+                const statusFilter = typeof params.status === "string" ? params.status : undefined;
+                const catalogMap = getCapabilityCatalogMap(doc);
+                const indexMap = getCapabilityIndexMap(doc);
+                if (!catalogMap || !indexMap)
+                    return toolResult({ capabilities: [], total: 0 });
+                const capabilities = [];
+                for (const [id, raw] of catalogMap.entries()) {
+                    const catalog = raw;
+                    if (!catalog)
+                        continue;
+                    if (statusFilter && catalog.status !== statusFilter)
+                        continue;
+                    const index = indexMap.get(String(id));
+                    capabilities.push({ catalog, index });
+                }
+                capabilities.sort((a, b) => a.catalog.capabilityId.localeCompare(b.catalog.capabilityId));
+                return toolResult({ capabilities, total: capabilities.length });
+            }
+            catch (err) {
+                return toolResult({ error: err.message });
+            }
+        },
+    });
     // === ansible_delegate_task ===
     api.registerTool({
         name: "ansible_delegate_task",
@@ -988,6 +2037,46 @@ export function registerAnsibleTools(api, config) {
                 if ("error" in resolvedTargets)
                     return toolResult({ error: resolvedTargets.error });
                 const assignees = resolvedTargets.assignees;
+                const catalogMap = getCapabilityCatalogMap(doc);
+                const manifestMap = getCapabilityManifestMap(doc);
+                const capabilityContracts = resolvedTargets.capabilityMatches
+                    .map((capabilityId) => {
+                    const rec = catalogMap?.get(capabilityId);
+                    if (!rec)
+                        return null;
+                    const manifestKey = `${capabilityId}:${rec.version}`;
+                    const manifest = manifestMap?.get(manifestKey);
+                    return {
+                        capabilityId: rec.capabilityId,
+                        version: rec.version,
+                        contractSchemaRef: rec.contractSchemaRef,
+                        defaultEtaSeconds: rec.defaultEtaSeconds,
+                        compatibilityMode: manifest?.compatibilityMode || "strict",
+                    };
+                })
+                    .filter(Boolean);
+                const defaultEtaSeconds = capabilityContracts.length > 0
+                    ? Math.min(...capabilityContracts.map((c) => c.defaultEtaSeconds))
+                    : 0;
+                const existingMetadata = (params.metadata || {});
+                const mergedMetadata = {
+                    ...existingMetadata,
+                    ansible: {
+                        responseRequired: true,
+                        routingMode: explicitAssignedTo ? "explicit" : resolvedTargets.capabilityMatches.length > 0 ? "capability" : "skill",
+                        requiredCapabilities: resolvedTargets.capabilityMatches,
+                        requiredSkills: resolvedTargets.skillMatches,
+                        defaultEtaSeconds,
+                        ack: {
+                            state: "pending",
+                            required: true,
+                            requireEta: true,
+                        },
+                        contract: {
+                            capabilities: capabilityContracts,
+                        },
+                    },
+                };
                 const task = {
                     id: randomUUID(),
                     title,
@@ -1004,7 +2093,7 @@ export function registerAnsibleTools(api, config) {
                     requires: requires.length > 0 ? requires : undefined,
                     intent: params.intent,
                     skillRequired: params.skillRequired,
-                    metadata: params.metadata,
+                    metadata: mergedMetadata,
                 };
                 const tasks = doc.getMap("tasks");
                 tasks.set(task.id, task);
@@ -1705,6 +2794,26 @@ export function registerAnsibleTools(api, config) {
                     type: "string",
                     description: "Auth token for caller agent. Preferred over agentId.",
                 },
+                etaAt: {
+                    type: "string",
+                    description: "Expected completion timestamp (ISO-8601). Required for contract-bound tasks unless default ETA exists.",
+                },
+                etaSeconds: {
+                    type: "number",
+                    description: "Expected completion in seconds from now. Alternative to etaAt.",
+                },
+                planSummary: {
+                    type: "string",
+                    description: "Optional short execution plan for requester visibility.",
+                },
+                idempotency_key: {
+                    type: "string",
+                    description: "Optional idempotency key. Reusing the same key prevents duplicate claim transitions.",
+                },
+                requested_version: {
+                    type: "string",
+                    description: "Optional requested capability version for negotiation (currently supported for single-capability contract tasks).",
+                },
             },
             required: ["taskId"],
         },
@@ -1720,6 +2829,8 @@ export function registerAnsibleTools(api, config) {
                 if (resolved.error)
                     return toolResult({ error: resolved.error });
                 const effectiveAgent = resolved.effectiveAgent;
+                if (!effectiveAgent)
+                    return toolResult({ error: "Failed to resolve effective agent." });
                 const tasks = doc.getMap("tasks");
                 const resolvedKey = resolveTaskKey(tasks, params.taskId);
                 if (typeof resolvedKey !== "string")
@@ -1731,21 +2842,124 @@ export function registerAnsibleTools(api, config) {
                 if (task.status !== "pending") {
                     return toolResult({ error: `Task is already ${task.status}` });
                 }
-                tasks.set(resolvedKey, {
+                const idempotencyKey = resolveTaskIdempotencyKey(params, task.id, "claim", effectiveAgent);
+                const seenIdempotency = readTaskIdempotency(task);
+                if (seenIdempotency[idempotencyKey]) {
+                    return toolResult({
+                        success: true,
+                        idempotent: true,
+                        message: `Idempotent replay ignored for claim: ${task.title}`,
+                        task: { id: task.id, title: task.title, status: task.status },
+                    });
+                }
+                const ansibleMeta = ((task.metadata || {}).ansible || {});
+                const defaultEtaSeconds = typeof ansibleMeta.defaultEtaSeconds === "number" && Number.isFinite(ansibleMeta.defaultEtaSeconds)
+                    ? Math.floor(ansibleMeta.defaultEtaSeconds)
+                    : 0;
+                const needsEta = taskNeedsContractEta(task);
+                const eta = parseEtaAtFromClaim(params, defaultEtaSeconds);
+                if (eta.error)
+                    return toolResult({ error: eta.error });
+                if (needsEta && !eta.etaAtIso) {
+                    return toolResult({ error: "This task requires etaAt or etaSeconds on claim (ACK accepted contract)." });
+                }
+                const planSummary = typeof params.planSummary === "string" && params.planSummary.trim().length > 0
+                    ? validateString(params.planSummary, VALIDATION_LIMITS.maxDescriptionLength, "planSummary").trim()
+                    : undefined;
+                const requestedVersion = typeof params.requested_version === "string" && params.requested_version.trim().length > 0
+                    ? validateString(params.requested_version, 120, "requested_version").trim()
+                    : undefined;
+                const contractCapabilitiesRaw = ansibleMeta.contract?.capabilities || [];
+                const contractCapabilities = contractCapabilitiesRaw.filter((c) => !!c && typeof c === "object");
+                let versionNegotiation;
+                if (requestedVersion) {
+                    if (contractCapabilities.length === 0) {
+                        return toolResult({ error: "requested_version supplied but task has no capability contract metadata." });
+                    }
+                    if (contractCapabilities.length > 1) {
+                        return toolResult({
+                            error: "requested_version for multi-capability tasks is not supported yet. Use explicit to-agent routing or single capability contract.",
+                        });
+                    }
+                    const c = contractCapabilities[0];
+                    const capabilityId = typeof c.capabilityId === "string" ? c.capabilityId : "unknown";
+                    const resolvedVersion = typeof c.version === "string" ? c.version : requestedVersion;
+                    const compatibilityMode = c.compatibilityMode || "strict";
+                    if (requestedVersion !== resolvedVersion && compatibilityMode === "strict") {
+                        return toolResult({
+                            error: `requested_version '${requestedVersion}' is incompatible with published version '${resolvedVersion}' for '${capabilityId}' (strict mode).`,
+                        });
+                    }
+                    versionNegotiation = {
+                        capabilityId,
+                        requestedVersion,
+                        resolvedVersion,
+                        compatibilityMode,
+                    };
+                }
+                const now = Date.now();
+                const nextMetadata = {
+                    ...(task.metadata || {}),
+                    ansible: {
+                        ...ansibleMeta,
+                        ack: {
+                            state: "accepted",
+                            required: true,
+                            requireEta: true,
+                            acceptedAt: now,
+                            acceptedByAgentId: effectiveAgent,
+                            acceptedByNodeId: nodeId,
+                            etaAt: eta.etaAtIso,
+                            planSummary,
+                            versionNegotiation,
+                        },
+                    },
+                };
+                const claimedBase = {
                     ...task,
                     status: "claimed",
                     claimedBy_agent: effectiveAgent,
                     claimedBy_node: nodeId,
-                    claimedAt: Date.now(),
-                    updatedAt: Date.now(),
+                    claimedAt: now,
+                    metadata: nextMetadata,
+                    updatedAt: now,
                     updates: [
-                        { at: Date.now(), by_agent: effectiveAgent, status: "claimed", note: "claimed" },
+                        { at: now, by_agent: effectiveAgent, status: "claimed", note: "claimed" },
                         ...(task.updates || []),
                     ].slice(0, 50),
+                };
+                const claimed = attachTaskIdempotency(claimedBase, idempotencyKey, "claim", effectiveAgent, now);
+                const slaMeta = computeTaskSlaMetadata(claimed, now);
+                const claimedWithSla = slaMeta
+                    ? {
+                        ...claimed,
+                        metadata: {
+                            ...(claimed.metadata || {}),
+                            ansible: {
+                                ...((claimed.metadata || {}).ansible || {}),
+                                sla: slaMeta,
+                            },
+                        },
+                    }
+                    : claimed;
+                tasks.set(resolvedKey, claimedWithSla);
+                const notifyMessageId = notifyTaskOwner(doc, nodeId, claimedWithSla, {
+                    kind: "accepted",
+                    note: "task accepted",
+                    etaAt: eta.etaAtIso,
+                    planSummary,
                 });
                 return toolResult({
                     success: true,
                     message: `Claimed task: ${task.title}`,
+                    notifyMessageId,
+                    accepted: {
+                        byAgentId: effectiveAgent,
+                        byNodeId: nodeId,
+                        etaAt: eta.etaAtIso,
+                        planSummary,
+                        versionNegotiation,
+                    },
                     task: {
                         id: task.id,
                         title: task.title,
@@ -1793,6 +3007,10 @@ export function registerAnsibleTools(api, config) {
                     type: "string",
                     description: "Auth token for caller agent. Preferred over agentId.",
                 },
+                idempotency_key: {
+                    type: "string",
+                    description: "Optional idempotency key. Reusing the same key prevents duplicate update transitions.",
+                },
             },
             required: ["taskId", "status"],
         },
@@ -1808,6 +3026,8 @@ export function registerAnsibleTools(api, config) {
                 if (resolved.error)
                     return toolResult({ error: resolved.error });
                 const effectiveAgent = resolved.effectiveAgent;
+                if (!effectiveAgent)
+                    return toolResult({ error: "Failed to resolve effective agent." });
                 const tasks = doc.getMap("tasks");
                 const resolvedKey = resolveTaskKey(tasks, params.taskId);
                 if (typeof resolvedKey !== "string")
@@ -1815,6 +3035,16 @@ export function registerAnsibleTools(api, config) {
                 const task = tasks.get(resolvedKey);
                 if (!task)
                     return toolResult({ error: "Task not found" });
+                const idempotencyKey = resolveTaskIdempotencyKey(params, task.id, "update", effectiveAgent);
+                const seenIdempotency = readTaskIdempotency(task);
+                if (seenIdempotency[idempotencyKey]) {
+                    return toolResult({
+                        success: true,
+                        idempotent: true,
+                        message: `Idempotent replay ignored for update: ${task.title}`,
+                        task: { id: task.id, title: task.title, status: task.status },
+                    });
+                }
                 if (task.claimedBy_agent !== effectiveAgent) {
                     return toolResult({ error: "You don't have this task claimed" });
                 }
@@ -1822,13 +3052,21 @@ export function registerAnsibleTools(api, config) {
                 if (status !== "in_progress" && status !== "failed") {
                     return toolResult({ error: "status must be in_progress or failed" });
                 }
+                const ansibleMeta = ((task.metadata || {}).ansible || {});
+                const ackMeta = (ansibleMeta.ack || {});
+                if (taskNeedsContractEta(task) && status === "in_progress" && ackMeta.state !== "accepted") {
+                    return toolResult({ error: "Task contract requires accepted ACK before in_progress updates." });
+                }
                 const note = params.note
                     ? validateString(params.note, VALIDATION_LIMITS.maxTitleLength, "note")
                     : undefined;
                 const result = params.result
                     ? validateString(params.result, VALIDATION_LIMITS.maxResultLength, "result")
                     : undefined;
-                const updated = {
+                if (status === "failed" && !note && !result) {
+                    return toolResult({ error: "failed status requires note or result for diagnostics" });
+                }
+                const updatedBase = {
                     ...task,
                     status: status,
                     updatedAt: Date.now(),
@@ -1838,6 +3076,26 @@ export function registerAnsibleTools(api, config) {
                         ...(task.updates || []),
                     ].slice(0, 50),
                 };
+                const now = Date.now();
+                let updated = attachTaskIdempotency(updatedBase, idempotencyKey, "update", effectiveAgent, now);
+                const ansible = ((updated.metadata || {}).ansible || {});
+                const sla = (ansible.sla || {}) || {};
+                if (status === "in_progress") {
+                    updated = {
+                        ...updated,
+                        metadata: {
+                            ...(updated.metadata || {}),
+                            ansible: {
+                                ...ansible,
+                                sla: {
+                                    ...sla,
+                                    lastProgressAt: now,
+                                    progressByAt: typeof sla.progressByAt === "number" ? Math.max(sla.progressByAt, now + 900 * 1000) : now + 900 * 1000,
+                                },
+                            },
+                        },
+                    };
+                }
                 tasks.set(resolvedKey, updated);
                 const notify = params.notify === true;
                 const notifyMessageId = notify
@@ -1879,6 +3137,10 @@ export function registerAnsibleTools(api, config) {
                     type: "string",
                     description: "Auth token for caller agent. Preferred over agentId.",
                 },
+                idempotency_key: {
+                    type: "string",
+                    description: "Optional idempotency key. Reusing the same key prevents duplicate complete transitions.",
+                },
             },
             required: ["taskId"],
         },
@@ -1894,6 +3156,8 @@ export function registerAnsibleTools(api, config) {
                 if (resolved.error)
                     return toolResult({ error: resolved.error });
                 const effectiveAgent = resolved.effectiveAgent;
+                if (!effectiveAgent)
+                    return toolResult({ error: "Failed to resolve effective agent." });
                 const tasks = doc.getMap("tasks");
                 const resolvedKey = resolveTaskKey(tasks, params.taskId);
                 if (typeof resolvedKey !== "string")
@@ -1902,11 +3166,24 @@ export function registerAnsibleTools(api, config) {
                 if (!task) {
                     return toolResult({ error: "Task not found" });
                 }
+                const idempotencyKey = resolveTaskIdempotencyKey(params, task.id, "complete", effectiveAgent);
+                const seenIdempotency = readTaskIdempotency(task);
+                if (seenIdempotency[idempotencyKey]) {
+                    return toolResult({
+                        success: true,
+                        idempotent: true,
+                        message: `Idempotent replay ignored for complete: ${task.title}`,
+                        task: { id: task.id, title: task.title, status: task.status },
+                    });
+                }
                 if (task.claimedBy_agent !== effectiveAgent) {
                     return toolResult({ error: "You don't have this task claimed" });
                 }
                 const result = params.result ? validateString(params.result, VALIDATION_LIMITS.maxResultLength, "result") : undefined;
-                const completed = {
+                if (taskNeedsContractEta(task) && !result) {
+                    return toolResult({ error: "Contract-bound task completion requires --result" });
+                }
+                const completedBase = {
                     ...task,
                     status: "completed",
                     completedAt: Date.now(),
@@ -1917,6 +3194,7 @@ export function registerAnsibleTools(api, config) {
                         ...(task.updates || []),
                     ].slice(0, 50),
                 };
+                const completed = attachTaskIdempotency(completedBase, idempotencyKey, "complete", effectiveAgent, Date.now());
                 tasks.set(resolvedKey, completed);
                 // Always notify the asker on completion.
                 const notifyMessageId = notifyTaskOwner(doc, nodeId, completed, { kind: "completed", result });
@@ -1925,6 +3203,60 @@ export function registerAnsibleTools(api, config) {
                     message: `Completed task: ${task.title}`,
                     notifyMessageId,
                 });
+            }
+            catch (err) {
+                return toolResult({ error: err.message });
+            }
+        },
+    });
+    // === ansible_sla_sweep ===
+    api.registerTool({
+        name: "ansible_sla_sweep",
+        label: "Ansible SLA Sweep",
+        description: "Evaluate task SLA windows (accept/progress/complete) and emit escalation events for overdue tasks.",
+        parameters: {
+            type: "object",
+            properties: {
+                dry_run: {
+                    type: "boolean",
+                    description: "If true, report breaches without writing escalations.",
+                },
+                limit: {
+                    type: "number",
+                    description: "Optional max task records to inspect.",
+                },
+                record_only: {
+                    type: "boolean",
+                    description: "If true, record escalation outcomes without sending escalation messages.",
+                },
+                max_messages: {
+                    type: "number",
+                    description: "Optional cap for escalation messages this run.",
+                },
+                fyi_agents: {
+                    type: "array",
+                    items: { type: "string" },
+                    description: "Optional fallback FYI agents when requester/claimer are unavailable.",
+                },
+            },
+        },
+        async execute(_id, params) {
+            const doc = getDoc();
+            const nodeId = getNodeId();
+            if (!doc || !nodeId)
+                return toolResult({ error: "Ansible not initialized" });
+            try {
+                requireAuth(nodeId);
+                const dryRun = params.dry_run === true;
+                const limit = typeof params.limit === "number" && Number.isFinite(params.limit) ? Math.floor(params.limit) : undefined;
+                const recordOnly = params.record_only === true;
+                const maxMessages = typeof params.max_messages === "number" && Number.isFinite(params.max_messages)
+                    ? Math.floor(params.max_messages)
+                    : undefined;
+                const fyiAgents = Array.isArray(params.fyi_agents)
+                    ? params.fyi_agents.filter((a) => typeof a === "string").map((a) => String(a))
+                    : undefined;
+                return toolResult(runSlaSweep(doc, nodeId, { dryRun, limit, recordOnly, maxMessages, fyiAgents }));
             }
             catch (err) {
                 return toolResult({ error: err.message });

@@ -1,0 +1,124 @@
+# Deployment Runbook v1
+
+Status: Active  
+Last updated: 2026-02-26
+
+## Goal
+
+Safely deploy current Ansible lifecycle updates with low escalation risk and a clean rollback path.
+
+## Default Safety Profile
+
+Use these SLA settings for initial rollout:
+
+1. `slaSweep.enabled=true`
+2. `slaSweep.everySeconds=300`
+3. `slaSweep.recordOnly=true`
+4. `slaSweep.maxMessagesPerSweep=3`
+5. `slaSweep.fyiAgents=["architect"]`
+
+## Phase 0: Preflight (local)
+
+Run:
+
+```bash
+npm run typecheck
+npm run build
+```
+
+Expected:
+
+1. typecheck passes
+2. build succeeds
+
+Note:
+
+- This repo currently has no `npm test` script.
+
+## Phase 1: Canary Deploy (single coordinator backbone)
+
+1. Deploy plugin build to one backbone/coordinator node only.
+2. Restart gateway/plugin on canary node.
+3. Confirm service health:
+
+```bash
+openclaw gateway status
+openclaw ansible status
+```
+
+4. Validate SLA sweep in dry run:
+
+```bash
+openclaw ansible sla sweep --dry-run --limit 100
+```
+
+5. Validate real sweep in safe mode:
+
+```bash
+openclaw ansible sla sweep --record-only --limit 100
+```
+
+Go/no-go:
+
+1. no unexpected error bursts
+2. no message storm
+3. task metadata updates are stable
+
+## Phase 2: Capability Lifecycle Validation
+
+1. Publish one low-risk capability:
+
+```bash
+openclaw ansible capability publish ... 
+```
+
+2. Confirm publish output includes:
+   - `publishPipeline`
+   - expected gate progression
+3. Run one delegated task lifecycle:
+   - claim (with ETA)
+   - update
+   - complete
+4. Verify idempotency replay behavior by repeating same idempotency key.
+
+## Phase 3: Expand Rollout
+
+1. Deploy to remaining backbones.
+2. Deploy to edge nodes.
+3. Keep `recordOnly=true` for one soak window.
+4. If stable, enable notifications gradually:
+   - keep `maxMessagesPerSweep` low
+   - keep `fyiAgents` fallback
+
+## Rollback Plan
+
+Trigger rollback if any:
+
+1. unexpected escalation volume
+2. repeated publish/unpublish pipeline failures
+3. task lifecycle corruption or duplicate transitions
+
+Rollback actions:
+
+1. revert plugin version to last known good build
+2. keep `slaSweep.recordOnly=true`
+3. set `slaSweep.maxMessagesPerSweep=0` if needed
+4. run manual `sla sweep --dry-run` until stable
+
+## Operator Commands (quick reference)
+
+```bash
+# manual SLA checks
+openclaw ansible sla sweep --dry-run --limit 200
+openclaw ansible sla sweep --record-only --limit 200
+
+# capability lifecycle
+openclaw ansible capability list
+openclaw ansible capability publish ...
+openclaw ansible capability unpublish --id <capabilityId>
+
+# task lifecycle
+openclaw ansible tasks claim <taskId> --eta-seconds 900 --idempotency-key <k>
+openclaw ansible tasks update <taskId> --status in_progress --idempotency-key <k>
+openclaw ansible tasks complete <taskId> --result "..." --idempotency-key <k>
+```

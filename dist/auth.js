@@ -6,10 +6,11 @@
 import { randomUUID } from "crypto";
 import { INVITE_TTL_MS } from "./schema.js";
 import { getDoc, getNodeId } from "./service.js";
+import { mintWsTicketFromInvite } from "./admission.js";
 /**
  * Generate a bootstrap token for inviting a new node
  */
-export function generateInviteToken(tier) {
+export function generateInviteToken(tier, options = {}) {
     const doc = getDoc();
     const myId = getNodeId();
     if (!doc || !myId) {
@@ -25,12 +26,16 @@ export function generateInviteToken(tier) {
     }
     const token = randomUUID().replace(/-/g, "");
     const expiresAt = Date.now() + INVITE_TTL_MS;
+    const expectedNodeId = String(options.expectedNodeId || "").trim();
     const invites = doc.getMap("pendingInvites");
-    invites.set(token, {
+    const invite = {
         tier,
         expiresAt,
         createdBy: myId,
-    });
+    };
+    if (expectedNodeId)
+        invite.expectedNodeId = expectedNodeId;
+    invites.set(token, invite);
     return { token, expiresAt };
 }
 /**
@@ -51,6 +56,12 @@ export function joinWithToken(token, capabilities = []) {
         invites.delete(token);
         return { success: false, error: "Token expired" };
     }
+    if (invite.expectedNodeId && invite.expectedNodeId !== myId) {
+        return {
+            success: false,
+            error: `Token is bound to node '${invite.expectedNodeId}', not '${myId}'`,
+        };
+    }
     // Register ourselves
     const nodes = doc.getMap("nodes");
     nodes.set(myId, {
@@ -60,9 +71,23 @@ export function joinWithToken(token, capabilities = []) {
         addedBy: invite.createdBy,
         addedAt: Date.now(),
     });
-    // Remove the used token (single-use)
+    // Mark consumed for visibility, then remove token (single-use)
+    invite.usedByNode = myId;
+    invite.usedAt = Date.now();
     invites.delete(token);
     return { success: true };
+}
+/**
+ * Exchange an invite token for a short-lived websocket ticket.
+ * Intended for pre-Yjs admission flows where unknown nodes are gated at upgrade time.
+ */
+export function exchangeInviteForWsTicket(inviteToken, expectedNodeId, ttlSeconds = 60) {
+    const doc = getDoc();
+    const myId = getNodeId();
+    if (!doc || !myId)
+        return { error: "Ansible not initialized" };
+    const ttlMs = Math.floor(Number(ttlSeconds) * 1000);
+    return mintWsTicketFromInvite(doc, myId, inviteToken, expectedNodeId, ttlMs);
 }
 /**
  * Self-register as the first node (bootstrap)

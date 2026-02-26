@@ -4,10 +4,13 @@
  * Handles node invitation, bootstrap tokens, and revocation.
  */
 import type { TailscaleId, PendingInvite } from "./schema.js";
+interface InviteOptions {
+    expectedNodeId?: string;
+}
 /**
  * Generate a bootstrap token for inviting a new node
  */
-export declare function generateInviteToken(tier: "backbone" | "edge"): {
+export declare function generateInviteToken(tier: "backbone" | "edge", options?: InviteOptions): {
     token: string;
     expiresAt: number;
 } | {
@@ -19,6 +22,16 @@ export declare function generateInviteToken(tier: "backbone" | "edge"): {
 export declare function joinWithToken(token: string, capabilities?: string[]): {
     success: boolean;
     error?: string;
+};
+/**
+ * Exchange an invite token for a short-lived websocket ticket.
+ * Intended for pre-Yjs admission flows where unknown nodes are gated at upgrade time.
+ */
+export declare function exchangeInviteForWsTicket(inviteToken: string, expectedNodeId: string, ttlSeconds?: number): {
+    ticket: string;
+    expiresAt: number;
+} | {
+    error: string;
 };
 /**
  * Self-register as the first node (bootstrap)
@@ -46,4 +59,5 @@ export declare function listPendingInvites(): PendingInvite[];
  * Prune expired invites
  */
 export declare function pruneExpiredInvites(): number;
+export {};
 //# sourceMappingURL=auth.d.ts.map

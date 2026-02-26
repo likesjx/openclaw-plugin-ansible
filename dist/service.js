@@ -8,15 +8,19 @@
 import * as Y from "yjs";
 import { WebsocketProvider } from "y-websocket";
 import { WebSocketServer, WebSocket } from "ws";
+import { createServer } from "http";
+import { createHash, createPublicKey, verify as cryptoVerify } from "crypto";
 import * as fs from "fs";
 import * as path from "path";
 // @ts-expect-error - y-websocket/bin/utils is CommonJS
 import { setupWSConnection, getYDoc } from "y-websocket/bin/utils";
 import { MESSAGE_RETENTION, VALIDATION_LIMITS } from "./schema.js";
+import { consumeInviteForNode, consumeWsTicket, mintWsTicketFromInvite } from "./admission.js";
 // Singleton state
 let doc = null;
 let nodeId = null;
 let wsServer = null;
+let authServer = null;
 let providers = [];
 let heartbeatInterval = null;
 let cleanupInterval = null;
@@ -24,6 +28,11 @@ let isBackboneMode = false;
 let docReady = false;
 let docReadyCallbacks = [];
 let syncCallbacks = [];
+const AUTH_REPLAY_MAP = "authReplay";
+const AUTH_REPLAY_PREFIX = "exchange:";
+const AUTH_REPLAY_TTL_MS = 5 * 60_000;
+const AUTH_RATE_WINDOW_DEFAULT_SEC = 60;
+const AUTH_RATE_MAX_DEFAULT = 30;
 const HEARTBEAT_INTERVAL_MS = 30_000;
 const CLEANUP_INTERVAL_MS = 60_000; // Run cleanup every minute
 const STATE_FILE = "ansible-state.yjs";
@@ -230,6 +239,10 @@ export function createAnsibleService(_api, config) {
                 wsServer.close();
                 wsServer = null;
             }
+            if (authServer) {
+                authServer.close();
+                authServer = null;
+            }
             doc = null;
             nodeId = null;
             docReady = false;
@@ -273,12 +286,36 @@ async function getTailscaleIP() {
 async function startBackboneMode(ctx, config) {
     isBackboneMode = true;
     const port = config.listenPort || 1234;
+    const authGateEnabled = config.authGate?.enabled === true;
+    const nodeIdParam = (config.authGate?.nodeIdParam || "nodeId").trim() || "nodeId";
+    const inviteParam = (config.authGate?.inviteParam || "invite").trim() || "invite";
+    const ticketParam = (config.authGate?.ticketParam || "ticket").trim() || "ticket";
+    const requireTicketForUnknown = config.authGate?.requireTicketForUnknown === true;
+    const exchangePath = (config.authGate?.exchangePath || "/ansible/auth/exchange").trim() || "/ansible/auth/exchange";
+    const authPort = Number(config.authGate?.authPort || (port + 1));
+    const ticketTtlSeconds = Number(config.authGate?.ticketTtlSeconds || 60);
+    const requireNodeProof = config.authGate?.requireNodeProof === true;
+    const rateLimitMax = Number(config.authGate?.rateLimitMax || AUTH_RATE_MAX_DEFAULT);
+    const rateLimitWindowSeconds = Number(config.authGate?.rateLimitWindowSeconds || AUTH_RATE_WINDOW_DEFAULT_SEC);
     // Bind to Tailscale interface for security (only tailnet peers can connect)
     const host = config.listenHost || await getTailscaleIP() || "127.0.0.1";
     ctx.logger.info(`Backbone mode: starting WebSocket server on ${host}:${port}`);
     // Start WebSocket server for incoming connections
     wsServer = new WebSocketServer({ host, port });
     wsServer.on("connection", (ws, req) => {
+        if (authGateEnabled) {
+            const auth = authorizeBackboneConnection(req.url || "/", nodeIdParam, inviteParam, ticketParam, requireTicketForUnknown);
+            if (!auth.allowed) {
+                ctx.logger.warn(`Rejected websocket connection: ${auth.reason || "unauthorized"}`);
+                try {
+                    ws.close(1008, "Unauthorized");
+                }
+                catch {
+                    // Best effort
+                }
+                return;
+            }
+        }
         const clientIp = req.socket.remoteAddress;
         const userAgent = req.headers["user-agent"];
         ctx.logger.info(`New incoming connection from ${clientIp} (${userAgent || "no user-agent"})`);
@@ -296,6 +333,9 @@ async function startBackboneMode(ctx, config) {
         ctx.logger.warn(`WebSocket server error: ${err.message}`);
     });
     ctx.logger.info(`WebSocket server listening on port ${port}`);
+    if (authGateEnabled) {
+        startAuthExchangeServer(ctx, host, authPort, exchangePath, ticketTtlSeconds, requireNodeProof, rateLimitMax, rateLimitWindowSeconds);
+    }
     // Connect to other backbone peers
     if (config.backbonePeers?.length) {
         for (const peerUrl of config.backbonePeers) {
@@ -304,7 +344,7 @@ async function startBackboneMode(ctx, config) {
                 ctx.logger.debug(`Skipping self URL: ${peerUrl}`);
                 continue;
             }
-            connectToPeer(peerUrl, ctx);
+            connectToPeer(peerUrl, ctx, config);
         }
     }
 }
@@ -338,47 +378,277 @@ async function startEdgeMode(ctx, config) {
     }
     // Connect to backbone peers (with failover logic)
     for (const peerUrl of config.backbonePeers) {
-        connectToPeer(peerUrl, ctx);
+        connectToPeer(peerUrl, ctx, config);
     }
 }
 // ============================================================================
 // Yjs Sync
 // ============================================================================
-function connectToPeer(url, ctx) {
+function connectToPeer(url, ctx, config) {
     if (!doc)
         return;
-    ctx.logger.info(`Connecting to peer: ${url}`);
+    const authNodeIdParam = (config?.authGate?.nodeIdParam || "nodeId").trim() || "nodeId";
+    const withNodeId = appendNodeIdQuery(url, authNodeIdParam, nodeId || undefined);
+    ctx.logger.info(`Connecting to peer: ${withNodeId}`);
     try {
         // Use y-websocket provider for sync
-        const provider = new WebsocketProvider(url, "ansible-shared", doc, {
+        const provider = new WebsocketProvider(withNodeId, "ansible-shared", doc, {
             connect: true,
             WebSocketPolyfill: WebSocket,
         });
         provider.on("status", (event) => {
-            ctx.logger.info(`Connection status for ${url}: ${event.status}`);
+            ctx.logger.info(`Connection status for ${withNodeId}: ${event.status}`);
         });
         provider.on("sync", (synced) => {
-            ctx.logger.info(`Sync event for ${url}: synced=${synced}`);
-            fireSync(synced, url);
+            ctx.logger.info(`Sync event for ${withNodeId}: synced=${synced}`);
+            fireSync(synced, withNodeId);
             if (synced) {
-                ctx.logger.info(`Successfully synced with ${url}`);
+                ctx.logger.info(`Successfully synced with ${withNodeId}`);
                 // Fire doc-ready on first successful sync (edge mode)
                 fireDocReady();
             }
         });
         // Add error handler for debugging
         provider.on("connection-error", (event) => {
-            ctx.logger.warn(`Connection error to ${url}: ${event?.message || JSON.stringify(event)}`);
+            ctx.logger.warn(`Connection error to ${withNodeId}: ${event?.message || JSON.stringify(event)}`);
         });
         // Log when connection closes
         provider.on("connection-close", (event) => {
-            ctx.logger.warn(`Connection closed to ${url}: code=${event?.code}, reason=${event?.reason}`);
+            ctx.logger.warn(`Connection closed to ${withNodeId}: code=${event?.code}, reason=${event?.reason}`);
         });
         providers.push(provider);
     }
     catch (err) {
-        ctx.logger.warn(`Failed to connect to ${url}: ${err}`);
+        ctx.logger.warn(`Failed to connect to ${withNodeId}: ${err}`);
     }
+}
+function appendNodeIdQuery(rawUrl, paramName, value) {
+    if (!value)
+        return rawUrl;
+    try {
+        const parsed = new URL(rawUrl);
+        if (!parsed.searchParams.has(paramName)) {
+            parsed.searchParams.set(paramName, value);
+        }
+        return parsed.toString();
+    }
+    catch {
+        return rawUrl;
+    }
+}
+function authorizeBackboneConnection(rawReqUrl, nodeIdParam, inviteParam, ticketParam, requireTicketForUnknown) {
+    if (!doc)
+        return { allowed: false, reason: "doc_unavailable" };
+    let presentedNodeId = "";
+    let inviteToken = "";
+    let wsTicket = "";
+    try {
+        const parsed = new URL(rawReqUrl, "ws://ansible.local");
+        presentedNodeId = String(parsed.searchParams.get(nodeIdParam) || "").trim();
+        inviteToken = String(parsed.searchParams.get(inviteParam) || "").trim();
+        wsTicket = String(parsed.searchParams.get(ticketParam) || "").trim();
+    }
+    catch {
+        return { allowed: false, reason: "bad_request_url" };
+    }
+    if (!presentedNodeId) {
+        return { allowed: false, reason: "missing_node_id" };
+    }
+    const nodes = doc.getMap("nodes");
+    const known = nodes.get(presentedNodeId);
+    if (known)
+        return { allowed: true };
+    if (wsTicket) {
+        const ticketJoin = consumeWsTicket(doc, wsTicket, presentedNodeId);
+        if (!ticketJoin.ok)
+            return { allowed: false, reason: ticketJoin.error || "invalid_ticket" };
+        return { allowed: true };
+    }
+    if (requireTicketForUnknown) {
+        return { allowed: false, reason: "ticket_required_for_unknown_node" };
+    }
+    if (!inviteToken) {
+        return { allowed: false, reason: "missing_invite_for_unknown_node" };
+    }
+    const inviteJoin = consumeInviteForNode(doc, inviteToken, presentedNodeId);
+    if (!inviteJoin.ok) {
+        return { allowed: false, reason: inviteJoin.error || "invite_rejected" };
+    }
+    return { allowed: true };
+}
+function startAuthExchangeServer(ctx, host, port, exchangePath, defaultTicketTtlSeconds, requireNodeProof, rateLimitMax, rateLimitWindowSeconds) {
+    if (!doc || !nodeId)
+        return;
+    if (authServer)
+        return;
+    authServer = createServer((req, res) => {
+        if (req.method !== "POST" || (req.url || "").split("?")[0] !== exchangePath) {
+            respondJson(res, 404, { error: "not_found" });
+            return;
+        }
+        readJsonBody(req, 16 * 1024)
+            .then((body) => {
+            const remoteIp = String(req.socket.remoteAddress || "unknown");
+            const rate = consumeRateLimitToken(doc, remoteIp, rateLimitMax, rateLimitWindowSeconds);
+            if (!rate.allowed) {
+                ctx.logger.warn(`Ansible auth exchange denied: rate_limited ip=${remoteIp}`);
+                respondJson(res, 429, {
+                    error: "rate_limited",
+                    retryAfterSeconds: Math.max(1, Math.floor((rate.retryAt - Date.now()) / 1000)),
+                });
+                return;
+            }
+            const inviteToken = String(body?.inviteToken || "").trim();
+            const joiningNodeId = String(body?.nodeId || "").trim();
+            const nonce = String(body?.nonce || "").trim();
+            const clientPubKey = String(body?.clientPubKey || "").trim();
+            const clientProof = String(body?.clientProof || "").trim();
+            const ttlSecondsRaw = Number(body?.ttlSeconds || defaultTicketTtlSeconds);
+            const ttlSeconds = Number.isFinite(ttlSecondsRaw) ? ttlSecondsRaw : defaultTicketTtlSeconds;
+            if (!inviteToken) {
+                respondJson(res, 400, { error: "invalid_request", reason: "inviteToken required" });
+                return;
+            }
+            if (!joiningNodeId) {
+                respondJson(res, 400, { error: "invalid_request", reason: "nodeId required" });
+                return;
+            }
+            if (!nonce) {
+                respondJson(res, 400, { error: "invalid_request", reason: "nonce required" });
+                return;
+            }
+            const replayKey = `${AUTH_REPLAY_PREFIX}${joiningNodeId}:${nonce}`;
+            if (!claimReplayKey(doc, replayKey, AUTH_REPLAY_TTL_MS)) {
+                ctx.logger.warn(`Ansible auth exchange denied: replay_detected node=${joiningNodeId}`);
+                respondJson(res, 409, { error: "replay_detected" });
+                return;
+            }
+            if (requireNodeProof || (clientPubKey && clientProof)) {
+                const proofOk = verifyNodeProof(inviteToken, joiningNodeId, nonce, clientPubKey, clientProof);
+                if (!proofOk.ok) {
+                    ctx.logger.warn(`Ansible auth exchange denied: node_proof_invalid node=${joiningNodeId}`);
+                    respondJson(res, 401, { error: "node_proof_invalid", reason: proofOk.error });
+                    return;
+                }
+            }
+            const out = mintWsTicketFromInvite(doc, nodeId, inviteToken, joiningNodeId, ttlSeconds * 1000);
+            if ("error" in out) {
+                const code = out.error.includes("expired") ? 401 :
+                    out.error.includes("bound to node") ? 403 :
+                        401;
+                ctx.logger.warn(`Ansible auth exchange denied: exchange_failed node=${joiningNodeId} reason=${out.error}`);
+                respondJson(res, code, { error: "exchange_failed", reason: out.error });
+                return;
+            }
+            const pubKeyFingerprint = clientPubKey ? createHash("sha256").update(clientPubKey).digest("hex").slice(0, 16) : undefined;
+            ctx.logger.info(`Ansible auth exchange success node=${joiningNodeId} ip=${remoteIp} ttl=${ttlSeconds}s${pubKeyFingerprint ? ` key=${pubKeyFingerprint}` : ""}`);
+            respondJson(res, 200, {
+                ticket: out.ticket,
+                expiresAt: out.expiresAt,
+                nodeId: joiningNodeId,
+                exchangePath,
+                proofRequired: requireNodeProof,
+            });
+        })
+            .catch((err) => {
+            respondJson(res, 400, { error: "invalid_json", reason: String(err?.message || err) });
+        });
+    });
+    authServer.on("error", (err) => {
+        ctx.logger.warn(`Auth exchange server error: ${err?.message || String(err)}`);
+    });
+    authServer.listen(port, host, () => {
+        ctx.logger.info(`Auth exchange server listening on ${host}:${port}${exchangePath}`);
+    });
+}
+function respondJson(res, code, payload) {
+    const body = `${JSON.stringify(payload)}\n`;
+    res.statusCode = code;
+    res.setHeader("Content-Type", "application/json; charset=utf-8");
+    res.setHeader("Content-Length", Buffer.byteLength(body));
+    res.end(body);
+}
+async function readJsonBody(req, maxBytes) {
+    const chunks = [];
+    let size = 0;
+    for await (const chunk of req) {
+        const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk));
+        size += buf.length;
+        if (size > maxBytes) {
+            throw new Error("request_too_large");
+        }
+        chunks.push(buf);
+    }
+    const raw = Buffer.concat(chunks).toString("utf8").trim();
+    if (!raw)
+        return {};
+    return JSON.parse(raw);
+}
+function claimReplayKey(doc, key, ttlMs) {
+    const map = doc.getMap(AUTH_REPLAY_MAP);
+    pruneReplayKeys(map);
+    const now = Date.now();
+    const existing = map.get(key);
+    if (existing && typeof existing.exp === "number" && existing.exp > now)
+        return false;
+    map.set(key, { exp: now + ttlMs, at: now });
+    return true;
+}
+function pruneReplayKeys(map, now = Date.now()) {
+    for (const [k, raw] of map.entries()) {
+        const rec = raw;
+        if (!rec || typeof rec.exp !== "number" || rec.exp <= now)
+            map.delete(k);
+    }
+}
+function consumeRateLimitToken(doc, remoteIp, maxPerWindow, windowSeconds) {
+    const map = doc.getMap("authRate");
+    const key = `ip:${remoteIp}`;
+    const now = Date.now();
+    const windowMs = Math.max(5, Math.floor(windowSeconds)) * 1000;
+    const max = Math.max(1, Math.floor(maxPerWindow));
+    const rec = map.get(key) || {};
+    let start = typeof rec.start === "number" ? rec.start : now;
+    let count = typeof rec.count === "number" ? rec.count : 0;
+    if (now - start >= windowMs) {
+        start = now;
+        count = 0;
+    }
+    if (count >= max) {
+        return { allowed: false, retryAt: start + windowMs };
+    }
+    map.set(key, { start, count: count + 1, updatedAt: now });
+    return { allowed: true, retryAt: now };
+}
+function verifyNodeProof(inviteToken, nodeId, nonce, clientPubKey, clientProof) {
+    if (!clientPubKey)
+        return { ok: false, error: "clientPubKey required" };
+    if (!clientProof)
+        return { ok: false, error: "clientProof required" };
+    let key;
+    try {
+        key = createPublicKey(clientPubKey);
+    }
+    catch {
+        return { ok: false, error: "invalid clientPubKey" };
+    }
+    let sig;
+    try {
+        sig = Buffer.from(clientProof, "base64");
+    }
+    catch {
+        return { ok: false, error: "invalid clientProof encoding" };
+    }
+    const data = Buffer.from(`ansible-auth-exchange|${inviteToken}|${nodeId}|${nonce}`, "utf8");
+    try {
+        const ok = cryptoVerify(null, data, key, sig);
+        if (!ok)
+            return { ok: false, error: "signature verification failed" };
+    }
+    catch {
+        return { ok: false, error: "signature verification error" };
+    }
+    return { ok: true };
 }
 // ============================================================================
 // Persistence

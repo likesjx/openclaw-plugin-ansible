@@ -9,6 +9,7 @@ import type { OpenClawPluginApi } from "./types.js";
 import { createAnsibleService, onDocReady } from "./service.js";
 import { createLockSweepService } from "./lock-sweep.js";
 import { createAnsibleRetentionService } from "./retention.js";
+import { createAnsibleSlaSweepService } from "./sla.js";
 import { registerAnsibleHooks } from "./hooks.js";
 import { registerAnsibleTools } from "./tools.js";
 import { registerAnsibleCli } from "./cli.js";
@@ -31,6 +32,9 @@ export function register(api: OpenClawPluginApi) {
 
   // Coordinator-only retention / roll-off (prune closed tasks by TTL)
   api.registerService(createAnsibleRetentionService(api, config));
+
+  // Coordinator-only SLA sweep / escalation (accept/progress/complete windows)
+  api.registerService(createAnsibleSlaSweepService(api, config));
 
   // Register hooks for context injection
   registerAnsibleHooks(api, config);

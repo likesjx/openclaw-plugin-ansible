@@ -61,6 +61,22 @@
           "staleSeconds": { "type": "number", "default": 300, "description": "Remove stale lock files older than this many seconds (default 300)", "minimum": 30 }
         }
       },
+      "slaSweep": {
+        "type": "object",
+        "description": "Coordinator-only SLA sweep and escalation engine",
+        "properties": {
+          "enabled": { "type": "boolean", "default": true, "description": "Enable coordinator SLA sweeps" },
+          "everySeconds": { "type": "number", "default": 300, "description": "Sweep cadence in seconds (default 300)", "minimum": 30 },
+          "recordOnly": { "type": "boolean", "default": true, "description": "Record escalations without sending messages" },
+          "maxMessagesPerSweep": { "type": "number", "default": 3, "description": "Max escalation messages per sweep run", "minimum": 0 },
+          "fyiAgents": {
+            "type": "array",
+            "items": { "type": "string" },
+            "default": ["architect"],
+            "description": "Fallback FYI agents when requester/claimer targets are unavailable"
+          }
+        }
+      },
       "authGate": {
         "type": "object",
         "description": "Optional pre-Yjs websocket admission gate (invite token for unknown nodes)",
@@ -127,6 +143,11 @@
     "lockSweep": {
       "label": "Lock Sweep",
       "help": "Automatically clears stale session lock files that can block agent turns (recommended).",
+      "advanced": true
+    },
+    "slaSweep": {
+      "label": "SLA Sweep",
+      "help": "Coordinator-only task SLA sweep and escalation notifications.",
       "advanced": true
     },
     "authGate": {

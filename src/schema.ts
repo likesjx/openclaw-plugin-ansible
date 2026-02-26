@@ -82,6 +82,28 @@ export interface AnsibleConfig {
   };
 
   /**
+   * Coordinator-only SLA sweep for task accept/progress/complete windows.
+   *
+   * This emits escalation events/messages for overdue tasks and marks escalation
+   * state in task metadata to avoid duplicate escalations.
+   */
+  slaSweep?: {
+    /** Enable/disable coordinator SLA sweeps. Default: true. */
+    enabled?: boolean;
+    /** Sweep cadence in seconds. Default: 300 (5 minutes). */
+    everySeconds?: number;
+    /** If true, do not send escalation messages; only record escalation outcomes. Default: true. */
+    recordOnly?: boolean;
+    /** Max escalation messages emitted per sweep run. Default: 3. */
+    maxMessagesPerSweep?: number;
+    /**
+     * Optional fallback FYI agents when requester/claimer targets are unavailable.
+     * Default: ["architect"].
+     */
+    fyiAgents?: string[];
+  };
+
+  /**
    * Actor auth mode for mutating ansible operations.
    * - legacy: ignore tokens and use current node / explicit handle behavior
    * - mixed: prefer token when provided, fallback to legacy behavior

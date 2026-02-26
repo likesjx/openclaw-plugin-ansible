@@ -12,6 +12,7 @@ import { getDoc, getNodeId, getAnsibleState } from "./service.js";
 import { requestDispatcherReconcile } from "./dispatcher.js";
 import { isNodeAuthorized } from "./auth.js";
 import { getLockSweepStatus } from "./lock-sweep.js";
+import { runSlaSweep } from "./sla.js";
 
 /**
  * Wrap a tool result in the AgentToolResult format expected by pi-agent-core.
@@ -3705,6 +3706,19 @@ export function registerAnsibleTools(
           type: "number",
           description: "Optional max task records to inspect.",
         },
+        record_only: {
+          type: "boolean",
+          description: "If true, record escalation outcomes without sending escalation messages.",
+        },
+        max_messages: {
+          type: "number",
+          description: "Optional cap for escalation messages this run.",
+        },
+        fyi_agents: {
+          type: "array",
+          items: { type: "string" },
+          description: "Optional fallback FYI agents when requester/claimer are unavailable.",
+        },
       },
     },
     async execute(_id, params) {
@@ -3715,97 +3729,16 @@ export function registerAnsibleTools(
       try {
         requireAuth(nodeId);
         const dryRun = params.dry_run === true;
-        const limitRaw = typeof params.limit === "number" && Number.isFinite(params.limit) ? Math.floor(params.limit) : undefined;
-        const now = Date.now();
-        const tasks = doc.getMap("tasks");
-        const breaches: Array<{ taskId: string; title: string; breachType: "accept" | "progress" | "complete"; dueAt: number; status: string }> = [];
-        let scanned = 0;
-
-        for (const [key, raw] of tasks.entries()) {
-          if (limitRaw && scanned >= limitRaw) break;
-          scanned += 1;
-          const task = raw as Task | undefined;
-          if (!task) continue;
-          const metadata = ((task.metadata || {}) as Record<string, unknown>) || {};
-          const ansible = ((metadata.ansible || {}) as Record<string, unknown>) || {};
-          const sla = ((ansible.sla || {}) as Record<string, unknown>) || {};
-          if (Object.keys(sla).length === 0) continue;
-          const escalations = ((sla.escalations || {}) as Record<string, unknown>) || {};
-          const breachTypes: Array<{ breachType: "accept" | "progress" | "complete"; dueAt: number }> = [];
-
-          const acceptByAt = typeof sla.acceptByAt === "number" ? sla.acceptByAt : undefined;
-          const progressByAt = typeof sla.progressByAt === "number" ? sla.progressByAt : undefined;
-          const completeByAt = typeof sla.completeByAt === "number" ? sla.completeByAt : undefined;
-
-          if (task.status === "pending" && acceptByAt && now > acceptByAt && typeof escalations.acceptAt !== "number") {
-            breachTypes.push({ breachType: "accept", dueAt: acceptByAt });
-          }
-          if ((task.status === "claimed" || task.status === "in_progress") && progressByAt && now > progressByAt && typeof escalations.progressAt !== "number") {
-            breachTypes.push({ breachType: "progress", dueAt: progressByAt });
-          }
-          if ((task.status === "claimed" || task.status === "in_progress") && completeByAt && now > completeByAt && typeof escalations.completeAt !== "number") {
-            breachTypes.push({ breachType: "complete", dueAt: completeByAt });
-          }
-
-          if (breachTypes.length === 0) continue;
-
-          for (const breach of breachTypes) {
-            breaches.push({
-              taskId: task.id || String(key),
-              title: task.title,
-              breachType: breach.breachType,
-              dueAt: breach.dueAt,
-              status: task.status,
-            });
-          }
-
-          if (dryRun) continue;
-          const nextEscalations = { ...escalations };
-          for (const breach of breachTypes) {
-            if (breach.breachType === "accept") nextEscalations.acceptAt = now;
-            if (breach.breachType === "progress") nextEscalations.progressAt = now;
-            if (breach.breachType === "complete") nextEscalations.completeAt = now;
-            emitLifecycleEvent(
-              doc,
-              nodeId,
-              "task_sla_breached",
-              `Task '${task.id}' breached ${breach.breachType} SLA.`,
-              {
-                taskId: task.id,
-                breachType: breach.breachType,
-                dueAt: breach.dueAt,
-                status: task.status,
-              },
-            );
-            notifyTaskOwner(doc, nodeId, task, {
-              kind: "update",
-              note: `SLA breach detected: ${breach.breachType} (due ${new Date(breach.dueAt).toISOString()})`,
-            });
-          }
-          const updatedTask: Task = {
-            ...task,
-            updatedAt: now,
-            metadata: {
-              ...metadata,
-              ansible: {
-                ...ansible,
-                sla: {
-                  ...sla,
-                  escalations: nextEscalations,
-                },
-              },
-            },
-          };
-          tasks.set(String(key), updatedTask);
-        }
-
-        return toolResult({
-          success: true,
-          dryRun,
-          scanned,
-          breaches,
-          breachCount: breaches.length,
-        });
+        const limit = typeof params.limit === "number" && Number.isFinite(params.limit) ? Math.floor(params.limit) : undefined;
+        const recordOnly = params.record_only === true;
+        const maxMessages =
+          typeof params.max_messages === "number" && Number.isFinite(params.max_messages)
+            ? Math.floor(params.max_messages)
+            : undefined;
+        const fyiAgents = Array.isArray(params.fyi_agents)
+          ? (params.fyi_agents as unknown[]).filter((a) => typeof a === "string").map((a) => String(a))
+          : undefined;
+        return toolResult(runSlaSweep(doc, nodeId, { dryRun, limit, recordOnly, maxMessages, fyiAgents }));
       } catch (err: any) {
         return toolResult({ error: err.message });
       }

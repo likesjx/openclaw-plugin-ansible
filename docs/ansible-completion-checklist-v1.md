@@ -23,7 +23,7 @@ Track remaining work to complete the ansible tool and safely commit/push/deploy.
 ## B) Runtime Semantics Remaining
 
 - [x] Enforce idempotency keys for accept/update/complete transitions.
-- [x] Add SLA timeout engine (`accept/progress/complete`) with escalation events. (via `ansible_sla_sweep`; background scheduler still optional)
+- [x] Add SLA timeout engine (`accept/progress/complete`) with escalation events. (manual `ansible_sla_sweep` + coordinator SLA sweep service)
 - [ ] Add high-risk approval gate enforcement before execution.
 - [ ] Add concurrency limits (`maxConcurrent`, `maxQueueDepth`, `retryBudget`).
 - [ ] Add failure taxonomy normalization (`failed_terminal`, `dependency_missing`, etc.).

@@ -18,6 +18,7 @@
 - **[ansible-completion-checklist-v1.md](ansible-completion-checklist-v1.md)** — Remaining implementation + release checklist to reach commit/push/deploy readiness
 - **[documentation-status-v1.md](documentation-status-v1.md)** — Canonical vs historical doc map to prevent stale concepts from driving implementation
 - **[clawhub-publish-prep-v1.md](clawhub-publish-prep-v1.md)** — Packaging, security, docs, and quality gates for publishing this plugin/skill to Clawhub
+- **[deployment-runbook-v1.md](deployment-runbook-v1.md)** — Step-by-step canary rollout and rollback runbook with safe SLA defaults and go/no-go checks
 - **[setup.md](setup.md)** — Practical setup and operations guide (new agent, new gateway, coordinator sweep)
 - **[update-architecture.md](update-architecture.md)** — Source-of-truth update model (`setup` scope, plugin update path, config write safety, canonical defaults)
 
