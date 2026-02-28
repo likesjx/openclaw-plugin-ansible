@@ -2543,6 +2543,51 @@ export function registerAnsibleTools(api, config) {
             return this.execute();
         },
     });
+    // === ansible_revoke_node ===
+    api.registerTool({
+        name: "ansible_revoke_node",
+        label: "Ansible Revoke Node",
+        description: "Backbone-only: revoke a node's access and remove its context/pulse state.",
+        parameters: {
+            type: "object",
+            properties: {
+                node_id: {
+                    type: "string",
+                    description: "Node ID to revoke.",
+                },
+            },
+            required: ["node_id"],
+        },
+        async execute(_id, params) {
+            const doc = getDoc();
+            const nodeId = getNodeId();
+            if (!doc || !nodeId)
+                return toolResult({ error: "Ansible not initialized" });
+            try {
+                requireAuth(nodeId);
+                const target = validateString(params.node_id, 200, "node_id").trim();
+                if (!target)
+                    return toolResult({ error: "node_id is required" });
+                const nodes = doc.getMap("nodes");
+                const me = nodes.get(nodeId);
+                const isBackbone = (config?.tier === "backbone") || ((me?.tier || "") === "backbone");
+                if (!isBackbone) {
+                    return toolResult({ error: "Only backbone nodes can revoke access." });
+                }
+                if (target === nodeId)
+                    return toolResult({ error: "Cannot revoke your own access." });
+                if (!nodes.has(target))
+                    return toolResult({ error: "Node not found." });
+                nodes.delete(target);
+                doc.getMap("context").delete(target);
+                doc.getMap("pulse").delete(target);
+                return toolResult({ success: true, revoked: target });
+            }
+            catch (err) {
+                return toolResult({ error: err.message });
+            }
+        },
+    });
     // === ansible_dump_state ===
     api.registerTool({
         name: "ansible_dump_state",
@@ -2839,9 +2884,6 @@ export function registerAnsibleTools(api, config) {
                 if (!task) {
                     return toolResult({ error: "Task not found" });
                 }
-                if (task.status !== "pending") {
-                    return toolResult({ error: `Task is already ${task.status}` });
-                }
                 const idempotencyKey = resolveTaskIdempotencyKey(params, task.id, "claim", effectiveAgent);
                 const seenIdempotency = readTaskIdempotency(task);
                 if (seenIdempotency[idempotencyKey]) {
@@ -2851,6 +2893,19 @@ export function registerAnsibleTools(api, config) {
                         message: `Idempotent replay ignored for claim: ${task.title}`,
                         task: { id: task.id, title: task.title, status: task.status },
                     });
+                }
+                if (task.status !== "pending") {
+                    const hasExplicitIdempotencyKey = typeof params.idempotency_key === "string" &&
+                        String(params.idempotency_key || "").trim().length > 0;
+                    if (hasExplicitIdempotencyKey && task.status === "claimed" && task.claimedBy_agent === effectiveAgent) {
+                        return toolResult({
+                            success: true,
+                            idempotent: true,
+                            message: `Idempotent replay treated as already-claimed by ${effectiveAgent}.`,
+                            task: { id: task.id, title: task.title, status: task.status },
+                        });
+                    }
+                    return toolResult({ error: `Task is already ${task.status}` });
                 }
                 const ansibleMeta = ((task.metadata || {}).ansible || {});
                 const defaultEtaSeconds = typeof ansibleMeta.defaultEtaSeconds === "number" && Number.isFinite(ansibleMeta.defaultEtaSeconds)

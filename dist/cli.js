@@ -12,7 +12,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { execFileSync } from "child_process";
 import { getNodeId } from "./service.js";
-import { generateInviteToken, joinWithToken, bootstrapFirstNode, revokeNode, exchangeInviteForWsTicket, } from "./auth.js";
+import { generateInviteToken, joinWithToken, bootstrapFirstNode, exchangeInviteForWsTicket, } from "./auth.js";
 function readGatewayConfig() {
     // Resolve config path: $OPENCLAW_CONFIG or ~/.openclaw/openclaw.json
     const configPath = process.env.OPENCLAW_CONFIG ||
@@ -1160,7 +1160,7 @@ export function registerAnsibleCli(api, config) {
             .description("Publish or update a capability contract")
             .option("--id <capabilityId>", "Capability id (e.g., cap.fs.diff-apply)")
             .option("--name <name>", "Capability display name")
-            .option("--version <version>", "Capability version")
+            .option("-v, --cap-version <version>", "Capability version")
             .option("--owner <agentId>", "Owner/executor agent id")
             .option("--delegation-skill-name <name>", "Delegation skill name")
             .option("--delegation-skill-version <version>", "Delegation skill version")
@@ -1173,8 +1173,8 @@ export function registerAnsibleCli(api, config) {
             .option("--token <token>", "Auth token for acting admin (or set OPENCLAW_ANSIBLE_TOKEN)")
             .action(async (...args) => {
             const opts = (args[0] || {});
-            if (!opts.id || !opts.name || !opts.version || !opts.owner) {
-                console.log("✗ --id, --name, --version, and --owner are required.");
+            if (!opts.id || !opts.name || !opts.capVersion || !opts.owner) {
+                console.log("✗ --id, --name, --cap-version, and --owner are required.");
                 return;
             }
             if (!opts.delegationSkillName || !opts.delegationSkillVersion) {
@@ -1192,7 +1192,7 @@ export function registerAnsibleCli(api, config) {
             const toolArgs = {
                 capability_id: opts.id,
                 name: opts.name,
-                version: opts.version,
+                version: opts.capVersion,
                 owner_agent_id: opts.owner,
                 delegation_skill_ref: {
                     name: opts.delegationSkillName,
@@ -1225,6 +1225,12 @@ export function registerAnsibleCli(api, config) {
             console.log("✓ Capability published");
             console.log(`  id=${out.capability?.capabilityId || opts.id}`);
             console.log(`  status=${out.capability?.status || opts.status}`);
+            if (Array.isArray(out.publishPipeline) && out.publishPipeline.length > 0) {
+                const gates = out.publishPipeline
+                    .map((g) => `${String(g.id || g.gateId || g.gate || "?")}:${String(g.status || "?")}`)
+                    .join(" ");
+                console.log(`  publishPipeline=${gates}`);
+            }
             if (out.skillDistributionTask?.taskId) {
                 console.log(`  skillDistributionTask=${out.skillDistributionTask.taskId}`);
                 console.log(`  targets=${(out.skillDistributionTask.targets || []).join(", ")}`);
@@ -1264,6 +1270,12 @@ export function registerAnsibleCli(api, config) {
             console.log("✓ Capability unpublished");
             console.log(`  id=${out.capability?.capabilityId || opts.id}`);
             console.log(`  status=${out.capability?.status || "disabled"}`);
+            if (Array.isArray(out.unpublishPipeline) && out.unpublishPipeline.length > 0) {
+                const gates = out.unpublishPipeline
+                    .map((g) => `${String(g.id || g.gateId || g.gate || "?")}:${String(g.status || "?")}`)
+                    .join(" ");
+                console.log(`  unpublishPipeline=${gates}`);
+            }
         });
         // === ansible sla ===
         const sla = ansible.command("sla").description("Task SLA monitoring and escalation");
@@ -1436,6 +1448,10 @@ export function registerAnsibleCli(api, config) {
                 console.log(`✗ ${result.error}`);
                 return;
             }
+            if (result.idempotent) {
+                console.log(`↺ ${result.message || "Idempotent replay accepted; no state change."}`);
+                return;
+            }
             console.log(`✓ Claimed: ${result.task?.title}`);
             if (result.accepted?.etaAt)
                 console.log(`ETA: ${result.accepted.etaAt}`);
@@ -1497,6 +1513,10 @@ export function registerAnsibleCli(api, config) {
                 console.log(`✗ ${result.error}`);
                 return;
             }
+            if (result.idempotent) {
+                console.log(`↺ ${result.message || "Idempotent replay accepted; no state change."}`);
+                return;
+            }
             console.log(`✓ Task updated: status=${opts.status}`);
             if (result.notified)
                 console.log(`  Creator notified (messageId: ${result.notifyMessageId})`);
@@ -1531,6 +1551,10 @@ export function registerAnsibleCli(api, config) {
             }
             if (result.error) {
                 console.log(`✗ ${result.error}`);
+                return;
+            }
+            if (result.idempotent) {
+                console.log(`↺ ${result.message || "Idempotent replay accepted; no state change."}`);
                 return;
             }
             console.log(`✓ Task completed.`);
@@ -1876,13 +1900,19 @@ export function registerAnsibleCli(api, config) {
                 console.log("✗ Node ID required. Use: openclaw ansible revoke --node <nodeId>");
                 return;
             }
-            const result = revokeNode(opts.node);
-            if (result.success) {
-                console.log(`✓ Revoked access for ${opts.node}`);
+            let result;
+            try {
+                result = await callGateway("ansible_revoke_node", { node_id: opts.node });
             }
-            else {
+            catch (err) {
+                console.log(`✗ ${err.message}`);
+                return;
+            }
+            if (result.error) {
                 console.log(`✗ Failed to revoke: ${result.error}`);
+                return;
             }
+            console.log(`✓ Revoked access for ${result.revoked || opts.node}`);
         });
         // === ansible send ===
         ansible

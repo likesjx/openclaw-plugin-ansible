@@ -1,7 +1,7 @@
 # Deployment Runbook v1
 
 Status: Active  
-Last updated: 2026-02-26
+Last updated: 2026-02-27
 
 ## Goal
 
@@ -122,3 +122,20 @@ openclaw ansible tasks claim <taskId> --eta-seconds 900 --idempotency-key <k>
 openclaw ansible tasks update <taskId> --status in_progress --idempotency-key <k>
 openclaw ansible tasks complete <taskId> --result "..." --idempotency-key <k>
 ```
+
+## Latest Execution Notes (2026-02-27)
+
+1. Preflight passed: `npm run typecheck`, `npm run build`.
+2. SLA sweep checks passed in safe mode:
+   - `openclaw ansible sla sweep --dry-run --limit 100`
+   - `openclaw ansible sla sweep --record-only --limit 100`
+3. Capability canary validated:
+   - publish: `publishPipeline=G4..G9` progression visible
+   - unpublish: `unpublishPipeline=U1..U4` progression visible
+4. Task lifecycle + idempotency replay validated on canary task:
+   - claim replay handled as idempotent
+   - update replay handled as idempotent
+   - complete replay handled as idempotent
+5. Remaining MVP-0 exit blockers:
+   - 24h soak window still pending
+   - SLA breach-path reason field validation still pending (no breaches observed).

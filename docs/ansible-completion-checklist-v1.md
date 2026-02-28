@@ -1,91 +1,126 @@
-# Ansible Completion Checklist v1
+# Ansible Completion Checklist v1 (MVP Deployment Cycles)
 
 Status: Working checklist  
-Last updated: 2026-02-26
+Last updated: 2026-02-27
 
 ## Purpose
 
-Track remaining work to complete the ansible tool and safely commit/push/deploy.
+Track delivery by deployable MVP cycles, not by one giant finish line.
 
-## A) Core Implementation Remaining
+## MVP-0: Safe Canary (current target)
 
-- [x] Add runtime validator for `SkillPairManifest` schema in plugin code.
-- [x] Add persistent manifest maps:
-  - [x] `capabilities.manifests`
-  - [x] `capabilities.revisions`
-- [x] Implement publish gate executor (`G0..G9`) in code. (skeleton with ordered gates, per-gate results, and rollback hook signals)
-- [x] Implement update pipeline with predecessor rollback safety. (publish-as-update with predecessor snapshot + postcheck rollback restore)
-- [x] Implement unpublish pipeline (`U0..U4`) in code. (gate-recorded pipeline with disable/archive/emit + unwire placeholder)
-- [ ] Implement ownership lease + standby failover.
-- [x] Implement compatibility negotiation at task accept. (single-capability path, manifest-mode aware)
-- [x] Add deterministic rollback event emission + audit payload. (gate-fail + rollback-required lifecycle events)
+Goal:
 
-## B) Runtime Semantics Remaining
+- prove lifecycle stability without escalation storms.
 
-- [x] Enforce idempotency keys for accept/update/complete transitions.
-- [x] Add SLA timeout engine (`accept/progress/complete`) with escalation events. (manual `ansible_sla_sweep` + coordinator SLA sweep service)
-- [ ] Add high-risk approval gate enforcement before execution.
-- [ ] Add concurrency limits (`maxConcurrent`, `maxQueueDepth`, `retryBudget`).
-- [ ] Add failure taxonomy normalization (`failed_terminal`, `dependency_missing`, etc.).
+Must-have:
 
-## C) Skill Lifecycle Automation Remaining
+- [x] Manifest validation + persistent manifest/revision maps.
+- [x] Publish pipeline skeleton (`G0..G9`) with gate result reporting.
+- [x] Update safety via predecessor snapshot + rollback restore.
+- [x] Unpublish pipeline skeleton (`U0..U4`) with gate reporting.
+- [x] Task idempotency keys (claim/update/complete).
+- [x] SLA sweep engine (manual + coordinator service).
+- [x] Anti-storm controls (`recordOnly`, message budget, FYI fallback).
+- [x] Ownership failover at routing time (pulse-based stale detection + standby owner fallback).
 
-- [ ] Add `ansible-main` workspace installer/wirer for delegation skills.
-- [ ] Add `ansible-main` workspace installer/wirer for executor skills.
-- [ ] Add detach/unwire logic for unpublish/update rollback.
-- [ ] Add smoke test harness that runs full task lifecycle against manifest contract.
-- [ ] Add canary rollout controller and soak evaluation.
+Canary exit criteria:
 
-## D) Observability and Ops Remaining
+- [ ] 24h soak on one coordinator backbone with no message storm.
+- [x] `publishPipeline` and `unpublishPipeline` show expected gate progression.
+- [x] At least one full task lifecycle verified with idempotency replay.
+- [x] SLA sweep outcomes recorded with clear reason fields.
 
-- [ ] Add lifecycle timeline query tool/API (single task, full chain).
-- [ ] Add capability health metrics (`success rate`, `p95 accept`, `p95 complete`).
-- [ ] Add dead-letter inspection and replay helper.
-- [ ] Add publish/update/unpublish audit stream export.
+## MVP-1: Controlled Production
 
-## E) Security and Governance Remaining
+Goal:
 
-- [ ] Add manifest signature verification path and key trust store.
-- [ ] Add secret scanning/redaction in publish path.
-- [ ] Add approval artifact recording for high-risk capabilities.
-- [ ] Add signed provenance checks in CI.
+- safe broad rollout with enforceable risk controls.
 
-## F) Tests Remaining
+Must-have:
 
-- [ ] Unit tests for manifest validation and gate failures.
-- [ ] Integration tests for publish success + rollback.
-- [ ] Integration tests for claim/update/complete contract enforcement.
-- [ ] Multi-node tests for failover and ownership transfer.
-- [ ] Chaos tests for partial rollout and reconnect replay safety.
+- [ ] High-risk approval gate enforcement before execution.
+- [ ] Concurrency/backpressure limits (`maxConcurrent`, queue depth, retry budget).
+- [ ] Failure taxonomy normalization (`failed_terminal`, `dependency_missing`, etc.).
+- [ ] Publish/update smoke test harness for contract lifecycle.
+- [ ] Basic observability APIs:
+  - [ ] task lifecycle timeline query
+  - [ ] capability health summary (`success`, `p95 accept`, `p95 complete`)
 
-## G) Commit / Push / Deploy Checklist
+Production exit criteria:
 
-## Local readiness
+- [ ] Two-node and multi-node validation runs green.
+- [ ] No uncontrolled escalation fanout under synthetic stress.
+- [ ] Rollback runbook tested once in staging.
 
-- [ ] `npm run typecheck`
-- [ ] `npm test` (or project test suite) green
-- [ ] docs updated for any protocol change
-- [ ] changelog/release note entry prepared
+## MVP-2: Skill Lifecycle Automation
 
-## Git hygiene
+Goal:
 
-- [ ] review `git status` for intended files only
-- [ ] review `git diff` for secrets/tokens/hostnames
-- [ ] commit with scoped message(s)
+- move from contract skeleton to fully managed skill pair lifecycle.
 
-## Push and release
+Must-have:
+
+- [ ] `ansible-main` installer/wirer for delegation skills.
+- [ ] `ansible-main` installer/wirer for executor skills.
+- [ ] Detach/unwire logic for unpublish + rollback.
+- [ ] Canary rollout controller + soak evaluator.
+- [ ] Automated remediation hooks on SLA/error misfire.
+
+Exit criteria:
+
+- [ ] Publish/update/unpublish runs end-to-end without manual workspace wiring.
+- [ ] Skill pair rollback is deterministic and auditable.
+
+## MVP-3: Governance + Clawhub Readiness
+
+Goal:
+
+- publication-ready security and provenance posture.
+
+Must-have:
+
+- [ ] Signature verification trust path + key store integration.
+- [ ] Approval artifact recording for high-risk capabilities.
+- [ ] Secret scanning/redaction checks in publish path.
+- [ ] Signed provenance checks in CI.
+- [ ] Clawhub package docs/metadata finalized.
+
+Exit criteria:
+
+- [ ] Clawhub publish checklist fully complete.
+- [ ] Security review sign-off.
+
+## Test Matrix (cross-cutting)
+
+- [ ] Unit tests: manifest validation + gate failures.
+- [ ] Integration tests: publish success + rollback.
+- [ ] Integration tests: claim/update/complete contract + idempotency.
+- [ ] Multi-node tests: failover and ownership transfer.
+- [ ] Chaos tests: partial rollout, reconnect replay safety.
+
+## Commit / Push / Deploy Gate
+
+Local readiness:
+
+- [x] `npm run typecheck`
+- [x] `npm run build`
+- [ ] tests green (when test suite is present)
+- [x] docs updated
+
+Git hygiene:
+
+- [ ] verify `git status` only expected files
+- [ ] verify no secrets/tokens in diff
+- [ ] scoped commit messages
+
+Release:
 
 - [ ] push branch
 - [ ] open PR with risk + rollback notes
-- [ ] require review signoff on:
-  - [ ] schema changes
-  - [ ] auth or runtime lifecycle changes
-  - [ ] migration/compatibility behavior
+- [ ] review signoff on schema/auth/runtime changes
 
-## Deploy
+Deploy:
 
-- [ ] deploy to canary gateway first
-- [ ] run publish smoke tests
-- [ ] monitor SLA/error metrics for soak window
-- [ ] promote to full rollout
-- [ ] record deployment outcome in ops notes
+- [ ] run canary flow in [deployment-runbook-v1.md](deployment-runbook-v1.md)
+- [ ] record outcome and decision (promote/hold/rollback)

@@ -19,6 +19,8 @@
 - **[documentation-status-v1.md](documentation-status-v1.md)** — Canonical vs historical doc map to prevent stale concepts from driving implementation
 - **[clawhub-publish-prep-v1.md](clawhub-publish-prep-v1.md)** — Packaging, security, docs, and quality gates for publishing this plugin/skill to Clawhub
 - **[deployment-runbook-v1.md](deployment-runbook-v1.md)** — Step-by-step canary rollout and rollback runbook with safe SLA defaults and go/no-go checks
+- **[mvp0-soak-log-2026-02-27.md](mvp0-soak-log-2026-02-27.md)** — Active 24h MVP-0 soak log, start timestamp, baseline health, and checkpoint/exit rules
+- **[mvp0-handoff-checklist.md](mvp0-handoff-checklist.md)** — Commit/push/deploy handoff checklist for MVP-0 hardening and rollout
 - **[setup.md](setup.md)** — Practical setup and operations guide (new agent, new gateway, coordinator sweep)
 - **[update-architecture.md](update-architecture.md)** — Source-of-truth update model (`setup` scope, plugin update path, config write safety, canonical defaults)
 
