@@ -61,6 +61,31 @@ Use the **Architect-managed inbox** operating model:
 **Fix (planned)**:
 Implement startup backlog dispatch + retry semantics, as specified in `docs/protocol.md`.
 
+---
+
+### DEF-004: Pulse/heartbeat status can show node offline while messaging still works
+
+- **Severity**: Medium (observability accuracy)
+- **Status**: Open
+- **Points**: 3
+- **Discovered**: 2026-02-28
+
+**Symptom**:
+- `ansible status` / `ansible nodes` may briefly report a node (notably `vps-jane`) as `offline`.
+- During the same period, directed messages are still delivered successfully end-to-end.
+
+**Impact**:
+- Operator confidence issue: status board can imply a connectivity outage when transport is actually healthy.
+- Can cause unnecessary triage noise.
+
+**Workaround**:
+- Validate liveness with a directed message test (`ansible send` + inbox/read/dump confirmation) before treating it as a transport incident.
+
+**Fix (planned)**:
+- Review pulse write cadence and stale threshold interaction.
+- Ensure heartbeat updates are not starved by gateway lifecycle/restart edges.
+- Consider decoupling “transport reachable” from “recent pulse timestamp” in status rendering.
+
 ## Technical Debt
 
 ### TD-001: Type stubs vs. real OpenClaw SDK types

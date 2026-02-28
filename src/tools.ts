@@ -269,17 +269,31 @@ function requireAdminActor(
   const t = String(rec.type || "");
   if (t === "external") return;
   if (t === "internal") {
-    const gateway = typeof rec.gateway === "string" ? rec.gateway : "";
-    if (gateway !== nodeId) {
-      throw new Error(
-        `Admin agent '${adminAgentId}' is internal on gateway '${gateway}', not this node '${nodeId}'.`,
-      );
-    }
+    // Token-authenticated internal admin agents are allowed even if their recorded
+    // gateway id lags behind a node-rename event (e.g., vps-jane-host -> vps-jane).
+    // This keeps bootstrap/admin continuity during topology migrations.
     return;
   }
   throw new Error(
     `Admin agent '${adminAgentId}' has unsupported type '${t}'.`,
   );
+}
+
+function requireInternalCapabilityPublisher(
+  doc: ReturnType<typeof getDoc>,
+  _nodeId: string,
+  actorAgentId: string,
+): void {
+  const agents = doc?.getMap("agents");
+  const rec = agents?.get(actorAgentId) as Record<string, unknown> | undefined;
+  if (!rec) {
+    throw new Error(`Actor agent '${actorAgentId}' is not registered.`);
+  }
+  if (rec.type !== "internal") {
+    throw new Error(
+      "Capability publish/unpublish requires an internal agent identity. External tokens are not allowed.",
+    );
+  }
 }
 
 function getCoordinationMap(doc: ReturnType<typeof getDoc>) {
@@ -2044,8 +2058,8 @@ export function registerAnsibleTools(
         contract_schema_ref: { type: "string", description: "Schema reference for request/result contract" },
         default_eta_seconds: { type: "number", description: "Default expected completion time (seconds)" },
         status: { type: "string", enum: ["active", "deprecated", "disabled"] },
-        from_agent: { type: "string", description: "Acting admin agent id (must match configured admin agent)" },
-        agent_token: { type: "string", description: "Auth token for acting admin agent" },
+        from_agent: { type: "string", description: "Acting internal agent id on this gateway" },
+        agent_token: { type: "string", description: "Auth token for acting internal agent" },
       },
     },
     async execute(_id, params) {
@@ -2057,12 +2071,6 @@ export function registerAnsibleTools(
       try {
         gate = "G0_AUTHZ";
         requireAuth(nodeId);
-        requireAdmin(nodeId, doc);
-
-        const adminAgentId =
-          typeof (config as any)?.adminAgentId === "string" && (config as any).adminAgentId.trim().length > 0
-            ? (config as any).adminAgentId.trim()
-            : "admin";
         const requestedFrom = typeof params.from_agent === "string" ? String(params.from_agent) : undefined;
         const token =
           typeof params.agent_token === "string" && params.agent_token.trim().length > 0
@@ -2072,7 +2080,7 @@ export function registerAnsibleTools(
         if (actorResult.error) return toolResult({ error: actorResult.error });
         const publishedByAgentId = actorResult.actor;
         if (!publishedByAgentId) return toolResult({ error: "Failed to resolve publishing actor." });
-        requireAdminActor(doc, nodeId, adminAgentId, publishedByAgentId);
+        requireInternalCapabilityPublisher(doc, nodeId, publishedByAgentId);
 
         gate = "G1_SCHEMA";
         const nowIso = new Date().toISOString();
@@ -2081,7 +2089,7 @@ export function registerAnsibleTools(
           : buildManifestFromLegacyParams(params, publishedByAgentId, nowIso);
         if (manifest.provenance.publishedByAgentId !== publishedByAgentId) {
           return toolResult({
-            error: `manifest provenance publisher '${manifest.provenance.publishedByAgentId}' does not match acting admin '${publishedByAgentId}'`,
+            error: `manifest provenance publisher '${manifest.provenance.publishedByAgentId}' does not match acting agent '${publishedByAgentId}'`,
           });
         }
 
@@ -2232,8 +2240,8 @@ export function registerAnsibleTools(
       type: "object",
       properties: {
         capability_id: { type: "string", description: "Capability id to disable" },
-        from_agent: { type: "string", description: "Acting admin agent id (must match configured admin agent)" },
-        agent_token: { type: "string", description: "Auth token for acting admin agent" },
+        from_agent: { type: "string", description: "Acting internal agent id on this gateway" },
+        agent_token: { type: "string", description: "Auth token for acting internal agent" },
       },
       required: ["capability_id"],
     },
@@ -2243,11 +2251,6 @@ export function registerAnsibleTools(
       if (!doc || !nodeId) return toolResult({ error: "Ansible not initialized" });
       try {
         requireAuth(nodeId);
-        requireAdmin(nodeId, doc);
-        const adminAgentId =
-          typeof (config as any)?.adminAgentId === "string" && (config as any).adminAgentId.trim().length > 0
-            ? (config as any).adminAgentId.trim()
-            : "admin";
         const requestedFrom = typeof params.from_agent === "string" ? String(params.from_agent) : undefined;
         const token =
           typeof params.agent_token === "string" && params.agent_token.trim().length > 0
@@ -2255,9 +2258,9 @@ export function registerAnsibleTools(
             : undefined;
         const actorResult = resolveAdminActorOrError(doc, nodeId, token, requestedFrom);
         if (actorResult.error) return toolResult({ error: actorResult.error });
-        const actingAdmin = actorResult.actor;
-        if (!actingAdmin) return toolResult({ error: "Failed to resolve admin actor." });
-        requireAdminActor(doc, nodeId, adminAgentId, actingAdmin);
+        const actingAgent = actorResult.actor;
+        if (!actingAgent) return toolResult({ error: "Failed to resolve acting agent." });
+        requireInternalCapabilityPublisher(doc, nodeId, actingAgent);
 
         const capabilityId = validateString(params.capability_id, 160, "capability_id").trim();
         const catalogMap = getCapabilityCatalogMap(doc);
@@ -2269,7 +2272,7 @@ export function registerAnsibleTools(
         const pipeline = executeCapabilityUnpublishPipeline({
           doc,
           nodeId,
-          actingAdmin,
+          actingAdmin: actingAgent,
           capabilityId,
           existing,
         });
