@@ -26,7 +26,7 @@ Must-have:
 
 Canary exit criteria:
 
-- [ ] 24h soak on one coordinator backbone with no message storm.
+- [x] 24h soak on one coordinator backbone with no message storm.
 - [x] `publishPipeline` and `unpublishPipeline` show expected gate progression.
 - [x] At least one full task lifecycle verified with idempotency replay.
 - [x] SLA sweep outcomes recorded with clear reason fields.
@@ -122,5 +122,10 @@ Release:
 
 Deploy:
 
-- [ ] run canary flow in [deployment-runbook-v1.md](deployment-runbook-v1.md)
-- [ ] record outcome and decision (promote/hold/rollback)
+- [x] run canary flow in [deployment-runbook-v1.md](deployment-runbook-v1.md)
+- [x] record outcome and decision (promote/hold/rollback)
+
+Notes:
+
+- 2026-03-01: canary rerun passed (gateway health OK, SLA dry-run/record-only clean, capability publish/unpublish canary verified).
+- 2026-03-01 decision: **promote** current rollout baseline; keep MVP-1/2/3 items in progress.

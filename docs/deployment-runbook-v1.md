@@ -139,3 +139,20 @@ openclaw ansible tasks complete <taskId> --result "..." --idempotency-key <k>
 5. Remaining MVP-0 exit blockers:
    - 24h soak window still pending
    - SLA breach-path reason field validation still pending (no breaches observed).
+
+## Latest Execution Notes (2026-03-01)
+
+1. Runtime canary health checks passed on `vps-jane`:
+   - `openclaw gateway health` = OK
+   - `openclaw ansible status` = stable (online mesh participants, no unread buildup)
+2. SLA safety checks passed:
+   - `openclaw ansible sla sweep --dry-run --limit 200` = `scanned=57, breaches=0`
+   - `openclaw ansible sla sweep --record-only --limit 200` = `scanned=57, breaches=0`
+3. Capability canary validation passed:
+   - publish/unpublish succeeded with expected pipeline gate reporting
+   - distribution fanout now emits per-target tasks (no shared-claim deadlock)
+4. Task authorization hardening validated:
+   - non-assignee claim attempts are rejected
+5. Rollout decision:
+   - **Promote** current MVP-0 rollout baseline
+   - Continue MVP-1/2 backlog items without blocking deployment
