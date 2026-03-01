@@ -496,36 +496,40 @@ function makePolicyVersion() {
 }
 function createSkillDistributionTask(doc, nodeId, createdByAgentId, capabilityId, ownerAgentId, delegationSkillRef) {
     if (!doc)
-        return { created: false, targets: [] };
+        return { created: false, taskIds: [], targets: [] };
     const agents = doc.getMap("agents");
     const targets = Array.from(agents.keys())
         .map((k) => String(k))
         .filter((id) => id && id !== ownerAgentId);
     if (targets.length === 0)
-        return { created: false, targets: [] };
-    const task = {
-        id: randomUUID(),
-        title: `Skill distribution: ${capabilityId}`,
-        description: `Install/update delegation skill '${delegationSkillRef.name}@${delegationSkillRef.version}' for capability '${capabilityId}'.`,
-        status: "pending",
-        createdBy_agent: createdByAgentId,
-        createdBy_node: nodeId,
-        createdAt: Date.now(),
-        updatedAt: Date.now(),
-        updates: [],
-        assignedTo_agent: targets[0],
-        assignedTo_agents: targets,
-        intent: "skill_distribution",
-        metadata: {
-            kind: "skill_distribution",
-            capabilityId,
-            delegationSkillRef,
-            requiredResponse: "install_status_with_timestamp",
-        },
-    };
+        return { created: false, taskIds: [], targets: [] };
     const tasks = doc.getMap("tasks");
-    tasks.set(task.id, task);
-    return { created: true, taskId: task.id, targets };
+    const taskIds = [];
+    for (const target of targets) {
+        const now = Date.now();
+        const task = {
+            id: randomUUID(),
+            title: `Skill distribution: ${capabilityId}`,
+            description: `Install/update delegation skill '${delegationSkillRef.name}@${delegationSkillRef.version}' for capability '${capabilityId}'.`,
+            status: "pending",
+            createdBy_agent: createdByAgentId,
+            createdBy_node: nodeId,
+            createdAt: now,
+            updatedAt: now,
+            updates: [],
+            assignedTo_agent: target,
+            intent: "skill_distribution",
+            metadata: {
+                kind: "skill_distribution",
+                capabilityId,
+                delegationSkillRef,
+                requiredResponse: "install_status_with_timestamp",
+            },
+        };
+        tasks.set(task.id, task);
+        taskIds.push(task.id);
+    }
+    return { created: taskIds.length > 0, taskIds, targets };
 }
 function notifyTaskOwner(doc, fromNodeId, task, payload) {
     if (!doc)
@@ -692,7 +696,8 @@ function executeCapabilityPublishPipeline(args) {
         executorSkillRef: manifest.executorSkillRef,
         manifestKey,
         previousActiveVersion,
-        skillDistributionTaskId: distribution.taskId,
+        skillDistributionTaskIds: distribution.taskIds,
+        skillDistributionTaskId: distribution.taskIds[0],
     });
     const postcheck = runPublishGate(gateResults, "G9_POSTCHECK", () => {
         const readCatalog = catalogMap.get(capabilityId);
@@ -2884,6 +2889,19 @@ export function registerAnsibleTools(api, config) {
                 const task = tasks.get(resolvedKey);
                 if (!task) {
                     return toolResult({ error: "Task not found" });
+                }
+                const explicitAssignees = new Set();
+                if (typeof task.assignedTo_agent === "string" && task.assignedTo_agent.trim().length > 0) {
+                    explicitAssignees.add(task.assignedTo_agent.trim());
+                }
+                if (Array.isArray(task.assignedTo_agents)) {
+                    for (const a of task.assignedTo_agents) {
+                        if (typeof a === "string" && a.trim().length > 0)
+                            explicitAssignees.add(a.trim());
+                    }
+                }
+                if (explicitAssignees.size > 0 && !explicitAssignees.has(effectiveAgent)) {
+                    return toolResult({ error: `Task is assigned to ${Array.from(explicitAssignees).join(", ")}; ${effectiveAgent} cannot claim it.` });
                 }
                 const idempotencyKey = resolveTaskIdempotencyKey(params, task.id, "claim", effectiveAgent);
                 const seenIdempotency = readTaskIdempotency(task);
