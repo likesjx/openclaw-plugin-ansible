@@ -944,6 +944,8 @@ export function registerAnsibleCli(
             typeof coordination.effectiveAdminAgentId === "string" && coordination.effectiveAdminAgentId.trim().length > 0
               ? coordination.effectiveAdminAgentId
               : "(unset)";
+          const distributionExternalMode =
+            typeof coordination.distributionExternalMode === "string" ? coordination.distributionExternalMode : "all";
           const gatewayAdminsCount = Array.isArray(coordination.gatewayAdmins)
             ? coordination.gatewayAdmins.length
             : coordination.gatewayAdmins && typeof coordination.gatewayAdmins === "object"
@@ -976,6 +978,8 @@ export function registerAnsibleCli(
           console.log("Gateway Admin:");
           console.log(`  effectiveForThisGateway: ${effectiveAdmin}`);
           console.log(`  nominatedGateways: ${gatewayAdminsCount}`);
+          console.log("Distribution Policy:");
+          console.log(`  externalMode: ${distributionExternalMode}`);
           console.log("Delegation Policy:");
           console.log(`  version: ${delegationVersion}`);
           console.log(`  checksum: ${delegationChecksum}`);
@@ -1312,6 +1316,75 @@ export function registerAnsibleCli(
         console.log(`✓ Gateway admin set: ${out.gatewayId} -> ${out.adminAgentId}`);
         if (out.previousAdminAgentId) {
           console.log(`  previous=${out.previousAdminAgentId}`);
+        }
+      });
+
+    admin
+      .command("seed")
+      .description("Seed missing gateway admin nominations for all authorized gateways")
+      .option("--agent <agentId>", "Optional admin agent id to seed (defaults to configured admin)")
+      .option("--dry-run", "Preview without applying")
+      .option("--as <agentId>", "Acting current admin agent id")
+      .option("--token <token>", "Auth token for acting admin (or set OPENCLAW_ANSIBLE_TOKEN)")
+      .action(async (...args: unknown[]) => {
+        const opts = (args[0] || {}) as { agent?: string; dryRun?: boolean; as?: string; token?: string };
+        const toolArgs: Record<string, unknown> = {};
+        if (opts.agent) toolArgs.admin_agent_id = opts.agent;
+        if (opts.dryRun) toolArgs.dry_run = true;
+        if (opts.as) toolArgs.from_agent = opts.as;
+        const token = resolveAgentToken(opts.token);
+        if (token) toolArgs.agent_token = token;
+
+        let out: any;
+        try {
+          out = await callGateway("ansible_seed_gateway_admins", toolArgs);
+        } catch (err: any) {
+          console.log(`✗ ${err.message}`);
+          return;
+        }
+        if (out.error) {
+          console.log(`✗ ${out.error}`);
+          return;
+        }
+        console.log(
+          `✓ Gateway admin seed ${out.dryRun ? "dry-run" : "applied"}: candidates=${out.candidateCount || 0} seeded=${out.seededCount || 0}`,
+        );
+        const rows = Array.isArray(out.seeded) ? out.seeded : [];
+        for (const row of rows) {
+          console.log(`  - ${row.gatewayId} -> ${row.adminAgentId}`);
+        }
+      });
+
+    admin
+      .command("distribution")
+      .description("Set external targeting policy for skill distribution fanout")
+      .option("--external-mode <mode>", "External mode: all|strict")
+      .option("--as <agentId>", "Acting current admin agent id")
+      .option("--token <token>", "Auth token for acting admin (or set OPENCLAW_ANSIBLE_TOKEN)")
+      .action(async (...args: unknown[]) => {
+        const opts = (args[0] || {}) as { externalMode?: string; as?: string; token?: string };
+        if (!opts.externalMode) {
+          console.log("✗ Use: openclaw ansible admin distribution --external-mode all|strict");
+          return;
+        }
+        const toolArgs: Record<string, unknown> = { external_mode: opts.externalMode };
+        if (opts.as) toolArgs.from_agent = opts.as;
+        const token = resolveAgentToken(opts.token);
+        if (token) toolArgs.agent_token = token;
+        let out: any;
+        try {
+          out = await callGateway("ansible_set_distribution_policy", toolArgs);
+        } catch (err: any) {
+          console.log(`✗ ${err.message}`);
+          return;
+        }
+        if (out.error) {
+          console.log(`✗ ${out.error}`);
+          return;
+        }
+        console.log(`✓ Distribution external mode set: ${out.distributionExternalMode}`);
+        if (out.previousDistributionExternalMode) {
+          console.log(`  previous=${out.previousDistributionExternalMode}`);
         }
       });
 
@@ -2581,6 +2654,51 @@ export function registerAnsibleCli(
       });
 
     agentCmd
+      .command("distribution-opt")
+      .description("Admin-only: opt an external agent in/out of strict distribution targeting")
+      .option("--id <agentId>", "External agent ID")
+      .option("--enable", "Opt in the agent")
+      .option("--disable", "Opt out the agent")
+      .option("--as <agentId>", "Acting admin agent id (defaults to current gateway admin)")
+      .option("--token <token>", "Auth token for acting admin (or set OPENCLAW_ANSIBLE_TOKEN)")
+      .action(async (...args: unknown[]) => {
+        const opts = (args[0] || {}) as {
+          id?: string;
+          enable?: boolean;
+          disable?: boolean;
+          as?: string;
+          token?: string;
+        };
+        if (!opts.id) {
+          console.log("✗ Use: openclaw ansible agent distribution-opt --id <agentId> --enable|--disable");
+          return;
+        }
+        if ((opts.enable === true && opts.disable === true) || (opts.enable !== true && opts.disable !== true)) {
+          console.log("✗ Specify exactly one of --enable or --disable.");
+          return;
+        }
+        const toolArgs: Record<string, unknown> = {
+          agent_id: opts.id,
+          opt_in: opts.enable === true,
+        };
+        if (opts.as) toolArgs.from_agent = opts.as;
+        const token = resolveAgentToken(opts.token);
+        if (token) toolArgs.agent_token = token;
+        let result: any;
+        try {
+          result = await callGateway("ansible_set_agent_distribution_opt_in", toolArgs);
+        } catch (err: any) {
+          console.log(`✗ ${err.message}`);
+          return;
+        }
+        if ((result as any).error) {
+          console.log(`✗ ${(result as any).error}`);
+          return;
+        }
+        console.log(`✓ Distribution opt-in for "${opts.id}" set to ${result.opt_in === true ? "enabled" : "disabled"}`);
+      });
+
+    agentCmd
       .command("list")
       .description("List all registered agents")
       .action(async () => {
@@ -2603,6 +2721,9 @@ export function registerAnsibleCli(
           const location = a.gateway ? `gateway:${a.gateway}` : "external/cli";
           const disabled = a.disabledAt ? " disabled" : "";
           console.log(`  ${a.id} [${a.type}${disabled}] — ${a.name || a.id} (${location})`);
+          if (a.type === "external") {
+            console.log(`    distributionOptIn=${a.distributionOptIn === true ? "true" : "false"}`);
+          }
           if (a.auth?.tokenHint || a.auth?.issuedAt || a.auth?.rotatedAt) {
             const issued = a.auth?.issuedAt ? new Date(a.auth.issuedAt).toLocaleString() : "n/a";
             const rotated = a.auth?.rotatedAt ? new Date(a.auth.rotatedAt).toLocaleString() : "n/a";

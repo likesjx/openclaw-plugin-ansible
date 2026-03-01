@@ -267,6 +267,13 @@ function resolveRequiredAdminAgentId(
   return resolveGatewayAdminFromCoordination(doc, nodeId) || configuredAdminAgentId(config);
 }
 
+function readDistributionExternalMode(doc: ReturnType<typeof getDoc>): "all" | "strict" {
+  const m = getCoordinationMap(doc);
+  const mode = typeof m?.get("distributionExternalMode") === "string" ? String(m?.get("distributionExternalMode")) : "";
+  if (mode === "strict") return "strict";
+  return "all";
+}
+
 /**
  * Resolve the effective admin actor for a privileged operation.
  *
@@ -386,6 +393,8 @@ function readCoordinationState(doc: ReturnType<typeof getDoc>) {
     delegationPolicyChecksum: m.get("delegationPolicyChecksum") as string | undefined,
     delegationPolicyUpdatedAt: m.get("delegationPolicyUpdatedAt") as number | undefined,
     delegationPolicyUpdatedBy: m.get("delegationPolicyUpdatedBy") as string | undefined,
+    distributionExternalMode:
+      m.get("distributionExternalMode") === "strict" ? "strict" : "all",
     gatewayAdmins,
     updatedAt: m.get("updatedAt") as number | undefined,
     updatedBy: m.get("updatedBy") as string | undefined,
@@ -805,7 +814,11 @@ function isDistributionEligibleAgent(
   if (!rec) return false;
   if (typeof rec.disabledAt === "number") return false;
   const type = String(rec.type || "");
-  if (type === "external") return true;
+  if (type === "external") {
+    const mode = readDistributionExternalMode(doc);
+    if (mode === "all") return true;
+    return rec.distributionOptIn === true;
+  }
   if (type !== "internal") return false;
   const gateway = typeof rec.gateway === "string" ? rec.gateway.trim() : "";
   if (!gateway) return false;
@@ -1877,6 +1890,233 @@ export function registerAnsibleTools(
           adminAgentId,
           previousAdminAgentId,
           updatedBy: actorResult.actor,
+        });
+      } catch (err: any) {
+        return toolResult({ error: err.message });
+      }
+    },
+  });
+
+  // === ansible_seed_gateway_admins ===
+  api.registerTool({
+    name: "ansible_seed_gateway_admins",
+    label: "Ansible Seed Gateway Admins",
+    description:
+      "Admin-only: seed missing gateway admin nominations for all authorized nodes.",
+    parameters: {
+      type: "object",
+      properties: {
+        admin_agent_id: {
+          type: "string",
+          description: "Optional admin agent id to seed (defaults to configured local admin agent).",
+        },
+        dry_run: {
+          type: "boolean",
+          description: "If true, report seeds without writing.",
+        },
+        from_agent: {
+          type: "string",
+          description: "Acting admin agent id for authorization.",
+        },
+        agent_token: {
+          type: "string",
+          description: "Auth token for acting admin agent.",
+        },
+      },
+    },
+    async execute(_id, params) {
+      const doc = getDoc();
+      const nodeId = getNodeId();
+      if (!doc || !nodeId) return toolResult({ error: "Ansible not initialized" });
+      try {
+        requireAuth(nodeId);
+        requireAdmin(nodeId, doc);
+        const currentAdminAgentId = resolveRequiredAdminAgentId(doc, nodeId, config);
+        const requestedFrom = typeof params.from_agent === "string" ? String(params.from_agent) : undefined;
+        const token =
+          typeof params.agent_token === "string" && params.agent_token.trim().length > 0
+            ? params.agent_token.trim()
+            : undefined;
+        const actorResult = resolveAdminActorOrError(doc, nodeId, token, requestedFrom);
+        if (actorResult.error) return toolResult({ error: actorResult.error });
+        requireAdminActor(doc, nodeId, currentAdminAgentId, actorResult.actor);
+
+        const adminAgentId =
+          typeof params.admin_agent_id === "string" && params.admin_agent_id.trim().length > 0
+            ? validateString(params.admin_agent_id, 100, "admin_agent_id").trim()
+            : configuredAdminAgentId(config);
+        const dryRun = params.dry_run === true;
+
+        const agents = doc.getMap("agents");
+        const adminRec = agents.get(adminAgentId) as Record<string, unknown> | undefined;
+        if (!adminRec) return toolResult({ error: `Admin agent '${adminAgentId}' is not registered.` });
+        if (typeof adminRec.disabledAt === "number") return toolResult({ error: `Admin agent '${adminAgentId}' is disabled.` });
+
+        const nodes = doc.getMap("nodes");
+        const m = getCoordinationMap(doc);
+        if (!m) return toolResult({ error: "Coordination map not initialized" });
+
+        const seeded: Array<{ gatewayId: string; adminAgentId: string }> = [];
+        const skipped: Array<{ gatewayId: string; reason: string }> = [];
+        for (const gatewayIdRaw of nodes.keys()) {
+          const gatewayId = String(gatewayIdRaw || "").trim();
+          if (!gatewayId) continue;
+          const key = `gatewayAdmin:${gatewayId}`;
+          const existing = m.get(key);
+          if (typeof existing === "string" && existing.trim().length > 0) {
+            skipped.push({ gatewayId, reason: "already_set" });
+            continue;
+          }
+          seeded.push({ gatewayId, adminAgentId });
+          if (!dryRun) m.set(key, adminAgentId);
+        }
+
+        if (!dryRun) {
+          m.set("updatedAt", Date.now());
+          m.set("updatedBy", nodeId);
+        }
+        return toolResult({
+          success: true,
+          dryRun,
+          seededCount: dryRun ? 0 : seeded.length,
+          candidateCount: seeded.length,
+          seeded,
+          skipped,
+        });
+      } catch (err: any) {
+        return toolResult({ error: err.message });
+      }
+    },
+  });
+
+  // === ansible_set_distribution_policy ===
+  api.registerTool({
+    name: "ansible_set_distribution_policy",
+    label: "Ansible Set Distribution Policy",
+    description:
+      "Admin-only: set external-agent targeting policy for skill distribution fanout.",
+    parameters: {
+      type: "object",
+      properties: {
+        external_mode: {
+          type: "string",
+          description: "External targeting mode: all|strict.",
+        },
+        from_agent: {
+          type: "string",
+          description: "Acting admin agent id for authorization.",
+        },
+        agent_token: {
+          type: "string",
+          description: "Auth token for acting admin agent.",
+        },
+      },
+      required: ["external_mode"],
+    },
+    async execute(_id, params) {
+      const doc = getDoc();
+      const nodeId = getNodeId();
+      if (!doc || !nodeId) return toolResult({ error: "Ansible not initialized" });
+      try {
+        requireAuth(nodeId);
+        requireAdmin(nodeId, doc);
+        const adminAgentId = resolveRequiredAdminAgentId(doc, nodeId, config);
+        const requestedFrom = typeof params.from_agent === "string" ? String(params.from_agent) : undefined;
+        const token =
+          typeof params.agent_token === "string" && params.agent_token.trim().length > 0
+            ? params.agent_token.trim()
+            : undefined;
+        const actorResult = resolveAdminActorOrError(doc, nodeId, token, requestedFrom);
+        if (actorResult.error) return toolResult({ error: actorResult.error });
+        requireAdminActor(doc, nodeId, adminAgentId, actorResult.actor);
+
+        const externalMode = validateString(params.external_mode, 32, "external_mode").trim();
+        if (externalMode !== "all" && externalMode !== "strict") {
+          return toolResult({ error: "external_mode must be 'all' or 'strict'." });
+        }
+        const m = getCoordinationMap(doc);
+        if (!m) return toolResult({ error: "Coordination map not initialized" });
+        const previousMode = readDistributionExternalMode(doc);
+        m.set("distributionExternalMode", externalMode);
+        m.set("updatedAt", Date.now());
+        m.set("updatedBy", nodeId);
+        return toolResult({
+          success: true,
+          distributionExternalMode: externalMode,
+          previousDistributionExternalMode: previousMode,
+          updatedBy: actorResult.actor,
+        });
+      } catch (err: any) {
+        return toolResult({ error: err.message });
+      }
+    },
+  });
+
+  // === ansible_set_agent_distribution_opt_in ===
+  api.registerTool({
+    name: "ansible_set_agent_distribution_opt_in",
+    label: "Ansible Set Agent Distribution Opt-In",
+    description:
+      "Admin-only: opt an external agent in/out of strict skill-distribution targeting.",
+    parameters: {
+      type: "object",
+      properties: {
+        agent_id: {
+          type: "string",
+          description: "External agent id.",
+        },
+        opt_in: {
+          type: "boolean",
+          description: "Whether this external agent is eligible in strict distribution mode.",
+        },
+        from_agent: {
+          type: "string",
+          description: "Acting admin agent id for authorization.",
+        },
+        agent_token: {
+          type: "string",
+          description: "Auth token for acting admin agent.",
+        },
+      },
+      required: ["agent_id", "opt_in"],
+    },
+    async execute(_id, params) {
+      const doc = getDoc();
+      const nodeId = getNodeId();
+      if (!doc || !nodeId) return toolResult({ error: "Ansible not initialized" });
+      try {
+        requireAuth(nodeId);
+        requireAdmin(nodeId, doc);
+        const adminAgentId = resolveRequiredAdminAgentId(doc, nodeId, config);
+        const requestedFrom = typeof params.from_agent === "string" ? String(params.from_agent) : undefined;
+        const token =
+          typeof params.agent_token === "string" && params.agent_token.trim().length > 0
+            ? params.agent_token.trim()
+            : undefined;
+        const actorResult = resolveAdminActorOrError(doc, nodeId, token, requestedFrom);
+        if (actorResult.error) return toolResult({ error: actorResult.error });
+        requireAdminActor(doc, nodeId, adminAgentId, actorResult.actor);
+
+        const agentId = validateString(params.agent_id, 100, "agent_id").trim();
+        const optIn = params.opt_in === true;
+        const agents = doc.getMap("agents");
+        const rec = agents.get(agentId) as Record<string, unknown> | undefined;
+        if (!rec) return toolResult({ error: `Agent '${agentId}' is not registered.` });
+        if (rec.type !== "external") {
+          return toolResult({ error: `Agent '${agentId}' is type '${String(rec.type)}'; only external agents support distribution opt-in.` });
+        }
+        const previousOptIn = rec.distributionOptIn === true;
+        agents.set(agentId, {
+          ...rec,
+          distributionOptIn: optIn,
+          distributionOptInUpdatedAt: Date.now(),
+          distributionOptInUpdatedBy: actorResult.actor,
+        });
+        return toolResult({
+          success: true,
+          agent_id: agentId,
+          opt_in: optIn,
+          previous_opt_in: previousOptIn,
         });
       } catch (err: any) {
         return toolResult({ error: err.message });
@@ -5199,6 +5439,7 @@ export function registerAnsibleTools(
           ...r,
           id,
           auth: safeAuth,
+          distributionOptIn: r.distributionOptIn === true,
           disabledAt: typeof r.disabledAt === "number" ? r.disabledAt : undefined,
           disabledBy: typeof r.disabledBy === "string" ? r.disabledBy : undefined,
           disableReason: typeof r.disableReason === "string" ? r.disableReason : undefined,

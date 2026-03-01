@@ -448,6 +448,7 @@ export interface CoordinationPreference {
  * - delegationPolicyMarkdown: string
  * - delegationPolicyUpdatedAt: number (ms epoch)
  * - delegationPolicyUpdatedBy: TailscaleId
+ * - distributionExternalMode: "all" | "strict"
  * - delegationAck:<nodeId>:version: string
  * - delegationAck:<nodeId>:checksum: string
  * - delegationAck:<nodeId>:at: number (ms epoch)
@@ -464,6 +465,7 @@ export interface CoordinationState {
   delegationPolicyMarkdown?: string;
   delegationPolicyUpdatedAt?: number;
   delegationPolicyUpdatedBy?: TailscaleId;
+  distributionExternalMode?: "all" | "strict";
   gatewayAdmins?: Record<string, AgentId>;
 }
 
