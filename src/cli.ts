@@ -2467,6 +2467,41 @@ export function registerAnsibleCli(
       });
 
     agentCmd
+      .command("enable")
+      .description("Admin-only: re-enable a previously disabled agent identity")
+      .option("--id <agentId>", "Agent ID to re-enable")
+      .option("--as <agentId>", "Acting admin agent id (defaults to 'admin')", "admin")
+      .option("--token <token>", "Auth token for acting admin (or set OPENCLAW_ANSIBLE_TOKEN)")
+      .action(async (...args: unknown[]) => {
+        const opts = (args[0] || {}) as { id?: string; as?: string; token?: string };
+        if (!opts.id) {
+          console.log("✗ Use: openclaw ansible agent enable --id <agentId>");
+          return;
+        }
+        const toolArgs: Record<string, unknown> = { agent_id: opts.id };
+        if (opts.as) toolArgs.from_agent = opts.as;
+        const token = resolveAgentToken(opts.token);
+        if (token) toolArgs.agent_token = token;
+
+        let result: any;
+        try {
+          result = await callGateway("ansible_enable_agent", toolArgs);
+        } catch (err: any) {
+          console.log(`✗ ${err.message}`);
+          return;
+        }
+        if ((result as any).error) {
+          console.log(`✗ ${(result as any).error}`);
+          return;
+        }
+        if ((result as any).changed) {
+          console.log(`✓ Enabled "${opts.id}"`);
+        } else {
+          console.log(`✓ "${opts.id}" was already enabled`);
+        }
+      });
+
+    agentCmd
       .command("list")
       .description("List all registered agents")
       .action(async () => {

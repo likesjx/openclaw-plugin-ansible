@@ -4120,6 +4120,79 @@ export function registerAnsibleTools(api, config) {
             }
         },
     });
+    // === ansible_enable_agent ===
+    api.registerTool({
+        name: "ansible_enable_agent",
+        label: "Ansible Enable Agent",
+        description: "Admin-only: re-enable a previously disabled agent identity.",
+        parameters: {
+            type: "object",
+            properties: {
+                agent_id: {
+                    type: "string",
+                    description: "Agent id to re-enable.",
+                },
+                from_agent: {
+                    type: "string",
+                    description: "Acting admin agent id (must match configured admin agent).",
+                },
+                agent_token: {
+                    type: "string",
+                    description: "Auth token for acting admin agent. Preferred over from_agent.",
+                },
+            },
+            required: ["agent_id"],
+        },
+        async execute(_id, params) {
+            const doc = getDoc();
+            const nodeId = getNodeId();
+            if (!doc || !nodeId)
+                return toolResult({ error: "Ansible not initialized" });
+            try {
+                requireAuth(nodeId);
+                requireAdmin(nodeId, doc);
+                const adminAgentId = typeof config?.adminAgentId === "string" && config.adminAgentId.trim().length > 0
+                    ? config.adminAgentId.trim()
+                    : "admin";
+                const requestedFrom = typeof params.from_agent === "string" ? String(params.from_agent) : undefined;
+                const token = typeof params.agent_token === "string" && params.agent_token.trim().length > 0
+                    ? params.agent_token.trim()
+                    : undefined;
+                const actorResult = resolveAdminActorOrError(doc, nodeId, token, requestedFrom);
+                if (actorResult.error)
+                    return toolResult({ error: actorResult.error });
+                requireAdminActor(doc, nodeId, adminAgentId, actorResult.actor);
+                const agentId = validateString(params.agent_id, 100, "agent_id").trim();
+                const agents = doc.getMap("agents");
+                const rec = agents.get(agentId);
+                if (!rec)
+                    return toolResult({ error: `Agent '${agentId}' is not registered.` });
+                if (typeof rec.disabledAt !== "number") {
+                    return toolResult({
+                        success: true,
+                        changed: false,
+                        agent_id: agentId,
+                    });
+                }
+                const next = { ...rec };
+                delete next.disabledAt;
+                delete next.disabledBy;
+                delete next.disableReason;
+                next.enabledAt = Date.now();
+                next.enabledBy = actorResult.actor;
+                agents.set(agentId, next);
+                return toolResult({
+                    success: true,
+                    changed: true,
+                    agent_id: agentId,
+                    enabledAt: next.enabledAt,
+                });
+            }
+            catch (err) {
+                return toolResult({ error: err.message });
+            }
+        },
+    });
     // === ansible_invite_agent ===
     api.registerTool({
         name: "ansible_invite_agent",
