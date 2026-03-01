@@ -66,6 +66,22 @@ function getTaskAssignees(task) {
     }
     return Array.from(out);
 }
+function canonicalGatewayId(input) {
+    const raw = String(input || "").trim().toLowerCase();
+    if (!raw)
+        return "";
+    const dashed = raw.replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+    if (!dashed)
+        return "";
+    return dashed.endsWith("-host") ? dashed.slice(0, -5) : dashed;
+}
+function gatewayMatchesNode(recordGateway, nodeId) {
+    if (typeof recordGateway !== "string")
+        return false;
+    if (recordGateway === nodeId)
+        return true;
+    return canonicalGatewayId(recordGateway) === canonicalGatewayId(nodeId);
+}
 function getLocalInternalAgents(doc, nodeId) {
     if (!doc)
         return [nodeId];
@@ -75,7 +91,7 @@ function getLocalInternalAgents(doc, nodeId) {
         const record = raw;
         if (!record || record.type !== "internal")
             continue;
-        if (record.gateway === nodeId)
+        if (gatewayMatchesNode(record.gateway, nodeId))
             out.add(String(agentId));
     }
     return Array.from(out).sort((a, b) => a.localeCompare(b));

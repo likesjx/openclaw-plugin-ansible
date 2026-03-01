@@ -174,6 +174,22 @@ function requireAdmin(nodeId, doc) {
         throw new Error("Admin capability required for this destructive operation. Add capability 'admin' to this node configuration.");
     }
 }
+function canonicalGatewayId(input) {
+    const raw = String(input || "").trim().toLowerCase();
+    if (!raw)
+        return "";
+    const dashed = raw.replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+    if (!dashed)
+        return "";
+    return dashed.endsWith("-host") ? dashed.slice(0, -5) : dashed;
+}
+function gatewayMatchesNode(recordGateway, nodeId) {
+    if (typeof recordGateway !== "string")
+        return false;
+    if (recordGateway === nodeId)
+        return true;
+    return canonicalGatewayId(recordGateway) === canonicalGatewayId(nodeId);
+}
 /**
  * Resolve the effective admin actor for a privileged operation.
  *
@@ -203,7 +219,7 @@ function resolveAdminActorOrError(doc, nodeId, token, requestedFrom) {
     if (!rec) {
         return { error: `Agent '${from}' is not registered. Use agent_token or register the agent first.` };
     }
-    if (rec.type !== "internal" || rec.gateway !== nodeId) {
+    if (rec.type !== "internal" || !gatewayMatchesNode(rec.gateway, nodeId)) {
         return { error: `agent_token is required for '${from}' (external agents or agents on other nodes must provide a token).` };
     }
     return { actor: from };
