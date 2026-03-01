@@ -2186,6 +2186,82 @@ export function registerAnsibleCli(api, config) {
             }
         });
         agentCmd
+            .command("rebind")
+            .description("Admin-only: rebind an internal agent to a canonical gateway/node id")
+            .option("--id <agentId>", "Internal agent ID to rebind")
+            .option("--gateway <nodeId>", "Canonical gateway/node id")
+            .option("--as <agentId>", "Acting admin agent id (defaults to 'admin')", "admin")
+            .option("--token <token>", "Auth token for acting admin (or set OPENCLAW_ANSIBLE_TOKEN)")
+            .action(async (...args) => {
+            const opts = (args[0] || {});
+            if (!opts.id || !opts.gateway) {
+                console.log("✗ Use: openclaw ansible agent rebind --id <agentId> --gateway <nodeId>");
+                return;
+            }
+            const toolArgs = { agent_id: opts.id, gateway: opts.gateway };
+            if (opts.as)
+                toolArgs.from_agent = opts.as;
+            const token = resolveAgentToken(opts.token);
+            if (token)
+                toolArgs.agent_token = token;
+            let result;
+            try {
+                result = await callGateway("ansible_rebind_agent", toolArgs);
+            }
+            catch (err) {
+                console.log(`✗ ${err.message}`);
+                return;
+            }
+            if (result.error) {
+                console.log(`✗ ${result.error}`);
+                return;
+            }
+            if (result.changed) {
+                console.log(`✓ Rebound "${opts.id}" gateway: ${result.previous_gateway || "n/a"} -> ${result.gateway || opts.gateway}`);
+            }
+            else {
+                console.log(`✓ No change for "${opts.id}" (already bound to ${result.gateway || opts.gateway})`);
+            }
+        });
+        agentCmd
+            .command("normalize")
+            .description("Admin-only: normalize legacy internal gateway ids to canonical node ids")
+            .option("--dry-run", "Preview candidate remaps without applying")
+            .option("--as <agentId>", "Acting admin agent id (defaults to 'admin')", "admin")
+            .option("--token <token>", "Auth token for acting admin (or set OPENCLAW_ANSIBLE_TOKEN)")
+            .action(async (...args) => {
+            const opts = (args[0] || {});
+            const toolArgs = {};
+            if (opts.dryRun)
+                toolArgs.dry_run = true;
+            if (opts.as)
+                toolArgs.from_agent = opts.as;
+            const token = resolveAgentToken(opts.token);
+            if (token)
+                toolArgs.agent_token = token;
+            let result;
+            try {
+                result = await callGateway("ansible_normalize_internal_gateways", toolArgs);
+            }
+            catch (err) {
+                console.log(`✗ ${err.message}`);
+                return;
+            }
+            if (result.error) {
+                console.log(`✗ ${result.error}`);
+                return;
+            }
+            const dry = result.dryRun === true;
+            const candidates = Number(result.candidates || 0);
+            const changed = Number(result.changed || 0);
+            const scanned = Number(result.scannedInternalAgents || 0);
+            console.log(`✓ Internal gateway normalization ${dry ? "dry-run" : "applied"}: scanned=${scanned} candidates=${candidates} changed=${changed}`);
+            const changes = (result.changes || []);
+            for (const c of changes) {
+                console.log(`  - ${c.agent_id}: ${c.from_gateway} -> ${c.to_gateway}`);
+            }
+        });
+        agentCmd
             .command("list")
             .description("List all registered agents")
             .action(async () => {

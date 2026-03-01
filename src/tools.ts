@@ -720,6 +720,39 @@ function makePolicyVersion(): string {
   return `cpv_${new Date().toISOString()}`;
 }
 
+function listCanonicalNodeIds(doc: ReturnType<typeof getDoc>): Set<string> {
+  const out = new Set<string>();
+  if (!doc) return out;
+  const nodes = doc.getMap("nodes");
+  for (const nodeId of nodes.keys()) {
+    const id = String(nodeId || "").trim();
+    if (!id) continue;
+    out.add(id);
+    out.add(canonicalGatewayId(id));
+  }
+  return out;
+}
+
+function isDistributionEligibleAgent(
+  doc: ReturnType<typeof getDoc>,
+  agentId: string,
+  ownerAgentId: string,
+): boolean {
+  if (!doc) return false;
+  if (!agentId || agentId === ownerAgentId) return false;
+  const agents = doc.getMap("agents");
+  const rec = agents.get(agentId) as Record<string, unknown> | undefined;
+  if (!rec) return false;
+  const type = String(rec.type || "");
+  if (type === "external") return true;
+  if (type !== "internal") return false;
+  const gateway = typeof rec.gateway === "string" ? rec.gateway.trim() : "";
+  if (!gateway) return false;
+  // Strict for fanout hygiene: only target internal agents bound to active node IDs.
+  const activeNodes = listCanonicalNodeIds(doc);
+  return activeNodes.has(gateway);
+}
+
 function createSkillDistributionTask(
   doc: ReturnType<typeof getDoc>,
   nodeId: string,
@@ -732,7 +765,7 @@ function createSkillDistributionTask(
   const agents = doc.getMap("agents");
   const targets = Array.from(agents.keys())
     .map((k) => String(k))
-    .filter((id) => id && id !== ownerAgentId);
+    .filter((id) => isDistributionEligibleAgent(doc, id, ownerAgentId));
   if (targets.length === 0) return { created: false, taskIds: [], targets: [] };
 
   const tasks = doc.getMap("tasks");
@@ -4309,6 +4342,198 @@ export function registerAnsibleTools(
           agent_id: agentId,
           agent_token: newToken,
           warning: "Store this token securely. It will not be shown again.",
+        });
+      } catch (err: any) {
+        return toolResult({ error: err.message });
+      }
+    },
+  });
+
+  // === ansible_rebind_agent ===
+  api.registerTool({
+    name: "ansible_rebind_agent",
+    label: "Ansible Rebind Agent",
+    description:
+      "Admin-only: update an internal agent's gateway binding (used for node rename/migration cleanup).",
+    parameters: {
+      type: "object",
+      properties: {
+        agent_id: {
+          type: "string",
+          description: "Internal agent id to rebind.",
+        },
+        gateway: {
+          type: "string",
+          description: "Canonical gateway/node id to bind the internal agent to.",
+        },
+        from_agent: {
+          type: "string",
+          description: "Acting admin agent id (must match configured admin agent).",
+        },
+        agent_token: {
+          type: "string",
+          description: "Auth token for acting admin agent. Preferred over from_agent.",
+        },
+      },
+      required: ["agent_id", "gateway"],
+    },
+    async execute(_id, params) {
+      const doc = getDoc();
+      const nodeId = getNodeId();
+      if (!doc || !nodeId) return toolResult({ error: "Ansible not initialized" });
+      try {
+        requireAuth(nodeId);
+        requireAdmin(nodeId, doc);
+        const adminAgentId =
+          typeof (config as any)?.adminAgentId === "string" && (config as any).adminAgentId.trim().length > 0
+            ? (config as any).adminAgentId.trim()
+            : "admin";
+        const requestedFrom = typeof params.from_agent === "string" ? String(params.from_agent) : undefined;
+        const token =
+          typeof params.agent_token === "string" && params.agent_token.trim().length > 0
+            ? params.agent_token.trim()
+            : undefined;
+        const actorResult = resolveAdminActorOrError(doc, nodeId, token, requestedFrom);
+        if (actorResult.error) return toolResult({ error: actorResult.error });
+        requireAdminActor(doc, nodeId, adminAgentId, actorResult.actor);
+
+        const agentId = validateString(params.agent_id, 100, "agent_id").trim();
+        const gateway = validateString(params.gateway, 120, "gateway").trim();
+        const agents = doc.getMap("agents");
+        const nodes = doc.getMap("nodes");
+        const rec = agents.get(agentId) as Record<string, unknown> | undefined;
+        if (!rec) return toolResult({ error: `Agent '${agentId}' is not registered.` });
+        if (rec.type !== "internal") {
+          return toolResult({ error: `Agent '${agentId}' is type '${String(rec.type)}'; only internal agents can be rebound.` });
+        }
+        if (!nodes.has(gateway)) {
+          return toolResult({ error: `Gateway '${gateway}' is not an authorized node.` });
+        }
+        const previousGateway = typeof rec.gateway === "string" ? rec.gateway : null;
+        if (previousGateway === gateway) {
+          return toolResult({
+            success: true,
+            changed: false,
+            agent_id: agentId,
+            gateway,
+            previous_gateway: previousGateway,
+          });
+        }
+        agents.set(agentId, {
+          ...rec,
+          gateway,
+          reboundAt: Date.now(),
+          reboundBy: actorResult.actor,
+        });
+        return toolResult({
+          success: true,
+          changed: true,
+          agent_id: agentId,
+          gateway,
+          previous_gateway: previousGateway,
+        });
+      } catch (err: any) {
+        return toolResult({ error: err.message });
+      }
+    },
+  });
+
+  // === ansible_normalize_internal_gateways ===
+  api.registerTool({
+    name: "ansible_normalize_internal_gateways",
+    label: "Ansible Normalize Internal Gateways",
+    description:
+      "Admin-only: normalize legacy internal agent gateway ids to canonical authorized node ids where mapping is unambiguous.",
+    parameters: {
+      type: "object",
+      properties: {
+        dry_run: {
+          type: "boolean",
+          description: "If true, report candidate changes without mutating state.",
+        },
+        from_agent: {
+          type: "string",
+          description: "Acting admin agent id (must match configured admin agent).",
+        },
+        agent_token: {
+          type: "string",
+          description: "Auth token for acting admin agent. Preferred over from_agent.",
+        },
+      },
+    },
+    async execute(_id, params) {
+      const doc = getDoc();
+      const nodeId = getNodeId();
+      if (!doc || !nodeId) return toolResult({ error: "Ansible not initialized" });
+      try {
+        requireAuth(nodeId);
+        requireAdmin(nodeId, doc);
+        const adminAgentId =
+          typeof (config as any)?.adminAgentId === "string" && (config as any).adminAgentId.trim().length > 0
+            ? (config as any).adminAgentId.trim()
+            : "admin";
+        const requestedFrom = typeof params.from_agent === "string" ? String(params.from_agent) : undefined;
+        const token =
+          typeof params.agent_token === "string" && params.agent_token.trim().length > 0
+            ? params.agent_token.trim()
+            : undefined;
+        const actorResult = resolveAdminActorOrError(doc, nodeId, token, requestedFrom);
+        if (actorResult.error) return toolResult({ error: actorResult.error });
+        requireAdminActor(doc, nodeId, adminAgentId, actorResult.actor);
+
+        const dryRun = params.dry_run === true;
+        const agents = doc.getMap("agents");
+        const nodes = doc.getMap("nodes");
+        const nodeIds = Array.from(nodes.keys()).map((k) => String(k));
+        const canonicalToNodeIds = new Map<string, string[]>();
+        for (const nid of nodeIds) {
+          const c = canonicalGatewayId(nid);
+          if (!c) continue;
+          const arr = canonicalToNodeIds.get(c) || [];
+          arr.push(nid);
+          canonicalToNodeIds.set(c, arr);
+        }
+
+        const changes: Array<{ agent_id: string; from_gateway: string; to_gateway: string }> = [];
+        for (const [agentId, raw] of agents.entries()) {
+          const rec = raw as Record<string, unknown> | undefined;
+          if (!rec || rec.type !== "internal") continue;
+          const currentGateway = typeof rec.gateway === "string" ? rec.gateway.trim() : "";
+          if (!currentGateway) continue;
+          if (nodes.has(currentGateway)) continue;
+
+          const canonical = canonicalGatewayId(currentGateway);
+          if (!canonical) continue;
+          const candidates = canonicalToNodeIds.get(canonical) || [];
+          if (candidates.length !== 1) continue;
+
+          const nextGateway = candidates[0];
+          if (!nextGateway || nextGateway === currentGateway) continue;
+          changes.push({ agent_id: String(agentId), from_gateway: currentGateway, to_gateway: nextGateway });
+        }
+
+        if (!dryRun) {
+          const now = Date.now();
+          for (const c of changes) {
+            const rec = agents.get(c.agent_id) as Record<string, unknown> | undefined;
+            if (!rec || rec.type !== "internal") continue;
+            agents.set(c.agent_id, {
+              ...rec,
+              gateway: c.to_gateway,
+              reboundAt: now,
+              reboundBy: actorResult.actor,
+              reboundReason: "normalize_internal_gateways",
+            });
+          }
+        }
+
+        return toolResult({
+          success: true,
+          dryRun,
+          scannedInternalAgents: Array.from(agents.values()).filter((v: any) => v?.type === "internal").length,
+          changed: dryRun ? 0 : changes.length,
+          candidates: changes.length,
+          changes,
         });
       } catch (err: any) {
         return toolResult({ error: err.message });
