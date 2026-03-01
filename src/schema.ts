@@ -451,6 +451,7 @@ export interface CoordinationPreference {
  * - delegationAck:<nodeId>:version: string
  * - delegationAck:<nodeId>:checksum: string
  * - delegationAck:<nodeId>:at: number (ms epoch)
+ * - gatewayAdmin:<gatewayId>: string (nominated admin agent id for that gateway)
  * - pref:<nodeId>: CoordinationPreference
  */
 export interface CoordinationState {
@@ -463,6 +464,7 @@ export interface CoordinationState {
   delegationPolicyMarkdown?: string;
   delegationPolicyUpdatedAt?: number;
   delegationPolicyUpdatedBy?: TailscaleId;
+  gatewayAdmins?: Record<string, AgentId>;
 }
 
 // ============================================================================

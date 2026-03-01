@@ -839,6 +839,14 @@ export function registerAnsibleCli(api, config) {
             if (coordination && !coordination.error) {
                 const coordinator = coordination.coordinator ? String(coordination.coordinator) : "(unset)";
                 const sweepEvery = coordination.sweepEverySeconds ? String(coordination.sweepEverySeconds) : "(unset)";
+                const effectiveAdmin = typeof coordination.effectiveAdminAgentId === "string" && coordination.effectiveAdminAgentId.trim().length > 0
+                    ? coordination.effectiveAdminAgentId
+                    : "(unset)";
+                const gatewayAdminsCount = Array.isArray(coordination.gatewayAdmins)
+                    ? coordination.gatewayAdmins.length
+                    : coordination.gatewayAdmins && typeof coordination.gatewayAdmins === "object"
+                        ? Object.keys(coordination.gatewayAdmins).length
+                        : 0;
                 const retentionDays = typeof coordination.retentionClosedTaskSeconds === "number"
                     ? String(Math.round(coordination.retentionClosedTaskSeconds / 86400))
                     : "(default 7)";
@@ -857,6 +865,9 @@ export function registerAnsibleCli(api, config) {
                 console.log("Coordinator:");
                 console.log(`  id: ${coordinator}`);
                 console.log(`  sweepEverySeconds: ${sweepEvery}`);
+                console.log("Gateway Admin:");
+                console.log(`  effectiveForThisGateway: ${effectiveAdmin}`);
+                console.log(`  nominatedGateways: ${gatewayAdminsCount}`);
                 console.log("Delegation Policy:");
                 console.log(`  version: ${delegationVersion}`);
                 console.log(`  checksum: ${delegationChecksum}`);
@@ -1117,6 +1128,73 @@ export function registerAnsibleCli(api, config) {
             console.log(`  agent=${out.agentId}`);
             console.log(`  version=${out.version}`);
             console.log(`  checksum=${out.checksum}`);
+        });
+        // === ansible admin ===
+        const admin = ansible.command("admin").description("Per-gateway admin nomination");
+        admin
+            .command("list")
+            .description("List nominated admin agents per gateway")
+            .action(async () => {
+            let out;
+            try {
+                out = await callGateway("ansible_list_gateway_admins", {});
+            }
+            catch (err) {
+                console.log(`✗ ${err.message}`);
+                return;
+            }
+            if (out.error) {
+                console.log(`✗ ${out.error}`);
+                return;
+            }
+            const rows = Array.isArray(out.gatewayAdmins) ? out.gatewayAdmins : [];
+            console.log(`\n=== Gateway Admins (${rows.length}) ===\n`);
+            if (rows.length === 0) {
+                console.log("No explicit gateway admin nominations. Fallback config admin applies.");
+                return;
+            }
+            for (const row of rows) {
+                console.log(`  ${row.gatewayId} -> ${row.adminAgentId}`);
+            }
+        });
+        admin
+            .command("set")
+            .description("Set admin agent nomination for a specific gateway")
+            .option("--gateway <gatewayId>", "Gateway/node id")
+            .option("--agent <agentId>", "Admin agent id")
+            .option("--as <agentId>", "Acting current admin agent id")
+            .option("--token <token>", "Auth token for acting admin (or set OPENCLAW_ANSIBLE_TOKEN)")
+            .action(async (...args) => {
+            const opts = (args[0] || {});
+            if (!opts.gateway || !opts.agent) {
+                console.log("✗ Use: openclaw ansible admin set --gateway <gatewayId> --agent <agentId> [--as ... --token ...]");
+                return;
+            }
+            const toolArgs = {
+                gateway_id: opts.gateway,
+                admin_agent_id: opts.agent,
+            };
+            if (opts.as)
+                toolArgs.from_agent = opts.as;
+            const token = resolveAgentToken(opts.token);
+            if (token)
+                toolArgs.agent_token = token;
+            let out;
+            try {
+                out = await callGateway("ansible_set_gateway_admin", toolArgs);
+            }
+            catch (err) {
+                console.log(`✗ ${err.message}`);
+                return;
+            }
+            if (out.error) {
+                console.log(`✗ ${out.error}`);
+                return;
+            }
+            console.log(`✓ Gateway admin set: ${out.gatewayId} -> ${out.adminAgentId}`);
+            if (out.previousAdminAgentId) {
+                console.log(`  previous=${out.previousAdminAgentId}`);
+            }
         });
         // === ansible capability ===
         const capability = ansible.command("capability").description("Capability contract lifecycle");

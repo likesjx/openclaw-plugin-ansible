@@ -202,6 +202,12 @@ function requireAdmin(nodeId: string, doc: ReturnType<typeof getDoc>): void {
   }
 }
 
+function configuredAdminAgentId(config: AnsibleConfig): string {
+  return typeof (config as any)?.adminAgentId === "string" && (config as any).adminAgentId.trim().length > 0
+    ? (config as any).adminAgentId.trim()
+    : "admin";
+}
+
 function canonicalGatewayId(input: string | null | undefined): string {
   const raw = String(input || "").trim().toLowerCase();
   if (!raw) return "";
@@ -214,6 +220,51 @@ function gatewayMatchesNode(recordGateway: unknown, nodeId: string): boolean {
   if (typeof recordGateway !== "string") return false;
   if (recordGateway === nodeId) return true;
   return canonicalGatewayId(recordGateway) === canonicalGatewayId(nodeId);
+}
+
+function readGatewayAdmins(coordination: ReturnType<typeof getCoordinationMap>): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (!coordination) return out;
+  for (const [k, v] of coordination.entries()) {
+    const key = String(k || "");
+    if (!key.startsWith("gatewayAdmin:")) continue;
+    if (typeof v !== "string" || !v.trim()) continue;
+    const gatewayId = key.slice("gatewayAdmin:".length).trim();
+    if (!gatewayId) continue;
+    out[gatewayId] = v.trim();
+  }
+  return out;
+}
+
+function resolveGatewayAdminFromCoordination(
+  doc: ReturnType<typeof getDoc>,
+  gatewayId: string,
+): string | undefined {
+  const m = getCoordinationMap(doc);
+  if (!m) return undefined;
+  const direct = m.get(`gatewayAdmin:${gatewayId}`);
+  if (typeof direct === "string" && direct.trim().length > 0) return direct.trim();
+
+  // Support alias lookups during rename windows (e.g., vps-jane-host -> vps-jane).
+  const wanted = canonicalGatewayId(gatewayId);
+  if (!wanted) return undefined;
+  for (const [k, v] of m.entries()) {
+    const key = String(k || "");
+    if (!key.startsWith("gatewayAdmin:")) continue;
+    const savedGateway = key.slice("gatewayAdmin:".length).trim();
+    if (!savedGateway) continue;
+    if (canonicalGatewayId(savedGateway) !== wanted) continue;
+    if (typeof v === "string" && v.trim().length > 0) return v.trim();
+  }
+  return undefined;
+}
+
+function resolveRequiredAdminAgentId(
+  doc: ReturnType<typeof getDoc>,
+  nodeId: string,
+  config: AnsibleConfig,
+): string {
+  return resolveGatewayAdminFromCoordination(doc, nodeId) || configuredAdminAgentId(config);
 }
 
 /**
@@ -324,6 +375,7 @@ function getCoordinationMap(doc: ReturnType<typeof getDoc>) {
 function readCoordinationState(doc: ReturnType<typeof getDoc>) {
   const m = getCoordinationMap(doc);
   if (!m) return null;
+  const gatewayAdmins = readGatewayAdmins(m);
   return {
     coordinator: m.get("coordinator") as string | undefined,
     sweepEverySeconds: m.get("sweepEverySeconds") as number | undefined,
@@ -334,6 +386,7 @@ function readCoordinationState(doc: ReturnType<typeof getDoc>) {
     delegationPolicyChecksum: m.get("delegationPolicyChecksum") as string | undefined,
     delegationPolicyUpdatedAt: m.get("delegationPolicyUpdatedAt") as number | undefined,
     delegationPolicyUpdatedBy: m.get("delegationPolicyUpdatedBy") as string | undefined,
+    gatewayAdmins,
     updatedAt: m.get("updatedAt") as number | undefined,
     updatedBy: m.get("updatedBy") as string | undefined,
   };
@@ -1697,10 +1750,133 @@ export function registerAnsibleTools(
         const state = readCoordinationState(doc) || {};
         const m = getCoordinationMap(doc);
         const pref = (m?.get(`pref:${nodeId}`) as CoordinationPreference | undefined) || null;
+        const effectiveAdminAgentId = resolveRequiredAdminAgentId(doc, nodeId, config);
         return toolResult({
           myId: nodeId,
+          effectiveAdminAgentId,
           ...state,
           myPreference: pref,
+        });
+      } catch (err: any) {
+        return toolResult({ error: err.message });
+      }
+    },
+  });
+
+  // === ansible_list_gateway_admins ===
+  api.registerTool({
+    name: "ansible_list_gateway_admins",
+    label: "Ansible List Gateway Admins",
+    description:
+      "List nominated admin agents per gateway from shared coordination state.",
+    parameters: {
+      type: "object",
+      properties: {},
+    },
+    async execute() {
+      const doc = getDoc();
+      const nodeId = getNodeId();
+      if (!doc || !nodeId) return toolResult({ error: "Ansible not initialized" });
+      try {
+        requireAuth(nodeId);
+        const m = getCoordinationMap(doc);
+        const gatewayAdmins = readGatewayAdmins(m);
+        const rows = Object.keys(gatewayAdmins)
+          .sort((a, b) => a.localeCompare(b))
+          .map((gatewayId) => ({ gatewayId, adminAgentId: gatewayAdmins[gatewayId] }));
+        return toolResult({ gatewayAdmins: rows, total: rows.length });
+      } catch (err: any) {
+        return toolResult({ error: err.message });
+      }
+    },
+  });
+
+  // === ansible_set_gateway_admin ===
+  api.registerTool({
+    name: "ansible_set_gateway_admin",
+    label: "Ansible Set Gateway Admin",
+    description:
+      "Admin-only: nominate the admin agent for a specific gateway. Uses shared coordination state so all nodes converge on the same gateway-admin mapping.",
+    parameters: {
+      type: "object",
+      properties: {
+        gateway_id: {
+          type: "string",
+          description: "Gateway/node id to assign admin for.",
+        },
+        admin_agent_id: {
+          type: "string",
+          description: "Agent id to nominate as gateway admin.",
+        },
+        from_agent: {
+          type: "string",
+          description: "Acting admin agent id for authorization.",
+        },
+        agent_token: {
+          type: "string",
+          description: "Auth token for acting admin agent.",
+        },
+      },
+      required: ["gateway_id", "admin_agent_id"],
+    },
+    async execute(_id, params) {
+      const doc = getDoc();
+      const nodeId = getNodeId();
+      if (!doc || !nodeId) return toolResult({ error: "Ansible not initialized" });
+      try {
+        requireAuth(nodeId);
+        requireAdmin(nodeId, doc);
+
+        const currentAdminAgentId = resolveRequiredAdminAgentId(doc, nodeId, config);
+        const requestedFrom = typeof params.from_agent === "string" ? String(params.from_agent) : undefined;
+        const token =
+          typeof params.agent_token === "string" && params.agent_token.trim().length > 0
+            ? params.agent_token.trim()
+            : undefined;
+        const actorResult = resolveAdminActorOrError(doc, nodeId, token, requestedFrom);
+        if (actorResult.error) return toolResult({ error: actorResult.error });
+        requireAdminActor(doc, nodeId, currentAdminAgentId, actorResult.actor);
+
+        const gatewayId = validateString(params.gateway_id, 120, "gateway_id").trim();
+        const adminAgentId = validateString(params.admin_agent_id, 100, "admin_agent_id").trim();
+
+        const nodes = doc.getMap("nodes");
+        if (!nodes.has(gatewayId)) {
+          return toolResult({ error: `Gateway '${gatewayId}' is not an authorized node.` });
+        }
+
+        const agents = doc.getMap("agents");
+        const adminRec = agents.get(adminAgentId) as Record<string, unknown> | undefined;
+        if (!adminRec) return toolResult({ error: `Admin agent '${adminAgentId}' is not registered.` });
+        if (typeof adminRec.disabledAt === "number") return toolResult({ error: `Admin agent '${adminAgentId}' is disabled.` });
+
+        const m = getCoordinationMap(doc);
+        if (!m) return toolResult({ error: "Coordination map not initialized" });
+        const key = `gatewayAdmin:${gatewayId}`;
+        const previousAdminAgentId = typeof m.get(key) === "string" ? String(m.get(key)) : undefined;
+        m.set(key, adminAgentId);
+        m.set("updatedAt", Date.now());
+        m.set("updatedBy", nodeId);
+
+        emitLifecycleEvent(
+          doc,
+          nodeId,
+          "gateway_admin_updated",
+          `Gateway '${gatewayId}' admin set to '${adminAgentId}' by ${actorResult.actor}.`,
+          {
+            gatewayId,
+            adminAgentId,
+            previousAdminAgentId,
+            by: actorResult.actor,
+          },
+        );
+
+        return toolResult({
+          success: true,
+          gatewayId,
+          adminAgentId,
+          previousAdminAgentId,
+          updatedBy: actorResult.actor,
         });
       } catch (err: any) {
         return toolResult({ error: err.message });
@@ -3135,10 +3311,8 @@ export function registerAnsibleTools(
           plugin: {
             config: serializeValue(config),
             authMode: getAuthMode(config),
-            adminAgentId:
-              typeof (config as any)?.adminAgentId === "string" && (config as any).adminAgentId.trim().length > 0
-                ? (config as any).adminAgentId.trim()
-                : "admin",
+            configuredAdminAgentId: configuredAdminAgentId(config),
+            effectiveAdminAgentId: resolveRequiredAdminAgentId(doc, nodeId, config),
           },
           counts,
           maps,
@@ -4107,10 +4281,7 @@ export function registerAnsibleTools(
       try {
         requireAuth(nodeId);
         requireAdmin(nodeId, doc);
-        const adminAgentId =
-          typeof (config as any)?.adminAgentId === "string" && (config as any).adminAgentId.trim().length > 0
-            ? (config as any).adminAgentId.trim()
-            : "admin";
+        const adminAgentId = resolveRequiredAdminAgentId(doc, nodeId, config);
         const authMode = getAuthMode(config);
         const requestedFrom = typeof params.from_agent === "string" ? String(params.from_agent) : undefined;
         const token =
@@ -4326,10 +4497,7 @@ export function registerAnsibleTools(
       try {
         requireAuth(nodeId);
         requireAdmin(nodeId, doc);
-        const adminAgentId =
-          typeof (config as any)?.adminAgentId === "string" && (config as any).adminAgentId.trim().length > 0
-            ? (config as any).adminAgentId.trim()
-            : "admin";
+        const adminAgentId = resolveRequiredAdminAgentId(doc, nodeId, config);
         const requestedFrom = typeof params.from_agent === "string" ? String(params.from_agent) : undefined;
         const token =
           typeof params.agent_token === "string" && params.agent_token.trim().length > 0
@@ -4402,10 +4570,7 @@ export function registerAnsibleTools(
       try {
         requireAuth(nodeId);
         requireAdmin(nodeId, doc);
-        const adminAgentId =
-          typeof (config as any)?.adminAgentId === "string" && (config as any).adminAgentId.trim().length > 0
-            ? (config as any).adminAgentId.trim()
-            : "admin";
+        const adminAgentId = resolveRequiredAdminAgentId(doc, nodeId, config);
         const requestedFrom = typeof params.from_agent === "string" ? String(params.from_agent) : undefined;
         const token =
           typeof params.agent_token === "string" && params.agent_token.trim().length > 0
@@ -4486,10 +4651,7 @@ export function registerAnsibleTools(
       try {
         requireAuth(nodeId);
         requireAdmin(nodeId, doc);
-        const adminAgentId =
-          typeof (config as any)?.adminAgentId === "string" && (config as any).adminAgentId.trim().length > 0
-            ? (config as any).adminAgentId.trim()
-            : "admin";
+        const adminAgentId = resolveRequiredAdminAgentId(doc, nodeId, config);
         const requestedFrom = typeof params.from_agent === "string" ? String(params.from_agent) : undefined;
         const token =
           typeof params.agent_token === "string" && params.agent_token.trim().length > 0
@@ -4594,10 +4756,7 @@ export function registerAnsibleTools(
       try {
         requireAuth(nodeId);
         requireAdmin(nodeId, doc);
-        const adminAgentId =
-          typeof (config as any)?.adminAgentId === "string" && (config as any).adminAgentId.trim().length > 0
-            ? (config as any).adminAgentId.trim()
-            : "admin";
+        const adminAgentId = resolveRequiredAdminAgentId(doc, nodeId, config);
         const requestedFrom = typeof params.from_agent === "string" ? String(params.from_agent) : undefined;
         const token =
           typeof params.agent_token === "string" && params.agent_token.trim().length > 0
@@ -4681,10 +4840,7 @@ export function registerAnsibleTools(
       try {
         requireAuth(nodeId);
         requireAdmin(nodeId, doc);
-        const adminAgentId =
-          typeof (config as any)?.adminAgentId === "string" && (config as any).adminAgentId.trim().length > 0
-            ? (config as any).adminAgentId.trim()
-            : "admin";
+        const adminAgentId = resolveRequiredAdminAgentId(doc, nodeId, config);
         const requestedFrom = typeof params.from_agent === "string" ? String(params.from_agent) : undefined;
         const token =
           typeof params.agent_token === "string" && params.agent_token.trim().length > 0
@@ -4761,10 +4917,7 @@ export function registerAnsibleTools(
       try {
         requireAuth(nodeId);
         requireAdmin(nodeId, doc);
-        const adminAgentId =
-          typeof (config as any)?.adminAgentId === "string" && (config as any).adminAgentId.trim().length > 0
-            ? (config as any).adminAgentId.trim()
-            : "admin";
+        const adminAgentId = resolveRequiredAdminAgentId(doc, nodeId, config);
         const requestedFrom = typeof params.from_agent === "string" ? String(params.from_agent) : undefined;
         const token =
           typeof params.agent_token === "string" && params.agent_token.trim().length > 0
