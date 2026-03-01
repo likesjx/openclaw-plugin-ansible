@@ -127,6 +127,7 @@ function resolveAgentByToken(doc: ReturnType<typeof getDoc>, token: string): str
   const want = hashAgentToken(token);
   for (const [id, raw] of agents.entries()) {
     const rec = raw as Record<string, unknown> | undefined;
+    if (rec && typeof rec.disabledAt === "number") continue;
     const auth = (rec?.auth as Record<string, unknown> | undefined) || undefined;
     const tokenHash = typeof auth?.tokenHash === "string" ? auth.tokenHash : "";
     if (!tokenHash) continue;
@@ -249,6 +250,9 @@ function resolveAdminActorOrError(
   if (!rec) {
     return { error: `Agent '${from}' is not registered. Use agent_token or register the agent first.` };
   }
+  if (typeof rec.disabledAt === "number") {
+    return { error: `Agent '${from}' is disabled.` };
+  }
   if (rec.type !== "internal" || !gatewayMatchesNode((rec as Record<string, unknown>).gateway, nodeId)) {
     return { error: `agent_token is required for '${from}' (external agents or agents on other nodes must provide a token).` };
   }
@@ -281,6 +285,9 @@ function requireAdminActor(
     );
   }
   const t = String(rec.type || "");
+  if (typeof rec.disabledAt === "number") {
+    throw new Error(`Admin agent '${adminAgentId}' is disabled.`);
+  }
   if (t === "external") return;
   if (t === "internal") {
     // Token-authenticated internal admin agents are allowed even if their recorded
@@ -743,6 +750,7 @@ function isDistributionEligibleAgent(
   const agents = doc.getMap("agents");
   const rec = agents.get(agentId) as Record<string, unknown> | undefined;
   if (!rec) return false;
+  if (typeof rec.disabledAt === "number") return false;
   const type = String(rec.type || "");
   if (type === "external") return true;
   if (type !== "internal") return false;
@@ -1301,6 +1309,9 @@ function resolveEffectiveAgent(
   const record = agents.get(agentId) as { type?: string } | undefined;
   if (!record) {
     return { error: `Agent '${agentId}' is not registered. Use: openclaw ansible agent register --id ${agentId}` };
+  }
+  if ((record as any)?.disabledAt) {
+    return { error: `Agent '${agentId}' is disabled.` };
   }
   return { effectiveAgent: agentId };
 }
@@ -4548,6 +4559,97 @@ export function registerAnsibleTools(
     },
   });
 
+  // === ansible_disable_agent ===
+  api.registerTool({
+    name: "ansible_disable_agent",
+    label: "Ansible Disable Agent",
+    description:
+      "Admin-only: disable an agent identity without deleting history. Disabled agents cannot authenticate or receive new distribution tasks.",
+    parameters: {
+      type: "object",
+      properties: {
+        agent_id: {
+          type: "string",
+          description: "Agent id to disable.",
+        },
+        reason: {
+          type: "string",
+          description: "Optional reason for audit trail.",
+        },
+        from_agent: {
+          type: "string",
+          description: "Acting admin agent id (must match configured admin agent).",
+        },
+        agent_token: {
+          type: "string",
+          description: "Auth token for acting admin agent. Preferred over from_agent.",
+        },
+      },
+      required: ["agent_id"],
+    },
+    async execute(_id, params) {
+      const doc = getDoc();
+      const nodeId = getNodeId();
+      if (!doc || !nodeId) return toolResult({ error: "Ansible not initialized" });
+      try {
+        requireAuth(nodeId);
+        requireAdmin(nodeId, doc);
+        const adminAgentId =
+          typeof (config as any)?.adminAgentId === "string" && (config as any).adminAgentId.trim().length > 0
+            ? (config as any).adminAgentId.trim()
+            : "admin";
+        const requestedFrom = typeof params.from_agent === "string" ? String(params.from_agent) : undefined;
+        const token =
+          typeof params.agent_token === "string" && params.agent_token.trim().length > 0
+            ? params.agent_token.trim()
+            : undefined;
+        const actorResult = resolveAdminActorOrError(doc, nodeId, token, requestedFrom);
+        if (actorResult.error) return toolResult({ error: actorResult.error });
+        requireAdminActor(doc, nodeId, adminAgentId, actorResult.actor);
+
+        const agentId = validateString(params.agent_id, 100, "agent_id").trim();
+        if (agentId === adminAgentId) {
+          return toolResult({ error: `Refusing to disable configured admin agent '${adminAgentId}'.` });
+        }
+        const reason =
+          typeof params.reason === "string" && params.reason.trim().length > 0
+            ? validateString(params.reason, 500, "reason").trim()
+            : undefined;
+
+        const agents = doc.getMap("agents");
+        const rec = agents.get(agentId) as Record<string, unknown> | undefined;
+        if (!rec) return toolResult({ error: `Agent '${agentId}' is not registered.` });
+        if (typeof rec.disabledAt === "number") {
+          return toolResult({
+            success: true,
+            changed: false,
+            agent_id: agentId,
+            disabledAt: rec.disabledAt,
+            disableReason: rec.disableReason,
+          });
+        }
+
+        const now = Date.now();
+        agents.set(agentId, {
+          ...rec,
+          disabledAt: now,
+          disabledBy: actorResult.actor,
+          disableReason: reason,
+        });
+
+        return toolResult({
+          success: true,
+          changed: true,
+          agent_id: agentId,
+          disabledAt: now,
+          disableReason: reason,
+        });
+      } catch (err: any) {
+        return toolResult({ error: err.message });
+      }
+    },
+  });
+
   // === ansible_invite_agent ===
   api.registerTool({
     name: "ansible_invite_agent",
@@ -4864,7 +4966,14 @@ export function registerAnsibleTools(
               acceptedByAgent: auth.acceptedByAgent,
             }
           : undefined;
-        result.push({ ...r, id, auth: safeAuth });
+        result.push({
+          ...r,
+          id,
+          auth: safeAuth,
+          disabledAt: typeof r.disabledAt === "number" ? r.disabledAt : undefined,
+          disabledBy: typeof r.disabledBy === "string" ? r.disabledBy : undefined,
+          disableReason: typeof r.disableReason === "string" ? r.disableReason : undefined,
+        });
       }
 
       return toolResult({ agents: result, total: result.length });

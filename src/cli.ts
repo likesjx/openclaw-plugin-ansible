@@ -2429,6 +2429,44 @@ export function registerAnsibleCli(
       });
 
     agentCmd
+      .command("disable")
+      .description("Admin-only: disable an agent identity without deleting history")
+      .option("--id <agentId>", "Agent ID to disable")
+      .option("--reason <text>", "Optional reason for audit trail")
+      .option("--as <agentId>", "Acting admin agent id (defaults to 'admin')", "admin")
+      .option("--token <token>", "Auth token for acting admin (or set OPENCLAW_ANSIBLE_TOKEN)")
+      .action(async (...args: unknown[]) => {
+        const opts = (args[0] || {}) as { id?: string; reason?: string; as?: string; token?: string };
+        if (!opts.id) {
+          console.log("✗ Use: openclaw ansible agent disable --id <agentId> [--reason \"...\"]");
+          return;
+        }
+        const toolArgs: Record<string, unknown> = { agent_id: opts.id };
+        if (opts.reason) toolArgs.reason = opts.reason;
+        if (opts.as) toolArgs.from_agent = opts.as;
+        const token = resolveAgentToken(opts.token);
+        if (token) toolArgs.agent_token = token;
+
+        let result: any;
+        try {
+          result = await callGateway("ansible_disable_agent", toolArgs);
+        } catch (err: any) {
+          console.log(`✗ ${err.message}`);
+          return;
+        }
+        if ((result as any).error) {
+          console.log(`✗ ${(result as any).error}`);
+          return;
+        }
+        const at = (result as any).disabledAt ? new Date((result as any).disabledAt).toLocaleString() : "n/a";
+        if ((result as any).changed) {
+          console.log(`✓ Disabled "${opts.id}" at ${at}`);
+        } else {
+          console.log(`✓ "${opts.id}" already disabled`);
+        }
+      });
+
+    agentCmd
       .command("list")
       .description("List all registered agents")
       .action(async () => {
@@ -2449,13 +2487,19 @@ export function registerAnsibleCli(
 
         for (const a of agents) {
           const location = a.gateway ? `gateway:${a.gateway}` : "external/cli";
-          console.log(`  ${a.id} [${a.type}] — ${a.name || a.id} (${location})`);
+          const disabled = a.disabledAt ? " disabled" : "";
+          console.log(`  ${a.id} [${a.type}${disabled}] — ${a.name || a.id} (${location})`);
           if (a.auth?.tokenHint || a.auth?.issuedAt || a.auth?.rotatedAt) {
             const issued = a.auth?.issuedAt ? new Date(a.auth.issuedAt).toLocaleString() : "n/a";
             const rotated = a.auth?.rotatedAt ? new Date(a.auth.rotatedAt).toLocaleString() : "n/a";
             const accepted = a.auth?.acceptedAt ? new Date(a.auth.acceptedAt).toLocaleString() : "n/a";
             console.log(
               `    auth hint=${a.auth?.tokenHint || "n/a"} issued=${issued} rotated=${rotated} accepted=${accepted}`,
+            );
+          }
+          if (a.disabledAt) {
+            console.log(
+              `    disabled=${new Date(a.disabledAt).toLocaleString()} by=${a.disabledBy || "unknown"} reason=${a.disableReason || "n/a"}`,
             );
           }
         }
