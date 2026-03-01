@@ -86,6 +86,31 @@ Implement startup backlog dispatch + retry semantics, as specified in `docs/prot
 - Ensure heartbeat updates are not starved by gateway lifecycle/restart edges.
 - Consider decoupling “transport reachable” from “recent pulse timestamp” in status rendering.
 
+### DEF-005: Legacy internal gateway IDs linger after node rename (auth + routing drift)
+
+- **Severity**: Medium (operational correctness)
+- **Status**: Open
+- **Points**: 3
+- **Discovered**: 2026-03-01
+
+**Symptom**:
+- Internal agents can remain registered against old gateway IDs (example: `vps-jane-host`) after canonical rename to `vps-jane`.
+- Some privileged flows then require a token unexpectedly for local internal actors.
+- Skill distribution fanout may include legacy/internal ghost targets.
+
+**Impact**:
+- Confusing auth behavior (`--as <internal>` sometimes rejected as “other node”).
+- Noisy task fanout and avoidable pending tasks for stale identities.
+
+**Workaround**:
+- Use canonical node IDs for new internal registrations.
+- Keep alias-tolerant matching enabled for transitional continuity.
+
+**Fix (planned)**:
+- Add explicit `ansible agent rebind --id <agent> --gateway <nodeId>` for internal records.
+- Add a migration pass that normalizes legacy `*-host` gateway IDs to canonical node IDs.
+- Exclude revoked/legacy internal IDs from skill-distribution target expansion.
+
 ## Technical Debt
 
 ### TD-001: Type stubs vs. real OpenClaw SDK types
