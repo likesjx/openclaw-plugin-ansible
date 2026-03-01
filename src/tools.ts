@@ -748,6 +748,13 @@ function isDistributionEligibleAgent(
   if (type !== "internal") return false;
   const gateway = typeof rec.gateway === "string" ? rec.gateway.trim() : "";
   if (!gateway) return false;
+  const canonicalAgent = canonicalGatewayId(agentId);
+  const canonicalGateway = canonicalGatewayId(gateway);
+  // Exclude alias-style internal identities (e.g., vps-jane-host) once a
+  // canonical gateway id exists (e.g., vps-jane). They are migration residue.
+  if (canonicalAgent && canonicalGateway && canonicalAgent === canonicalGateway && agentId !== gateway) {
+    return false;
+  }
   // Strict for fanout hygiene: only target internal agents bound to active node IDs.
   const activeNodes = listCanonicalNodeIds(doc);
   return activeNodes.has(gateway);
