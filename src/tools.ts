@@ -834,6 +834,38 @@ function isDistributionEligibleAgent(
   return activeNodes.has(gateway);
 }
 
+function getDistributionEligibilityIssue(
+  doc: ReturnType<typeof getDoc>,
+  agentId: string | undefined,
+  ownerAgentId: string,
+): string | null {
+  if (!doc) return "ansible_not_initialized";
+  const id = String(agentId || "").trim();
+  if (!id) return "missing_assignee";
+  if (id === ownerAgentId) return null;
+  const agents = doc.getMap("agents");
+  const rec = agents.get(id) as Record<string, unknown> | undefined;
+  if (!rec) return "assignee_not_registered";
+  if (typeof rec.disabledAt === "number") return "assignee_disabled";
+  const type = String(rec.type || "");
+  if (type === "external") {
+    const mode = readDistributionExternalMode(doc);
+    if (mode === "strict" && rec.distributionOptIn !== true) return "external_not_opted_in";
+    return null;
+  }
+  if (type !== "internal") return "unsupported_assignee_type";
+  const gateway = typeof rec.gateway === "string" ? rec.gateway.trim() : "";
+  if (!gateway) return "missing_gateway_binding";
+  const canonicalAgent = canonicalGatewayId(id);
+  const canonicalGateway = canonicalGatewayId(gateway);
+  if (canonicalAgent && canonicalGateway && canonicalAgent === canonicalGateway && id !== gateway) {
+    return "legacy_alias_identity";
+  }
+  const activeNodes = listCanonicalNodeIds(doc);
+  if (!activeNodes.has(gateway)) return "gateway_not_authorized";
+  return null;
+}
+
 function createSkillDistributionTask(
   doc: ReturnType<typeof getDoc>,
   nodeId: string,
@@ -2117,6 +2149,120 @@ export function registerAnsibleTools(
           agent_id: agentId,
           opt_in: optIn,
           previous_opt_in: previousOptIn,
+        });
+      } catch (err: any) {
+        return toolResult({ error: err.message });
+      }
+    },
+  });
+
+  // === ansible_cleanup_distribution_tasks ===
+  api.registerTool({
+    name: "ansible_cleanup_distribution_tasks",
+    label: "Ansible Cleanup Distribution Tasks",
+    description:
+      "Admin-only: scan pending skill-distribution tasks and fail stale/ineligible assignees with an explicit reason.",
+    parameters: {
+      type: "object",
+      properties: {
+        dry_run: {
+          type: "boolean",
+          description: "If true, only report candidates.",
+        },
+        limit: {
+          type: "number",
+          description: "Maximum tasks to scan (default 500).",
+        },
+        from_agent: {
+          type: "string",
+          description: "Acting admin agent id for authorization.",
+        },
+        agent_token: {
+          type: "string",
+          description: "Auth token for acting admin agent.",
+        },
+      },
+    },
+    async execute(_id, params) {
+      const doc = getDoc();
+      const nodeId = getNodeId();
+      if (!doc || !nodeId) return toolResult({ error: "Ansible not initialized" });
+      try {
+        requireAuth(nodeId);
+        requireAdmin(nodeId, doc);
+        const adminAgentId = resolveRequiredAdminAgentId(doc, nodeId, config);
+        const requestedFrom = typeof params.from_agent === "string" ? String(params.from_agent) : undefined;
+        const token =
+          typeof params.agent_token === "string" && params.agent_token.trim().length > 0
+            ? params.agent_token.trim()
+            : undefined;
+        const actorResult = resolveAdminActorOrError(doc, nodeId, token, requestedFrom);
+        if (actorResult.error) return toolResult({ error: actorResult.error });
+        requireAdminActor(doc, nodeId, adminAgentId, actorResult.actor);
+
+        const dryRun = params.dry_run === true;
+        const limit =
+          typeof params.limit === "number" && Number.isFinite(params.limit)
+            ? Math.max(1, Math.min(5000, Math.floor(params.limit)))
+            : 500;
+
+        const tasks = doc.getMap("tasks");
+        const findings: Array<{ taskId: string; title: string; assignedTo: string; reason: string }> = [];
+        let scanned = 0;
+        for (const [taskKey, raw] of tasks.entries()) {
+          if (scanned >= limit) break;
+          scanned += 1;
+          const task = raw as Task | undefined;
+          if (!task) continue;
+          if (task.intent !== "skill_distribution") continue;
+          if (task.status !== "pending" && task.status !== "claimed" && task.status !== "in_progress") continue;
+
+          const ownerAgentId =
+            typeof (task.metadata as any)?.ownerAgentId === "string"
+              ? String((task.metadata as any).ownerAgentId)
+              : String(task.createdBy_agent || "");
+          const assignedTo = typeof task.assignedTo_agent === "string" ? task.assignedTo_agent : "";
+          const issue = getDistributionEligibilityIssue(doc, assignedTo, ownerAgentId);
+          if (!issue) continue;
+
+          findings.push({
+            taskId: String(task.id || taskKey),
+            title: String(task.title || ""),
+            assignedTo,
+            reason: issue,
+          });
+        }
+
+        let updated = 0;
+        if (!dryRun) {
+          const now = Date.now();
+          for (const f of findings) {
+            const key = resolveTaskKey(tasks as any, f.taskId);
+            if (typeof key !== "string") continue;
+            const task = tasks.get(key) as Task | undefined;
+            if (!task) continue;
+            if (task.status !== "pending" && task.status !== "claimed" && task.status !== "in_progress") continue;
+            tasks.set(key, {
+              ...task,
+              status: "failed",
+              updatedAt: now,
+              result: `distribution_cleanup:${f.reason}`,
+              updates: [
+                { at: now, by_agent: actorResult.actor, status: "failed", note: `distribution_cleanup:${f.reason}` },
+                ...((task.updates as any) || []),
+              ].slice(0, 50),
+            });
+            updated += 1;
+          }
+        }
+
+        return toolResult({
+          success: true,
+          dryRun,
+          scanned,
+          findings: findings.length,
+          updated,
+          items: findings,
         });
       } catch (err: any) {
         return toolResult({ error: err.message });
