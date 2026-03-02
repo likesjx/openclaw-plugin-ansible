@@ -26,7 +26,8 @@
     "clean": "rm -rf dist",
     "typecheck": "tsc --noEmit",
     "migrate:v2026.2.19": "node ./scripts/migrate-v2026-2-19.mjs",
-    "deploy:safe": "./scripts/safe-deploy-pull.sh"
+    "deploy:safe": "./scripts/safe-deploy-pull.sh",
+    "test:integration:smoke": "node ./scripts/integration-gateway-smoke.mjs"
   },
   "keywords": [
     "openclaw",
