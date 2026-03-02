@@ -14,6 +14,13 @@ function assert(cond, msg) {
   if (!cond) throw new Error(msg);
 }
 
+function parseJsonFromMixedOutput(text) {
+  const idx = text.indexOf("{");
+  if (idx < 0) throw new Error(`No JSON object found in output:\n${text}`);
+  const candidate = text.slice(idx).trim();
+  return JSON.parse(candidate);
+}
+
 function main() {
   if (process.env.OPENCLAW_INTEGRATION !== "1") {
     console.log("Skipping integration smoke. Set OPENCLAW_INTEGRATION=1 to run.");
@@ -26,7 +33,7 @@ function main() {
   console.log("Running integration smoke checks...");
 
   const status = run("openclaw", ["ansible", "status", "--json"]);
-  const payload = JSON.parse(status.out);
+  const payload = parseJsonFromMixedOutput(status.out);
   assert(payload?.coordination, "status --json missing coordination block");
   assert(payload?.status?.myId, "status --json missing myId");
 
