@@ -1,4 +1,0 @@
-
-> ansible@0.1.0 test:integration:mvp2-lifecycle-core
-> node ./scripts/integration-mvp2-lifecycle-core.mjs
-
