@@ -1,7 +1,7 @@
 # Ansible Completion Checklist v1 (MVP Deployment Cycles)
 
 Status: Working checklist  
-Last updated: 2026-02-27
+Last updated: 2026-03-02
 
 ## Purpose
 
@@ -39,19 +39,19 @@ Goal:
 
 Must-have:
 
-- [ ] High-risk approval gate enforcement before execution.
-- [ ] Concurrency/backpressure limits (`maxConcurrent`, queue depth, retry budget).
-- [ ] Failure taxonomy normalization (`failed_terminal`, `dependency_missing`, etc.).
-- [ ] Publish/update smoke test harness for contract lifecycle.
+- [x] High-risk approval gate enforcement before execution.
+- [x] Concurrency/backpressure limits (`maxConcurrent`, queue depth, retry budget).
+- [x] Failure taxonomy normalization (`failed_terminal`, `dependency_missing`, etc.).
+- [x] Publish/update smoke test harness for contract lifecycle.
 - [ ] Basic observability APIs:
-  - [ ] task lifecycle timeline query
-  - [ ] capability health summary (`success`, `p95 accept`, `p95 complete`)
+  - [x] task lifecycle timeline query
+  - [x] capability health summary (`success`, `p95 accept`, `p95 complete`)
 
 Production exit criteria:
 
-- [ ] Two-node and multi-node validation runs green.
-- [ ] No uncontrolled escalation fanout under synthetic stress.
-- [ ] Rollback runbook tested once in staging.
+- [x] Two-node and multi-node validation runs green.
+- [x] No uncontrolled escalation fanout under synthetic stress.
+- [x] Rollback runbook tested once in staging.
 
 ## MVP-2: Skill Lifecycle Automation
 
@@ -129,3 +129,12 @@ Notes:
 
 - 2026-03-01: canary rerun passed (gateway health OK, SLA dry-run/record-only clean, capability publish/unpublish canary verified).
 - 2026-03-01 decision: **promote** current rollout baseline; keep MVP-1/2/3 items in progress.
+- 2026-03-01: publish/unpublish lifecycle advanced from no-op to concrete workspace state transitions (`G4_INSTALL_STAGE`, `G5_WIRE_STAGE`, `U2_UNWIRE`) using `capabilitiesInstallStages` and `capabilitiesWiring` maps.
+- 2026-03-02: high-risk approval gate enforced before `in_progress`/`completed` transitions; added `ansible_approve_task` with approval artifact recording and audit event emission.
+- 2026-03-02: normalized failure taxonomy added in task metadata (`ansible.failure`) with CLI/tool support (`failure_class`, `failure_code`, `terminal`, `retryable`); distribution cleanup failures now emit typed classes/codes.
+- 2026-03-02: backpressure policy added with runtime enforcement (`maxConcurrent`, `maxQueueDepth`, `retryBudget`) across delegate/claim/update paths; admin setter `ansible_set_backpressure_policy` + `openclaw ansible admin backpressure ...`.
+- 2026-03-02: added mutating capability lifecycle smoke harness (`scripts/integration-capability-lifecycle-smoke.mjs`) and npm entrypoint `test:integration:capability-lifecycle` validating publish/update/unpublish gate progression.
+- 2026-03-02: observability APIs added: `ansible_task_timeline` + `ansible_capability_health_summary` with CLI commands `openclaw ansible tasks timeline` and `openclaw ansible capability health`.
+- 2026-03-02: MVP-1 exit criterion #1 closed: canonical three-node mesh validated (`mac-jane`, `mbp-jane`, `vps-jane`) with 6-path transport matrix evidence under `conversation_id=mvp1-matrix-1772467165`. MBP identity drift (`nodeIdOverride=comms`) corrected to `mbp-jane` before validation.
+- 2026-03-02: opened WI `WI-20260302-mvp1-industrial-testing` with executable stress harness (`scripts/integration-mvp1-industrial.mjs` + suite) and deterministic fixtures to close MVP-1 #2 with auditable evidence.
+- 2026-03-02: MVP-1 #2/#3 evidence captured in `docs/evidence/mvp1/20260302-mvp1-exit-gates.md` with industrial stress artifacts (`20260302-122707-safe/storm/live.json`) and staging rollback drill (`cap.rollback.drill.20260302`: publish v1 -> v2 -> rollback to v1 -> unpublish).

@@ -1,0 +1,51 @@
+{
+  "mode": "snapshot",
+  "source": "/Users/jaredlikes/code/openclaw-plugin-ansible/scripts/testdata/mvp1-industrial/safe-snapshot.json",
+  "generatedAt": "2023-11-14T22:30:00.000Z",
+  "tasksScanned": 4,
+  "config": {
+    "maxMessagesPerSweep": 3,
+    "fyiAgents": [
+      "architect"
+    ],
+    "maxUnknownAssignees": 0,
+    "minBreachesForStress": 1
+  },
+  "fanout": {
+    "breachCount": 3,
+    "perAgentBreachCount": {
+      "vps-jane": 1,
+      "mbp-jane": 1,
+      "chief-of-staff": 1
+    },
+    "breachSamples": [
+      {
+        "taskId": "task-safe-001",
+        "title": "Safe pending accept breach",
+        "assignedTo": "vps-jane",
+        "breachType": "accept",
+        "dueAt": 1700000000000
+      },
+      {
+        "taskId": "task-safe-002",
+        "title": "Safe claimed progress breach",
+        "assignedTo": "mbp-jane",
+        "breachType": "progress",
+        "dueAt": 1700000100000
+      },
+      {
+        "taskId": "task-safe-003",
+        "title": "Safe in-progress complete breach",
+        "assignedTo": "chief-of-staff",
+        "breachType": "complete",
+        "dueAt": 1700000150000
+      }
+    ],
+    "potentialMessagesUnbounded": 6,
+    "boundedMessages": 6,
+    "preventedByBudget": 0
+  },
+  "unknownAssignees": [],
+  "pass": true,
+  "failReasons": []
+}

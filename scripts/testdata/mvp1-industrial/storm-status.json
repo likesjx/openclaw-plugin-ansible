@@ -1,0 +1,19 @@
+{
+  "status": {
+    "nodes": [
+      { "id": "mac-jane", "status": "online" },
+      { "id": "vps-jane", "status": "online" },
+      { "id": "mbp-jane", "status": "online" }
+    ]
+  },
+  "agents": {
+    "agents": [
+      { "id": "mac-jane" },
+      { "id": "vps-jane" },
+      { "id": "mbp-jane" },
+      { "id": "chief-of-staff" },
+      { "id": "claude-code" },
+      { "id": "architect" }
+    ]
+  }
+}

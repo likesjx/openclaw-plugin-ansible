@@ -27,7 +27,9 @@
     "typecheck": "tsc --noEmit",
     "migrate:v2026.2.19": "node ./scripts/migrate-v2026-2-19.mjs",
     "deploy:safe": "./scripts/safe-deploy-pull.sh",
-    "test:integration:smoke": "node ./scripts/integration-gateway-smoke.mjs"
+    "test:integration:smoke": "node ./scripts/integration-gateway-smoke.mjs",
+    "test:integration:capability-lifecycle": "node ./scripts/integration-capability-lifecycle-smoke.mjs",
+    "test:integration:mvp1-industrial": "node ./scripts/integration-mvp1-industrial-suite.mjs"
   },
   "keywords": [
     "openclaw",

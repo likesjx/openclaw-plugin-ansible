@@ -395,10 +395,83 @@ function readCoordinationState(doc: ReturnType<typeof getDoc>) {
     delegationPolicyUpdatedBy: m.get("delegationPolicyUpdatedBy") as string | undefined,
     distributionExternalMode:
       m.get("distributionExternalMode") === "strict" ? "strict" : "all",
+    backpressureMaxConcurrent:
+      typeof m.get("backpressureMaxConcurrent") === "number"
+        ? Number(m.get("backpressureMaxConcurrent"))
+        : undefined,
+    backpressureMaxQueueDepth:
+      typeof m.get("backpressureMaxQueueDepth") === "number"
+        ? Number(m.get("backpressureMaxQueueDepth"))
+        : undefined,
+    backpressureRetryBudget:
+      typeof m.get("backpressureRetryBudget") === "number"
+        ? Number(m.get("backpressureRetryBudget"))
+        : undefined,
     gatewayAdmins,
     updatedAt: m.get("updatedAt") as number | undefined,
     updatedBy: m.get("updatedBy") as string | undefined,
   };
+}
+
+const DEFAULT_BACKPRESSURE_POLICY = {
+  maxConcurrent: 6,
+  maxQueueDepth: 40,
+  retryBudget: 3,
+} as const;
+
+function readBackpressurePolicy(doc: ReturnType<typeof getDoc>): {
+  maxConcurrent: number;
+  maxQueueDepth: number;
+  retryBudget: number;
+} {
+  const m = getCoordinationMap(doc);
+  const maxConcurrentRaw = m?.get("backpressureMaxConcurrent");
+  const maxQueueDepthRaw = m?.get("backpressureMaxQueueDepth");
+  const retryBudgetRaw = m?.get("backpressureRetryBudget");
+  const maxConcurrent =
+    typeof maxConcurrentRaw === "number" && Number.isFinite(maxConcurrentRaw)
+      ? Math.max(1, Math.floor(maxConcurrentRaw))
+      : DEFAULT_BACKPRESSURE_POLICY.maxConcurrent;
+  const maxQueueDepth =
+    typeof maxQueueDepthRaw === "number" && Number.isFinite(maxQueueDepthRaw)
+      ? Math.max(1, Math.floor(maxQueueDepthRaw))
+      : DEFAULT_BACKPRESSURE_POLICY.maxQueueDepth;
+  const retryBudget =
+    typeof retryBudgetRaw === "number" && Number.isFinite(retryBudgetRaw)
+      ? Math.max(0, Math.floor(retryBudgetRaw))
+      : DEFAULT_BACKPRESSURE_POLICY.retryBudget;
+  return { maxConcurrent, maxQueueDepth, retryBudget };
+}
+
+function countPendingAssignmentsForAgent(doc: ReturnType<typeof getDoc>, agentId: string): number {
+  if (!doc) return 0;
+  const tasks = doc.getMap("tasks");
+  let count = 0;
+  for (const [, raw] of tasks.entries()) {
+    const t = raw as Task | undefined;
+    if (!t || t.status !== "pending") continue;
+    const assignees = new Set<string>();
+    if (typeof t.assignedTo_agent === "string" && t.assignedTo_agent.trim().length > 0) assignees.add(t.assignedTo_agent.trim());
+    if (Array.isArray(t.assignedTo_agents)) {
+      for (const a of t.assignedTo_agents) {
+        if (typeof a === "string" && a.trim().length > 0) assignees.add(a.trim());
+      }
+    }
+    if (assignees.has(agentId)) count += 1;
+  }
+  return count;
+}
+
+function countActiveClaimsForAgent(doc: ReturnType<typeof getDoc>, agentId: string): number {
+  if (!doc) return 0;
+  const tasks = doc.getMap("tasks");
+  let count = 0;
+  for (const [, raw] of tasks.entries()) {
+    const t = raw as Task | undefined;
+    if (!t) continue;
+    if ((t.status === "claimed" || t.status === "in_progress") && t.claimedBy_agent === agentId) count += 1;
+  }
+  return count;
 }
 
 function computeSha256(text: string): string {
@@ -500,6 +573,34 @@ type CapabilityRevisionRecord = {
   lastAction: "published" | "unpublished";
 };
 
+type CapabilityInstallStageStatus = "staged" | "wired" | "unwired" | "archived";
+
+type CapabilityInstallStageRecord = {
+  capabilityId: string;
+  version: string;
+  ownerAgentId: string;
+  executorTargetAgentIds: string[];
+  delegationTargetAgentIds: string[];
+  status: CapabilityInstallStageStatus;
+  stagedAt: number;
+  stagedByAgentId: string;
+  updatedAt: number;
+  updatedByAgentId: string;
+};
+
+type CapabilityWiringRecord = {
+  capabilityId: string;
+  version: string;
+  ownerAgentId: string;
+  executorTargetAgentIds: string[];
+  delegationTargetAgentIds: string[];
+  active: boolean;
+  wiredAt: number;
+  wiredByAgentId: string;
+  unwiredAt?: number;
+  unwiredByAgentId?: string;
+};
+
 const OWNER_LEASE_STALE_MS = 90_000;
 
 type PublishGateId =
@@ -549,6 +650,8 @@ type PublishPipelineActivation = {
   rollbackPerformed?: boolean;
   distribution: { created: boolean; taskId?: string; targets: string[] };
   lifecycleMessageId: string | null;
+  workspaceStage?: CapabilityInstallStageRecord;
+  workspaceWiring?: CapabilityWiringRecord;
 };
 
 type PublishPipelineResult = {
@@ -583,6 +686,46 @@ function getCapabilityManifestMap(doc: ReturnType<typeof getDoc>) {
 
 function getCapabilityRevisionMap(doc: ReturnType<typeof getDoc>) {
   return doc?.getMap("capabilitiesRevisions");
+}
+
+function getCapabilityInstallStageMap(doc: ReturnType<typeof getDoc>) {
+  return doc?.getMap("capabilitiesInstallStages");
+}
+
+function getCapabilityWiringMap(doc: ReturnType<typeof getDoc>) {
+  return doc?.getMap("capabilitiesWiring");
+}
+
+function resolveCapabilityStageTargets(
+  doc: ReturnType<typeof getDoc>,
+  capabilityId: string,
+  ownerAgentId: string,
+): { executorTargetAgentIds: string[]; delegationTargetAgentIds: string[] } {
+  if (!doc) throw new Error("install stage unavailable: ansible document not initialized");
+  const agents = doc.getMap("agents");
+  const ownerRec = agents.get(ownerAgentId) as Record<string, unknown> | undefined;
+  if (!ownerRec) {
+    throw new Error(`install_failed: owner '${ownerAgentId}' is not registered for capability '${capabilityId}'`);
+  }
+  if (typeof ownerRec.disabledAt === "number") {
+    throw new Error(`install_failed: owner '${ownerAgentId}' is disabled`);
+  }
+  if (ownerRec.type !== "internal") {
+    throw new Error(`install_failed: owner '${ownerAgentId}' must be an internal agent`);
+  }
+  const ownerGateway = typeof ownerRec.gateway === "string" ? ownerRec.gateway.trim() : "";
+  if (!ownerGateway) {
+    throw new Error(`install_failed: owner '${ownerAgentId}' missing gateway binding`);
+  }
+
+  const delegationTargetAgentIds = Array.from(agents.keys())
+    .map((k) => String(k))
+    .filter((id) => isDistributionEligibleAgent(doc, id, ownerAgentId));
+  const executorTargetAgentIds = [ownerAgentId];
+  return {
+    executorTargetAgentIds,
+    delegationTargetAgentIds,
+  };
 }
 
 function validateSkillRef(value: unknown, fieldName: string): CapabilitySkillRef {
@@ -1037,10 +1180,68 @@ function executeCapabilityPublishPipeline(args: {
   const gateResults: PublishGateRecord[] = [];
   const { doc, nodeId, publishedByAgentId, capabilityId, manifest, catalogRec, indexRec } = args;
   if (!doc) return { ok: false, failedGate: "G8_INDEX_ACTIVATE", rollbackRequired: false, gateResults };
+  const manifestKey = `${capabilityId}:${manifest.version}`;
 
-  // Skeleton placeholders; these gates are intentionally no-op until installers/validators land.
-  runPublishGateNoop(gateResults, "G4_INSTALL_STAGE", "skeleton: install stage not yet implemented");
-  runPublishGateNoop(gateResults, "G5_WIRE_STAGE", "skeleton: wire stage not yet implemented");
+  const installStageMap = getCapabilityInstallStageMap(doc);
+  const wiringMap = getCapabilityWiringMap(doc);
+  if (!installStageMap || !wiringMap) {
+    gateResults.push({
+      gate: "G4_INSTALL_STAGE",
+      status: "failed",
+      at: Date.now(),
+      error: "Workspace lifecycle maps unavailable",
+    });
+    return { ok: false, failedGate: "G4_INSTALL_STAGE", rollbackRequired: false, gateResults };
+  }
+
+  const installStageGate = runPublishGate(gateResults, "G4_INSTALL_STAGE", () => {
+    const now = Date.now();
+    const targets = resolveCapabilityStageTargets(doc, capabilityId, manifest.ownerAgentId);
+    const stageRecord: CapabilityInstallStageRecord = {
+      capabilityId,
+      version: manifest.version,
+      ownerAgentId: manifest.ownerAgentId,
+      executorTargetAgentIds: targets.executorTargetAgentIds,
+      delegationTargetAgentIds: targets.delegationTargetAgentIds,
+      status: "staged",
+      stagedAt: now,
+      stagedByAgentId: publishedByAgentId,
+      updatedAt: now,
+      updatedByAgentId: publishedByAgentId,
+    };
+    installStageMap.set(manifestKey, stageRecord);
+  });
+  if (!installStageGate.ok) {
+    return { ok: false, failedGate: "G4_INSTALL_STAGE", rollbackRequired: false, gateResults };
+  }
+
+  const wireStageGate = runPublishGate(gateResults, "G5_WIRE_STAGE", () => {
+    const now = Date.now();
+    const stage = installStageMap.get(manifestKey) as CapabilityInstallStageRecord | undefined;
+    if (!stage) throw new Error(`wire_failed: missing install stage for '${manifestKey}'`);
+    if (stage.status === "archived") throw new Error(`wire_failed: install stage '${manifestKey}' is archived`);
+    const wiringRecord: CapabilityWiringRecord = {
+      capabilityId,
+      version: manifest.version,
+      ownerAgentId: manifest.ownerAgentId,
+      executorTargetAgentIds: stage.executorTargetAgentIds,
+      delegationTargetAgentIds: stage.delegationTargetAgentIds,
+      active: true,
+      wiredAt: now,
+      wiredByAgentId: publishedByAgentId,
+    };
+    wiringMap.set(manifestKey, wiringRecord);
+    installStageMap.set(manifestKey, {
+      ...stage,
+      status: "wired",
+      updatedAt: now,
+      updatedByAgentId: publishedByAgentId,
+    } satisfies CapabilityInstallStageRecord);
+  });
+  if (!wireStageGate.ok) {
+    return { ok: false, failedGate: "G5_WIRE_STAGE", rollbackRequired: true, gateResults };
+  }
+
   runPublishGateNoop(gateResults, "G6_SMOKE_TEST", "skeleton: smoke gate not yet implemented");
   runPublishGateNoop(gateResults, "G7_ROLLOUT", "skeleton: rollout gate not yet implemented");
 
@@ -1063,10 +1264,38 @@ function executeCapabilityPublishPipeline(args: {
   const previousIndex = indexMap.get(capabilityId) as CapabilityIndexRecord | undefined;
   const previousRevision = revisionMap.get(capabilityId) as CapabilityRevisionRecord | undefined;
   const previousActiveVersion = previousRevision?.activeVersion || previousCatalog?.version;
-  const manifestKey = `${capabilityId}:${manifest.version}`;
   const previousManifestAtKey = manifestMap.get(manifestKey);
   const hadManifestAtKey = previousManifestAtKey !== undefined;
+  const previousInstallStageAtKey = installStageMap.get(manifestKey) as CapabilityInstallStageRecord | undefined;
+  const hadInstallStageAtKey = previousInstallStageAtKey !== undefined;
+  const previousWiringAtKey = wiringMap.get(manifestKey) as CapabilityWiringRecord | undefined;
+  const hadWiringAtKey = previousWiringAtKey !== undefined;
   let rollbackPerformed = false;
+
+  const restorePreActivationState = (): boolean => {
+    try {
+      if (previousCatalog) catalogMap.set(capabilityId, previousCatalog);
+      else catalogMap.delete(capabilityId);
+
+      if (previousIndex) indexMap.set(capabilityId, previousIndex);
+      else indexMap.delete(capabilityId);
+
+      if (previousRevision) revisionMap.set(capabilityId, previousRevision);
+      else revisionMap.delete(capabilityId);
+
+      if (hadManifestAtKey) manifestMap.set(manifestKey, previousManifestAtKey as any);
+      else manifestMap.delete(manifestKey);
+
+      if (hadInstallStageAtKey && previousInstallStageAtKey) installStageMap.set(manifestKey, previousInstallStageAtKey);
+      else installStageMap.delete(manifestKey);
+
+      if (hadWiringAtKey && previousWiringAtKey) wiringMap.set(manifestKey, previousWiringAtKey);
+      else wiringMap.delete(manifestKey);
+      return true;
+    } catch {
+      return false;
+    }
+  };
 
   const activation = runPublishGate(gateResults, "G8_INDEX_ACTIVATE", () => {
     const now = Date.now();
@@ -1091,7 +1320,8 @@ function executeCapabilityPublishPipeline(args: {
     revisionMap.set(capabilityId, nextRevision);
   });
   if (!activation.ok) {
-    return { ok: false, failedGate: "G8_INDEX_ACTIVATE", rollbackRequired: true, rollbackPerformed: false, gateResults };
+    rollbackPerformed = restorePreActivationState();
+    return { ok: false, failedGate: "G8_INDEX_ACTIVATE", rollbackRequired: true, rollbackPerformed, gateResults };
   }
 
   const distribution = createSkillDistributionTask(
@@ -1132,27 +1362,13 @@ function executeCapabilityPublishPipeline(args: {
     if (readIndex.capabilityId !== capabilityId) throw new Error("Postcheck failed: index capabilityId mismatch");
   });
   if (!postcheck.ok) {
-    // Roll back activation to predecessor snapshot.
-    try {
-      if (previousCatalog) catalogMap.set(capabilityId, previousCatalog);
-      else catalogMap.delete(capabilityId);
-
-      if (previousIndex) indexMap.set(capabilityId, previousIndex);
-      else indexMap.delete(capabilityId);
-
-      if (previousRevision) revisionMap.set(capabilityId, previousRevision);
-      else revisionMap.delete(capabilityId);
-
-      if (hadManifestAtKey) manifestMap.set(manifestKey, previousManifestAtKey as any);
-      else manifestMap.delete(manifestKey);
-      rollbackPerformed = true;
-    } catch {
-      rollbackPerformed = false;
-    }
+    rollbackPerformed = restorePreActivationState();
     return { ok: false, failedGate: "G9_POSTCHECK", rollbackRequired: true, rollbackPerformed, gateResults };
   }
 
   const revision = (revisionMap.get(capabilityId) as CapabilityRevisionRecord | undefined)!;
+  const workspaceStage = installStageMap.get(manifestKey) as CapabilityInstallStageRecord | undefined;
+  const workspaceWiring = wiringMap.get(manifestKey) as CapabilityWiringRecord | undefined;
   return {
     ok: true,
     rollbackRequired: false,
@@ -1167,6 +1383,8 @@ function executeCapabilityPublishPipeline(args: {
       rollbackPerformed,
       distribution,
       lifecycleMessageId,
+      workspaceStage,
+      workspaceWiring,
     },
   };
 }
@@ -1188,10 +1406,6 @@ function runUnpublishGate(
   }
 }
 
-function runUnpublishGateNoop(gateResults: UnpublishGateRecord[], gate: UnpublishGateId, detail: string): void {
-  gateResults.push({ gate, status: "skipped", at: Date.now(), detail });
-}
-
 function executeCapabilityUnpublishPipeline(args: {
   doc: ReturnType<typeof getDoc>;
   nodeId: string;
@@ -1206,12 +1420,14 @@ function executeCapabilityUnpublishPipeline(args: {
   const catalogMap = getCapabilityCatalogMap(doc);
   const indexMap = getCapabilityIndexMap(doc);
   const revisionMap = getCapabilityRevisionMap(doc);
-  if (!catalogMap || !indexMap || !revisionMap) {
+  const installStageMap = getCapabilityInstallStageMap(doc);
+  const wiringMap = getCapabilityWiringMap(doc);
+  if (!catalogMap || !indexMap || !revisionMap || !installStageMap || !wiringMap) {
     gateResults.push({
       gate: "U1_DISABLE_ROUTING",
       status: "failed",
       at: Date.now(),
-      error: "Capability maps unavailable",
+      error: "Capability lifecycle maps unavailable",
     });
     return { ok: false, failedGate: "U1_DISABLE_ROUTING", gateResults };
   }
@@ -1235,7 +1451,31 @@ function executeCapabilityUnpublishPipeline(args: {
   });
   if (!disable.ok) return { ok: false, failedGate: "U1_DISABLE_ROUTING", gateResults };
 
-  runUnpublishGateNoop(gateResults, "U2_UNWIRE", "skeleton: workspace unwire not yet implemented");
+  const unwire = runUnpublishGate(gateResults, "U2_UNWIRE", () => {
+    for (const [k, raw] of wiringMap.entries()) {
+      const key = String(k);
+      const rec = raw as CapabilityWiringRecord | undefined;
+      if (!rec || rec.capabilityId !== capabilityId) continue;
+      wiringMap.set(key, {
+        ...rec,
+        active: false,
+        unwiredAt: now,
+        unwiredByAgentId: actingAdmin,
+      } satisfies CapabilityWiringRecord);
+    }
+    for (const [k, raw] of installStageMap.entries()) {
+      const key = String(k);
+      const rec = raw as CapabilityInstallStageRecord | undefined;
+      if (!rec || rec.capabilityId !== capabilityId) continue;
+      installStageMap.set(key, {
+        ...rec,
+        status: "unwired",
+        updatedAt: now,
+        updatedByAgentId: actingAdmin,
+      } satisfies CapabilityInstallStageRecord);
+    }
+  });
+  if (!unwire.ok) return { ok: false, failedGate: "U2_UNWIRE", gateResults };
 
   const archive = runUnpublishGate(gateResults, "U3_ARCHIVE", () => {
     const existingRevision = (revisionMap.get(capabilityId) as CapabilityRevisionRecord | undefined) || undefined;
@@ -1560,6 +1800,54 @@ function parseEtaAtFromClaim(params: Record<string, unknown>, fallbackSeconds: n
   return {};
 }
 
+const ALLOWED_FAILURE_CLASSES = new Set([
+  "failed_terminal",
+  "dependency_missing",
+  "dependency_unavailable",
+  "capability_unavailable",
+  "version_incompatible",
+  "approval_required",
+  "timeout",
+  "authz_denied",
+  "invalid_target",
+  "overloaded",
+  "execution_error",
+  "policy_blocked",
+  "transport_error",
+  "unknown",
+]);
+
+function normalizeFailureClass(raw: unknown, fallback: string): string {
+  const src = typeof raw === "string" ? raw.trim().toLowerCase() : "";
+  if (!src) return fallback;
+  const normalized = src.replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+  if (ALLOWED_FAILURE_CLASSES.has(normalized)) return normalized;
+  return fallback;
+}
+
+function inferFailureClassFromText(...parts: Array<string | undefined>): string {
+  const text = parts
+    .filter((p) => typeof p === "string" && p.trim().length > 0)
+    .join(" ")
+    .toLowerCase();
+  if (!text) return "execution_error";
+  if (text.includes("approval")) return "approval_required";
+  if (text.includes("timeout") || text.includes("sla") || text.includes("eta")) return "timeout";
+  if (text.includes("version")) return "version_incompatible";
+  if (text.includes("dependency") || text.includes("missing")) return "dependency_missing";
+  if (text.includes("unauthorized") || text.includes("forbidden") || text.includes("auth")) return "authz_denied";
+  if (text.includes("route") || text.includes("target") || text.includes("assignee")) return "invalid_target";
+  if (text.includes("policy")) return "policy_blocked";
+  if (text.includes("transport") || text.includes("network") || text.includes("connection")) return "transport_error";
+  return "execution_error";
+}
+
+function distributionIssueToFailureClass(issue: string): string {
+  if (issue === "external_not_opted_in") return "policy_blocked";
+  if (issue === "gateway_not_authorized") return "authz_denied";
+  return "invalid_target";
+}
+
 function taskNeedsContractEta(task: Task): boolean {
   const ansible = ((task.metadata || {}) as Record<string, unknown>).ansible as Record<string, unknown> | undefined;
   if (!ansible || typeof ansible !== "object") return false;
@@ -1568,6 +1856,37 @@ function taskNeedsContractEta(task: Task): boolean {
   if (!contract || typeof contract !== "object") return false;
   const capabilities = contract.capabilities;
   return Array.isArray(capabilities) && capabilities.length > 0;
+}
+
+function taskRequiresHighRiskApproval(task: Task): boolean {
+  const ansible = ((task.metadata || {}) as Record<string, unknown>).ansible as Record<string, unknown> | undefined;
+  if (!ansible || typeof ansible !== "object") return false;
+  const contract = ansible.contract as Record<string, unknown> | undefined;
+  if (!contract || typeof contract !== "object") return false;
+  const capabilities = Array.isArray(contract.capabilities) ? contract.capabilities : [];
+  for (const raw of capabilities) {
+    if (!raw || typeof raw !== "object") continue;
+    const c = raw as Record<string, unknown>;
+    const riskClass = typeof c.riskClass === "string" ? c.riskClass : undefined;
+    const requiresApproval = c.requiresHumanApprovalForHighRisk === true;
+    if (riskClass === "high" && requiresApproval) return true;
+  }
+  return false;
+}
+
+function taskApprovalSatisfied(task: Task): boolean {
+  const ansible = ((task.metadata || {}) as Record<string, unknown>).ansible as Record<string, unknown> | undefined;
+  if (!ansible || typeof ansible !== "object") return false;
+  const approval = (ansible.approval || {}) as Record<string, unknown>;
+  return (
+    approval.required === true &&
+    approval.state === "approved" &&
+    typeof approval.approvalArtifactId === "string" &&
+    approval.approvalArtifactId.trim().length > 0 &&
+    typeof approval.approvedByAgentId === "string" &&
+    approval.approvedByAgentId.trim().length > 0 &&
+    typeof approval.approvedAt === "number"
+  );
 }
 
 function getPulseSnapshot(doc: ReturnType<typeof getDoc>, gatewayId: string): { status: string; lastSeen: number } | null {
@@ -1684,6 +2003,16 @@ function resolveCapabilityOwnerWithFailover(
   return { selectedOwner, primaryOwner, failoverApplied };
 }
 
+function percentileMs(samples: number[], p: number): number | undefined {
+  if (!Array.isArray(samples) || samples.length === 0) return undefined;
+  const sorted = samples
+    .filter((n) => typeof n === "number" && Number.isFinite(n))
+    .sort((a, b) => a - b);
+  if (sorted.length === 0) return undefined;
+  const idx = Math.max(0, Math.min(sorted.length - 1, Math.ceil((p / 100) * sorted.length) - 1));
+  return Math.floor(sorted[idx]);
+}
+
 export function registerAnsibleTools(
   api: OpenClawPluginApi,
   config: AnsibleConfig
@@ -1740,11 +2069,169 @@ export function registerAnsibleTools(
             createdBy: t.createdBy_agent,
             claimedBy: t.claimedBy_agent,
             updatedAt: t.updatedAt,
+            failureClass:
+              typeof ((t.metadata as any)?.ansible?.failure?.failureClass) === "string"
+                ? String((t.metadata as any).ansible.failure.failureClass)
+                : undefined,
+            failureCode:
+              typeof ((t.metadata as any)?.ansible?.failure?.failureCode) === "string"
+                ? String((t.metadata as any).ansible.failure.failureCode)
+                : undefined,
           });
         }
 
         out.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
         return toolResult({ matches: out.slice(0, limit), total: out.length });
+      } catch (err: any) {
+        return toolResult({ error: err.message });
+      }
+    },
+  });
+
+  // === ansible_task_timeline ===
+  api.registerTool({
+    name: "ansible_task_timeline",
+    label: "Ansible Task Timeline",
+    description: "Return a detailed lifecycle timeline for one task id/prefix.",
+    parameters: {
+      type: "object",
+      properties: {
+        taskId: { type: "string", description: "Task id or prefix" },
+      },
+      required: ["taskId"],
+    },
+    async execute(_id, params) {
+      const doc = getDoc();
+      const nodeId = getNodeId();
+      if (!doc || !nodeId) return toolResult({ error: "Ansible not initialized" });
+      try {
+        requireAuth(nodeId);
+        const tasks = doc.getMap("tasks");
+        const resolvedKey = resolveTaskKey(tasks as any, validateString(params.taskId, 200, "taskId"));
+        if (typeof resolvedKey !== "string") return toolResult(resolvedKey);
+        const task = tasks.get(resolvedKey) as Task | undefined;
+        if (!task) return toolResult({ error: "Task not found" });
+
+        const metadata = ((task.metadata as Record<string, unknown> | undefined) || {}) as Record<string, unknown>;
+        const ansible = ((metadata.ansible as Record<string, unknown> | undefined) || {}) as Record<string, unknown>;
+        const ack = ((ansible.ack as Record<string, unknown> | undefined) || {}) as Record<string, unknown>;
+        const approval = ((ansible.approval as Record<string, unknown> | undefined) || {}) as Record<string, unknown>;
+        const failure = ((ansible.failure as Record<string, unknown> | undefined) || {}) as Record<string, unknown>;
+
+        const events: Array<{
+          at: number;
+          kind: string;
+          byAgentId?: string;
+          byNodeId?: string;
+          status?: string;
+          note?: string;
+          metadata?: Record<string, unknown>;
+        }> = [];
+        events.push({
+          at: task.createdAt,
+          kind: "created",
+          byAgentId: task.createdBy_agent,
+          byNodeId: task.createdBy_node,
+          status: "pending",
+        });
+        if (typeof ack.acceptedAt === "number") {
+          events.push({
+            at: Number(ack.acceptedAt),
+            kind: "ack_accepted",
+            byAgentId: typeof ack.acceptedByAgentId === "string" ? ack.acceptedByAgentId : undefined,
+            byNodeId: typeof ack.acceptedByNodeId === "string" ? ack.acceptedByNodeId : undefined,
+            status: "claimed",
+            metadata: {
+              etaAt: ack.etaAt,
+              versionNegotiation: ack.versionNegotiation,
+            },
+          });
+        }
+        if (typeof approval.approvedAt === "number") {
+          events.push({
+            at: Number(approval.approvedAt),
+            kind: "approved",
+            byAgentId: typeof approval.approvedByAgentId === "string" ? approval.approvedByAgentId : undefined,
+            byNodeId: typeof approval.approvedByNodeId === "string" ? approval.approvedByNodeId : undefined,
+            status: task.status,
+            metadata: {
+              approvalArtifactId: approval.approvalArtifactId,
+              note: approval.note,
+            },
+          });
+        }
+        if (typeof task.claimedAt === "number") {
+          events.push({
+            at: task.claimedAt,
+            kind: "claimed",
+            byAgentId: task.claimedBy_agent,
+            byNodeId: task.claimedBy_node,
+            status: "claimed",
+          });
+        }
+        for (const u of (task.updates || []).slice().reverse()) {
+          events.push({
+            at: u.at,
+            kind: "status_update",
+            byAgentId: u.by_agent,
+            status: u.status,
+            note: u.note,
+          });
+        }
+        if (typeof task.completedAt === "number") {
+          events.push({
+            at: task.completedAt,
+            kind: "completed",
+            byAgentId: task.claimedBy_agent,
+            byNodeId: task.claimedBy_node,
+            status: "completed",
+          });
+        }
+        if (typeof failure.failedAt === "number") {
+          events.push({
+            at: Number(failure.failedAt),
+            kind: "failed",
+            byAgentId: typeof failure.failedByAgentId === "string" ? failure.failedByAgentId : undefined,
+            byNodeId: typeof failure.failedByNodeId === "string" ? failure.failedByNodeId : undefined,
+            status: "failed",
+            metadata: {
+              failureClass: failure.failureClass,
+              failureCode: failure.failureCode,
+              terminal: failure.terminal,
+              retryable: failure.retryable,
+            },
+          });
+        }
+        events.sort((a, b) => a.at - b.at);
+        const acceptAt =
+          typeof ack.acceptedAt === "number"
+            ? Number(ack.acceptedAt)
+            : typeof task.claimedAt === "number"
+              ? task.claimedAt
+              : undefined;
+        const completeAt =
+          typeof task.completedAt === "number"
+            ? task.completedAt
+            : task.status === "failed" && typeof failure.failedAt === "number"
+              ? Number(failure.failedAt)
+              : undefined;
+        return toolResult({
+          task: {
+            id: task.id,
+            title: task.title,
+            status: task.status,
+            assignedTo: task.assignedTo_agent,
+            assignedToAll: task.assignedTo_agents,
+            createdBy: task.createdBy_agent,
+            claimedBy: task.claimedBy_agent,
+          },
+          timeline: events,
+          metrics: {
+            acceptMs: typeof acceptAt === "number" ? Math.max(0, acceptAt - task.createdAt) : undefined,
+            completeMs: typeof completeAt === "number" ? Math.max(0, completeAt - task.createdAt) : undefined,
+            updateCount: Array.isArray(task.updates) ? task.updates.length : 0,
+          },
+        });
       } catch (err: any) {
         return toolResult({ error: err.message });
       }
@@ -1830,6 +2317,123 @@ export function registerAnsibleTools(
           .sort((a, b) => a.localeCompare(b))
           .map((gatewayId) => ({ gatewayId, adminAgentId: gatewayAdmins[gatewayId] }));
         return toolResult({ gatewayAdmins: rows, total: rows.length });
+      } catch (err: any) {
+        return toolResult({ error: err.message });
+      }
+    },
+  });
+
+  // === ansible_capability_health_summary ===
+  api.registerTool({
+    name: "ansible_capability_health_summary",
+    label: "Ansible Capability Health Summary",
+    description:
+      "Compute capability health metrics from task lifecycle data (success rate, p95 accept latency, p95 complete latency).",
+    parameters: {
+      type: "object",
+      properties: {
+        capability_id: { type: "string", description: "Optional capability id filter" },
+        since_hours: { type: "number", description: "Lookback window in hours (default 24)" },
+      },
+    },
+    async execute(_id, params) {
+      const doc = getDoc();
+      const nodeId = getNodeId();
+      if (!doc || !nodeId) return toolResult({ error: "Ansible not initialized" });
+      try {
+        requireAuth(nodeId);
+        const capabilityFilter =
+          typeof params.capability_id === "string" && params.capability_id.trim().length > 0
+            ? validateString(params.capability_id, 160, "capability_id").trim()
+            : undefined;
+        const sinceHoursRaw =
+          typeof params.since_hours === "number" && Number.isFinite(params.since_hours) ? Number(params.since_hours) : 24;
+        const sinceHours = Math.max(1, Math.min(24 * 30, Math.floor(sinceHoursRaw)));
+        const sinceAt = Date.now() - sinceHours * 3600 * 1000;
+
+        type Aggregate = {
+          capabilityId: string;
+          total: number;
+          completed: number;
+          failed: number;
+          inFlight: number;
+          acceptSamples: number[];
+          completeSamples: number[];
+        };
+        const agg = new Map<string, Aggregate>();
+        const tasks = doc.getMap("tasks");
+        for (const [, raw] of tasks.entries()) {
+          const t = raw as Task | undefined;
+          if (!t) continue;
+          if (t.createdAt < sinceAt) continue;
+          const ansible = (((t.metadata || {}) as Record<string, unknown>).ansible || {}) as Record<string, unknown>;
+          const contract = ((ansible.contract || {}) as Record<string, unknown>) || {};
+          const capsRaw = Array.isArray(contract.capabilities) ? contract.capabilities : [];
+          for (const cRaw of capsRaw) {
+            if (!cRaw || typeof cRaw !== "object") continue;
+            const c = cRaw as Record<string, unknown>;
+            const capabilityId = typeof c.capabilityId === "string" ? c.capabilityId : "";
+            if (!capabilityId) continue;
+            if (capabilityFilter && capabilityId !== capabilityFilter) continue;
+            const current =
+              agg.get(capabilityId) ||
+              ({
+                capabilityId,
+                total: 0,
+                completed: 0,
+                failed: 0,
+                inFlight: 0,
+                acceptSamples: [],
+                completeSamples: [],
+              } satisfies Aggregate);
+            current.total += 1;
+            if (t.status === "completed") current.completed += 1;
+            else if (t.status === "failed") current.failed += 1;
+            else current.inFlight += 1;
+
+            const ack = ((ansible.ack || {}) as Record<string, unknown>) || {};
+            const acceptAt =
+              typeof ack.acceptedAt === "number"
+                ? Number(ack.acceptedAt)
+                : typeof t.claimedAt === "number"
+                  ? t.claimedAt
+                  : undefined;
+            if (typeof acceptAt === "number" && acceptAt >= t.createdAt) {
+              current.acceptSamples.push(acceptAt - t.createdAt);
+            }
+            if (t.status === "completed" && typeof t.completedAt === "number" && t.completedAt >= t.createdAt) {
+              current.completeSamples.push(t.completedAt - t.createdAt);
+            }
+            agg.set(capabilityId, current);
+          }
+        }
+
+        const summary = Array.from(agg.values())
+          .map((a) => {
+            const terminal = a.completed + a.failed;
+            const successRate = terminal > 0 ? a.completed / terminal : undefined;
+            return {
+              capabilityId: a.capabilityId,
+              windowHours: sinceHours,
+              totalTasks: a.total,
+              completedTasks: a.completed,
+              failedTasks: a.failed,
+              inFlightTasks: a.inFlight,
+              successRate,
+              p95AcceptMs: percentileMs(a.acceptSamples, 95),
+              p95CompleteMs: percentileMs(a.completeSamples, 95),
+              samples: {
+                accept: a.acceptSamples.length,
+                complete: a.completeSamples.length,
+              },
+            };
+          })
+          .sort((a, b) => a.capabilityId.localeCompare(b.capabilityId));
+        return toolResult({
+          sinceHours,
+          totalCapabilities: summary.length,
+          capabilities: summary,
+        });
       } catch (err: any) {
         return toolResult({ error: err.message });
       }
@@ -2156,6 +2760,107 @@ export function registerAnsibleTools(
     },
   });
 
+  // === ansible_set_backpressure_policy ===
+  api.registerTool({
+    name: "ansible_set_backpressure_policy",
+    label: "Ansible Set Backpressure Policy",
+    description:
+      "Admin-only: set task backpressure limits (max concurrent claims, queue depth, retry budget).",
+    parameters: {
+      type: "object",
+      properties: {
+        max_concurrent: {
+          type: "number",
+          description: "Maximum concurrent claimed/in_progress tasks per agent.",
+        },
+        max_queue_depth: {
+          type: "number",
+          description: "Maximum pending assignments per target agent.",
+        },
+        retry_budget: {
+          type: "number",
+          description: "Maximum retryable failure updates allowed before terminal normalization.",
+        },
+        from_agent: {
+          type: "string",
+          description: "Acting admin agent id for authorization.",
+        },
+        agent_token: {
+          type: "string",
+          description: "Auth token for acting admin agent.",
+        },
+      },
+    },
+    async execute(_id, params) {
+      const doc = getDoc();
+      const nodeId = getNodeId();
+      if (!doc || !nodeId) return toolResult({ error: "Ansible not initialized" });
+      try {
+        requireAuth(nodeId);
+        requireAdmin(nodeId, doc);
+        const adminAgentId = resolveRequiredAdminAgentId(doc, nodeId, config);
+        const requestedFrom = typeof params.from_agent === "string" ? String(params.from_agent) : undefined;
+        const token =
+          typeof params.agent_token === "string" && params.agent_token.trim().length > 0
+            ? params.agent_token.trim()
+            : undefined;
+        const actorResult = resolveAdminActorOrError(doc, nodeId, token, requestedFrom);
+        if (actorResult.error) return toolResult({ error: actorResult.error });
+        requireAdminActor(doc, nodeId, adminAgentId, actorResult.actor);
+
+        const hasAny =
+          params.max_concurrent !== undefined || params.max_queue_depth !== undefined || params.retry_budget !== undefined;
+        if (!hasAny) {
+          return toolResult({ error: "Provide at least one of: max_concurrent, max_queue_depth, retry_budget." });
+        }
+        const m = getCoordinationMap(doc);
+        if (!m) return toolResult({ error: "Coordination map not initialized" });
+
+        const current = readBackpressurePolicy(doc);
+        const next = {
+          maxConcurrent:
+            params.max_concurrent !== undefined
+              ? Math.max(1, Math.min(200, Math.floor(validateNumber(params.max_concurrent, "max_concurrent"))))
+              : current.maxConcurrent,
+          maxQueueDepth:
+            params.max_queue_depth !== undefined
+              ? Math.max(1, Math.min(500, Math.floor(validateNumber(params.max_queue_depth, "max_queue_depth"))))
+              : current.maxQueueDepth,
+          retryBudget:
+            params.retry_budget !== undefined
+              ? Math.max(0, Math.min(20, Math.floor(validateNumber(params.retry_budget, "retry_budget"))))
+              : current.retryBudget,
+        };
+
+        m.set("backpressureMaxConcurrent", next.maxConcurrent);
+        m.set("backpressureMaxQueueDepth", next.maxQueueDepth);
+        m.set("backpressureRetryBudget", next.retryBudget);
+        m.set("updatedAt", Date.now());
+        m.set("updatedBy", nodeId);
+
+        emitLifecycleEvent(
+          doc,
+          nodeId,
+          "backpressure_policy_updated",
+          `Backpressure policy updated by ${actorResult.actor}.`,
+          {
+            updatedByAgentId: actorResult.actor,
+            previous: current,
+            current: next,
+          },
+        );
+
+        return toolResult({
+          success: true,
+          previous: current,
+          current: next,
+        });
+      } catch (err: any) {
+        return toolResult({ error: err.message });
+      }
+    },
+  });
+
   // === ansible_cleanup_distribution_tasks ===
   api.registerTool({
     name: "ansible_cleanup_distribution_tasks",
@@ -2247,6 +2952,22 @@ export function registerAnsibleTools(
               status: "failed",
               updatedAt: now,
               result: `distribution_cleanup:${f.reason}`,
+              metadata: {
+                ...(((task.metadata as Record<string, unknown>) || {}) as Record<string, unknown>),
+                ansible: {
+                  ...((((task.metadata as Record<string, unknown>) || {}).ansible as Record<string, unknown>) || {}),
+                  failure: {
+                    failureClass: distributionIssueToFailureClass(f.reason),
+                    failureCode: `distribution_cleanup:${f.reason}`,
+                    terminal: true,
+                    retryable: false,
+                    failedAt: now,
+                    failedByAgentId: actorResult.actor,
+                    failedByNodeId: nodeId,
+                    errorSummary: `distribution cleanup failed task due to ${f.reason}`,
+                  },
+                },
+              },
               updates: [
                 { at: now, by_agent: actorResult.actor, status: "failed", note: `distribution_cleanup:${f.reason}` },
                 ...((task.updates as any) || []),
@@ -3032,7 +3753,20 @@ export function registerAnsibleTools(
           typeof params.assignedTo === "string" ? validateString(params.assignedTo, 200, "assignedTo") : undefined;
         const resolvedTargets = resolveAssignedTargets(doc, nodeId, explicitAssignedTo, requires);
         if ("error" in resolvedTargets) return toolResult({ error: resolvedTargets.error });
-        const assignees = resolvedTargets.assignees;
+        const policy = readBackpressurePolicy(doc);
+        const overloadedTargets = resolvedTargets.assignees.filter(
+          (agentId) => countPendingAssignmentsForAgent(doc, agentId) >= policy.maxQueueDepth,
+        );
+        const assignees = resolvedTargets.assignees.filter((agentId) => !overloadedTargets.includes(agentId));
+        if (assignees.length === 0) {
+          return toolResult({
+            error: `No assignees available: all candidates exceeded max queue depth (${policy.maxQueueDepth}).`,
+            backpressure: {
+              maxQueueDepth: policy.maxQueueDepth,
+              overloadedTargets,
+            },
+          });
+        }
         const catalogMap = getCapabilityCatalogMap(doc);
         const manifestMap = getCapabilityManifestMap(doc);
         const capabilityContracts = resolvedTargets.capabilityMatches
@@ -3047,6 +3781,8 @@ export function registerAnsibleTools(
               contractSchemaRef: rec.contractSchemaRef,
               defaultEtaSeconds: rec.defaultEtaSeconds,
               compatibilityMode: manifest?.compatibilityMode || "strict",
+              riskClass: manifest?.riskClass || "medium",
+              requiresHumanApprovalForHighRisk: manifest?.governance?.requiresHumanApprovalForHighRisk === true,
             };
           })
           .filter(Boolean) as Array<{
@@ -3055,10 +3791,15 @@ export function registerAnsibleTools(
           contractSchemaRef: string;
           defaultEtaSeconds: number;
           compatibilityMode: "strict" | "backward" | "legacy-window";
+          riskClass: "low" | "medium" | "high";
+          requiresHumanApprovalForHighRisk: boolean;
         }>;
         const defaultEtaSeconds = capabilityContracts.length > 0
           ? Math.min(...capabilityContracts.map((c) => c.defaultEtaSeconds))
           : 0;
+        const approvalRequired = capabilityContracts.some(
+          (c) => c.riskClass === "high" && c.requiresHumanApprovalForHighRisk,
+        );
         const existingMetadata = ((params.metadata as Record<string, unknown> | undefined) || {}) as Record<string, unknown>;
         const mergedMetadata: Record<string, unknown> = {
           ...existingMetadata,
@@ -3076,6 +3817,17 @@ export function registerAnsibleTools(
             contract: {
               capabilities: capabilityContracts,
             },
+            backpressure: {
+              maxConcurrent: policy.maxConcurrent,
+              maxQueueDepth: policy.maxQueueDepth,
+              retryBudget: policy.retryBudget,
+            },
+            approval: approvalRequired
+              ? {
+                  required: true,
+                  state: "pending",
+                }
+              : undefined,
           },
         };
 
@@ -3987,6 +4739,17 @@ export function registerAnsibleTools(
           }
           return toolResult({ error: `Task is already ${task.status}` });
         }
+        const policy = readBackpressurePolicy(doc);
+        const activeClaims = countActiveClaimsForAgent(doc, effectiveAgent);
+        if (activeClaims >= policy.maxConcurrent) {
+          return toolResult({
+            error: `Backpressure: agent '${effectiveAgent}' is at max concurrent tasks (${policy.maxConcurrent}).`,
+            backpressure: {
+              maxConcurrent: policy.maxConcurrent,
+              activeClaims,
+            },
+          });
+        }
 
         const ansibleMeta = (((task.metadata || {}) as Record<string, unknown>).ansible || {}) as Record<string, unknown>;
         const defaultEtaSeconds =
@@ -4051,6 +4814,14 @@ export function registerAnsibleTools(
           };
         }
         const now = Date.now();
+        const requiresApproval = taskRequiresHighRiskApproval(task);
+        const approvalSatisfied = taskApprovalSatisfied(task);
+        if (requiresApproval && !approvalSatisfied) {
+          return toolResult({
+            error:
+              "High-risk task requires approval before execution. Run ansible_approve_task with approval_artifact_id first.",
+          });
+        }
         const nextMetadata: Record<string, unknown> = {
           ...((task.metadata as Record<string, unknown> | undefined) || {}),
           ansible: {
@@ -4115,6 +4886,8 @@ export function registerAnsibleTools(
             etaAt: eta.etaAtIso,
             planSummary,
             versionNegotiation,
+            approvalRequired: requiresApproval,
+            approvalSatisfied,
           },
           task: {
             id: task.id,
@@ -4168,6 +4941,23 @@ export function registerAnsibleTools(
           type: "string",
           description: "Optional idempotency key. Reusing the same key prevents duplicate update transitions.",
         },
+        failure_class: {
+          type: "string",
+          description:
+            "Optional normalized failure class when status=failed (e.g., failed_terminal, dependency_missing, timeout, execution_error).",
+        },
+        failure_code: {
+          type: "string",
+          description: "Optional machine-readable failure code (e.g., dependency:repo_unavailable).",
+        },
+        terminal: {
+          type: "boolean",
+          description: "Optional terminal marker when status=failed. Defaults false.",
+        },
+        retryable: {
+          type: "boolean",
+          description: "Optional retryability hint when status=failed.",
+        },
       },
       required: ["taskId", "status"],
     },
@@ -4220,6 +5010,12 @@ export function registerAnsibleTools(
         if (taskNeedsContractEta(task) && status === "in_progress" && ackMeta.state !== "accepted") {
           return toolResult({ error: "Task contract requires accepted ACK before in_progress updates." });
         }
+        if (status === "in_progress" && taskRequiresHighRiskApproval(task) && !taskApprovalSatisfied(task)) {
+          return toolResult({
+            error:
+              "High-risk task requires approval before in_progress. Run ansible_approve_task with approval_artifact_id.",
+          });
+        }
 
         const note = params.note
           ? validateString(params.note, VALIDATION_LIMITS.maxTitleLength, "note")
@@ -4230,6 +5026,11 @@ export function registerAnsibleTools(
           : undefined;
         if (status === "failed" && !note && !result) {
           return toolResult({ error: "failed status requires note or result for diagnostics" });
+        }
+        if (status !== "failed" && (params.failure_class || params.failure_code || params.terminal !== undefined || params.retryable !== undefined)) {
+          return toolResult({
+            error: "failure_class/failure_code/terminal/retryable are only valid when status=failed",
+          });
         }
 
         const updatedBase: Task = {
@@ -4263,6 +5064,55 @@ export function registerAnsibleTools(
             },
           };
         }
+        if (status === "failed") {
+          const policy = readBackpressurePolicy(doc);
+          const retryMeta = ((ansible.retry || {}) as Record<string, unknown>) || {};
+          const previousRetryableFailures =
+            typeof retryMeta.retryableFailureCount === "number" && Number.isFinite(retryMeta.retryableFailureCount)
+              ? Math.max(0, Math.floor(retryMeta.retryableFailureCount))
+              : 0;
+          const fallbackFailureClass = inferFailureClassFromText(note, result);
+          const failureClass = normalizeFailureClass(params.failure_class, fallbackFailureClass);
+          const failureCode =
+            typeof params.failure_code === "string" && params.failure_code.trim().length > 0
+              ? validateString(params.failure_code, 200, "failure_code").trim()
+              : undefined;
+          const requestedRetryable = params.retryable === true;
+          const tentativeRetryableFailures = previousRetryableFailures + (requestedRetryable ? 1 : 0);
+          const retryBudgetExceeded = requestedRetryable && tentativeRetryableFailures > policy.retryBudget;
+          const terminal = params.terminal === true || failureClass === "failed_terminal" || retryBudgetExceeded;
+          const retryable = requestedRetryable && !retryBudgetExceeded;
+          const normalizedFailureClass = retryBudgetExceeded ? "failed_terminal" : failureClass;
+          const normalizedFailureCode = retryBudgetExceeded
+            ? `${failureCode || "retry_budget_exceeded"}`
+            : failureCode;
+          updated = {
+            ...updated,
+            metadata: {
+              ...((updated.metadata as Record<string, unknown>) || {}),
+              ansible: {
+                ...ansible,
+                failure: {
+                  failureClass: normalizedFailureClass,
+                  failureCode: normalizedFailureCode,
+                  terminal,
+                  retryable,
+                  failedAt: now,
+                  failedByAgentId: effectiveAgent,
+                  failedByNodeId: nodeId,
+                  errorSummary: result || note,
+                },
+                retry: {
+                  ...retryMeta,
+                  retryBudget: policy.retryBudget,
+                  retryableFailureCount: retryable ? tentativeRetryableFailures : previousRetryableFailures,
+                  lastRetryableFailureAt: retryable ? now : retryMeta.lastRetryableFailureAt,
+                  retryBudgetExceededAt: retryBudgetExceeded ? now : retryMeta.retryBudgetExceededAt,
+                },
+              },
+            },
+          };
+        }
 
         tasks.set(resolvedKey, updated);
 
@@ -4276,6 +5126,148 @@ export function registerAnsibleTools(
           message: `Updated task: ${task.title}`,
           notified: notify,
           notifyMessageId,
+        });
+      } catch (err: any) {
+        return toolResult({ error: err.message });
+      }
+    },
+  });
+
+  // === ansible_approve_task ===
+  api.registerTool({
+    name: "ansible_approve_task",
+    label: "Ansible Approve Task",
+    description:
+      "Record an approval artifact for a high-risk task so execution can proceed. Approver must be requester or current gateway admin.",
+    parameters: {
+      type: "object",
+      properties: {
+        taskId: {
+          type: "string",
+          description: "The task ID to approve",
+        },
+        approval_artifact_id: {
+          type: "string",
+          description: "Approval artifact id/reference (ticket/URL/hash)",
+        },
+        note: {
+          type: "string",
+          description: "Optional approval note/reason",
+        },
+        agentId: {
+          type: "string",
+          description: "Approver agent id (external or internal). Omit for local internal identity.",
+        },
+        agent_token: {
+          type: "string",
+          description: "Auth token for approver agent. Preferred over agentId.",
+        },
+      },
+      required: ["taskId", "approval_artifact_id"],
+    },
+    async execute(_id, params) {
+      const doc = getDoc();
+      const nodeId = getNodeId();
+      if (!doc || !nodeId) return toolResult({ error: "Ansible not initialized" });
+
+      try {
+        const resolved = resolveEffectiveAgent(
+          doc,
+          nodeId,
+          params.agentId as string | undefined,
+          params.agent_token as string | undefined,
+          getAuthMode(config),
+        );
+        if (resolved.error) return toolResult({ error: resolved.error });
+        const approverAgent = resolved.effectiveAgent;
+        if (!approverAgent) return toolResult({ error: "Failed to resolve approver identity." });
+
+        const tasks = doc.getMap("tasks");
+        const resolvedKey = resolveTaskKey(tasks as any, params.taskId as string);
+        if (typeof resolvedKey !== "string") return toolResult(resolvedKey);
+        const task = tasks.get(resolvedKey) as Task | undefined;
+        if (!task) return toolResult({ error: "Task not found" });
+
+        const requiresApproval = taskRequiresHighRiskApproval(task);
+        if (!requiresApproval) {
+          return toolResult({ error: "Task does not require high-risk approval." });
+        }
+
+        const adminAgentId = resolveRequiredAdminAgentId(doc, nodeId, config);
+        const requesterAgent = typeof task.createdBy_agent === "string" ? task.createdBy_agent : "";
+        if (approverAgent !== requesterAgent && approverAgent !== adminAgentId) {
+          return toolResult({
+            error: `Approver '${approverAgent}' is not authorized. Allowed approvers: requester '${requesterAgent}' or admin '${adminAgentId}'.`,
+          });
+        }
+
+        const artifactId = validateString(params.approval_artifact_id, 300, "approval_artifact_id").trim();
+        const note =
+          typeof params.note === "string" && params.note.trim().length > 0
+            ? validateString(params.note, VALIDATION_LIMITS.maxDescriptionLength, "note").trim()
+            : undefined;
+        const now = Date.now();
+        const metadata = ((task.metadata as Record<string, unknown> | undefined) || {}) as Record<string, unknown>;
+        const ansibleMeta = ((metadata.ansible as Record<string, unknown> | undefined) || {}) as Record<string, unknown>;
+        const approval = ((ansibleMeta.approval as Record<string, unknown> | undefined) || {}) as Record<string, unknown>;
+        const alreadyApproved = taskApprovalSatisfied(task);
+        if (alreadyApproved) {
+          return toolResult({
+            success: true,
+            idempotent: true,
+            message: "Task already has an approved artifact.",
+            approval: approval,
+          });
+        }
+
+        const next: Task = {
+          ...task,
+          metadata: {
+            ...metadata,
+            ansible: {
+              ...ansibleMeta,
+              approval: {
+                ...approval,
+                required: true,
+                state: "approved",
+                approvalArtifactId: artifactId,
+                approvedAt: now,
+                approvedByAgentId: approverAgent,
+                approvedByNodeId: nodeId,
+                note,
+              },
+            },
+          },
+          updatedAt: now,
+          updates: [
+            {
+              at: now,
+              by_agent: approverAgent,
+              status: task.status as any,
+              note: note ? `approval: ${note}` : `approval artifact recorded (${artifactId})`,
+            },
+            ...((task.updates as any) || []),
+          ].slice(0, 50),
+        };
+        tasks.set(resolvedKey, next);
+        const lifecycleMessageId = emitLifecycleEvent(
+          doc,
+          nodeId,
+          "task_high_risk_approved",
+          `High-risk task '${task.id}' approved by ${approverAgent}.`,
+          {
+            taskId: task.id,
+            approvedByAgentId: approverAgent,
+            approvedByNodeId: nodeId,
+            approvalArtifactId: artifactId,
+          },
+        );
+        return toolResult({
+          success: true,
+          taskId: task.id,
+          lifecycleMessageId,
+          approval: (((next.metadata as Record<string, unknown>)?.ansible as Record<string, unknown>)?.approval ||
+            {}) as Record<string, unknown>,
         });
       } catch (err: any) {
         return toolResult({ error: err.message });
@@ -4361,6 +5353,12 @@ export function registerAnsibleTools(
         const result = params.result ? validateString(params.result, VALIDATION_LIMITS.maxResultLength, "result") : undefined;
         if (taskNeedsContractEta(task) && !result) {
           return toolResult({ error: "Contract-bound task completion requires --result" });
+        }
+        if (taskRequiresHighRiskApproval(task) && !taskApprovalSatisfied(task)) {
+          return toolResult({
+            error:
+              "High-risk task requires approval before completion. Run ansible_approve_task with approval_artifact_id.",
+          });
         }
 
         const completedBase: Task = {

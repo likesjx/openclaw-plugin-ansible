@@ -1,0 +1,25 @@
+{
+  "mode": "live",
+  "source": "gateway-live",
+  "generatedAt": "2026-03-02T17:27:24.301Z",
+  "tasksScanned": 87,
+  "config": {
+    "maxMessagesPerSweep": 3,
+    "fyiAgents": [
+      "architect"
+    ],
+    "maxUnknownAssignees": 0,
+    "minBreachesForStress": 0
+  },
+  "fanout": {
+    "breachCount": 0,
+    "perAgentBreachCount": {},
+    "breachSamples": [],
+    "potentialMessagesUnbounded": 0,
+    "boundedMessages": 0,
+    "preventedByBudget": 0
+  },
+  "unknownAssignees": [],
+  "pass": true,
+  "failReasons": []
+}

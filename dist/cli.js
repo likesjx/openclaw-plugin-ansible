@@ -863,6 +863,15 @@ export function registerAnsibleCli(api, config) {
                 const delegationChecksum = typeof coordination.delegationPolicyChecksum === "string"
                     ? coordination.delegationPolicyChecksum
                     : "(unset)";
+                const bpMaxConcurrent = typeof coordination.backpressureMaxConcurrent === "number"
+                    ? String(coordination.backpressureMaxConcurrent)
+                    : "(default 6)";
+                const bpMaxQueueDepth = typeof coordination.backpressureMaxQueueDepth === "number"
+                    ? String(coordination.backpressureMaxQueueDepth)
+                    : "(default 40)";
+                const bpRetryBudget = typeof coordination.backpressureRetryBudget === "number"
+                    ? String(coordination.backpressureRetryBudget)
+                    : "(default 3)";
                 console.log("Coordinator:");
                 console.log(`  id: ${coordinator}`);
                 console.log(`  sweepEverySeconds: ${sweepEvery}`);
@@ -871,6 +880,10 @@ export function registerAnsibleCli(api, config) {
                 console.log(`  nominatedGateways: ${gatewayAdminsCount}`);
                 console.log("Distribution Policy:");
                 console.log(`  externalMode: ${distributionExternalMode}`);
+                console.log("Backpressure Policy:");
+                console.log(`  maxConcurrent: ${bpMaxConcurrent}`);
+                console.log(`  maxQueueDepth: ${bpMaxQueueDepth}`);
+                console.log(`  retryBudget: ${bpRetryBudget}`);
                 console.log("Delegation Policy:");
                 console.log(`  version: ${delegationVersion}`);
                 console.log(`  checksum: ${delegationChecksum}`);
@@ -1308,6 +1321,53 @@ export function registerAnsibleCli(api, config) {
                 console.log(`  - ${String(item.taskId || "").slice(0, 8)} ${item.assignedTo || "(none)"} reason=${item.reason}`);
             }
         });
+        admin
+            .command("backpressure")
+            .description("Set task backpressure limits (max concurrent claims, queue depth, retry budget)")
+            .option("--max-concurrent <n>", "Max claimed/in_progress tasks per agent")
+            .option("--max-queue-depth <n>", "Max pending assignments per target agent")
+            .option("--retry-budget <n>", "Max retryable failure updates before terminal normalization")
+            .option("--as <agentId>", "Acting current admin agent id")
+            .option("--token <token>", "Auth token for acting admin (or set OPENCLAW_ANSIBLE_TOKEN)")
+            .action(async (...args) => {
+            const opts = (args[0] || {});
+            const toolArgs = {};
+            if (opts.maxConcurrent && Number.isFinite(Number(opts.maxConcurrent))) {
+                toolArgs.max_concurrent = Math.floor(Number(opts.maxConcurrent));
+            }
+            if (opts.maxQueueDepth && Number.isFinite(Number(opts.maxQueueDepth))) {
+                toolArgs.max_queue_depth = Math.floor(Number(opts.maxQueueDepth));
+            }
+            if (opts.retryBudget && Number.isFinite(Number(opts.retryBudget))) {
+                toolArgs.retry_budget = Math.floor(Number(opts.retryBudget));
+            }
+            if (!("max_concurrent" in toolArgs) && !("max_queue_depth" in toolArgs) && !("retry_budget" in toolArgs)) {
+                console.log("✗ Use at least one: --max-concurrent, --max-queue-depth, --retry-budget");
+                return;
+            }
+            if (opts.as)
+                toolArgs.from_agent = opts.as;
+            const token = resolveAgentToken(opts.token);
+            if (token)
+                toolArgs.agent_token = token;
+            let out;
+            try {
+                out = await callGateway("ansible_set_backpressure_policy", toolArgs);
+            }
+            catch (err) {
+                console.log(`✗ ${err.message}`);
+                return;
+            }
+            if (out.error) {
+                console.log(`✗ ${out.error}`);
+                return;
+            }
+            const current = out.current || {};
+            console.log("✓ Backpressure policy updated");
+            console.log(`  maxConcurrent=${current.maxConcurrent}`);
+            console.log(`  maxQueueDepth=${current.maxQueueDepth}`);
+            console.log(`  retryBudget=${current.retryBudget}`);
+        });
         // === ansible capability ===
         const capability = ansible.command("capability").description("Capability contract lifecycle");
         capability
@@ -1342,6 +1402,58 @@ export function registerAnsibleCli(api, config) {
                 console.log(`  delegation=${c.delegationSkillRef?.name || "?"}@${c.delegationSkillRef?.version || "?"}`);
                 console.log(`  executor=${c.executorSkillRef?.name || "?"}@${c.executorSkillRef?.version || "?"}`);
                 console.log(`  eligible=${Array.isArray(i.eligibleAgentIds) ? i.eligibleAgentIds.join(", ") : ""}`);
+                console.log();
+            }
+        });
+        capability
+            .command("health")
+            .description("Show capability health summary (success rate, p95 accept, p95 complete)")
+            .option("--id <capabilityId>", "Optional capability id filter")
+            .option("--since-hours <n>", "Lookback window in hours (default 24)", "24")
+            .option("--format <fmt>", "Output format: text (default) or json")
+            .action(async (...args) => {
+            const opts = (args[0] || {});
+            const toolArgs = {};
+            if (opts.id)
+                toolArgs.capability_id = opts.id;
+            if (opts.sinceHours && Number.isFinite(Number(opts.sinceHours))) {
+                toolArgs.since_hours = Math.floor(Number(opts.sinceHours));
+            }
+            let out;
+            try {
+                out = await callGateway("ansible_capability_health_summary", toolArgs);
+            }
+            catch (err) {
+                console.log(`✗ ${err.message}`);
+                return;
+            }
+            if (out.error) {
+                console.log(`✗ ${out.error}`);
+                return;
+            }
+            if (opts.format === "json") {
+                console.log(JSON.stringify(out, null, 2));
+                return;
+            }
+            const rows = Array.isArray(out.capabilities) ? out.capabilities : [];
+            console.log(`\n=== Capability Health (${rows.length}) ===\n`);
+            if (rows.length === 0) {
+                console.log("No capability health samples in window.");
+                return;
+            }
+            for (const row of rows) {
+                const successPct = typeof row.successRate === "number" && Number.isFinite(row.successRate)
+                    ? `${(row.successRate * 100).toFixed(1)}%`
+                    : "n/a";
+                const p95Accept = typeof row.p95AcceptMs === "number" && Number.isFinite(row.p95AcceptMs)
+                    ? `${Math.round(row.p95AcceptMs / 1000)}s`
+                    : "n/a";
+                const p95Complete = typeof row.p95CompleteMs === "number" && Number.isFinite(row.p95CompleteMs)
+                    ? `${Math.round(row.p95CompleteMs / 1000)}s`
+                    : "n/a";
+                console.log(`${row.capabilityId}`);
+                console.log(`  success=${successPct}  p95_accept=${p95Accept}  p95_complete=${p95Complete}`);
+                console.log(`  totals: all=${row.totalTasks} completed=${row.completedTasks} failed=${row.failedTasks} in_flight=${row.inFlightTasks}`);
                 console.log();
             }
         });
@@ -1591,9 +1703,52 @@ export function registerAnsibleCli(api, config) {
                 const assignee = t.assignedTo ? ` → ${t.assignedTo}` : "";
                 const claimer = t.claimedBy ? ` (${t.claimedBy})` : "";
                 const intent = t.intent ? ` [${t.intent}]` : "";
+                const failure = t.status === "failed" && t.failureClass ? ` {${t.failureClass}${t.failureCode ? `:${t.failureCode}` : ""}}` : "";
                 console.log(`${icon} [${t.id ? t.id.slice(0, 8) : t.key}] ${t.title}${intent}`);
-                console.log(`  Status: ${t.status}${assignee}${claimer}`);
+                console.log(`  Status: ${t.status}${assignee}${claimer}${failure}`);
                 console.log();
+            }
+        });
+        tasksCmd
+            .command("timeline <taskId>")
+            .description("Show full lifecycle timeline for one task")
+            .option("--format <fmt>", "Output format: text (default) or json")
+            .action(async (...args) => {
+            const taskId = args[0];
+            const opts = (args[1] || {});
+            let out;
+            try {
+                out = await callGateway("ansible_task_timeline", { taskId });
+            }
+            catch (err) {
+                console.log(`✗ ${err.message}`);
+                return;
+            }
+            if (out.error) {
+                console.log(`✗ ${out.error}`);
+                return;
+            }
+            if (opts.format === "json") {
+                console.log(JSON.stringify(out, null, 2));
+                return;
+            }
+            const t = out.task || {};
+            console.log(`\n=== Task Timeline ===\n`);
+            console.log(`[${String(t.id || taskId).slice(0, 8)}] ${t.title || "(unknown)"}`);
+            console.log(`status=${t.status || "unknown"} createdBy=${t.createdBy || "?"} claimedBy=${t.claimedBy || "?"}`);
+            const m = out.metrics || {};
+            if (typeof m.acceptMs === "number")
+                console.log(`accept=${Math.round(Number(m.acceptMs) / 1000)}s`);
+            if (typeof m.completeMs === "number")
+                console.log(`complete=${Math.round(Number(m.completeMs) / 1000)}s`);
+            const events = Array.isArray(out.timeline) ? out.timeline : [];
+            console.log();
+            for (const e of events) {
+                const ts = typeof e.at === "number" ? new Date(e.at).toLocaleString() : "(unknown)";
+                const by = e.byAgentId ? ` by=${e.byAgentId}` : "";
+                const status = e.status ? ` status=${e.status}` : "";
+                const note = e.note ? ` note=${e.note}` : "";
+                console.log(`- ${ts} ${e.kind || "event"}${status}${by}${note}`);
             }
         });
         tasksCmd
@@ -1669,6 +1824,10 @@ export function registerAnsibleCli(api, config) {
             .option("--notify", "Send update message to task creator")
             .option("--as <agentId>", "Update as this external agent (e.g., claude-code)")
             .option("--idempotency-key <key>", "Optional idempotency key for update transition")
+            .option("--failure-class <class>", "Failure class when --status failed (e.g., failed_terminal, dependency_missing, timeout)")
+            .option("--failure-code <code>", "Failure code when --status failed (machine-readable)")
+            .option("--terminal", "Mark failed update as terminal")
+            .option("--retryable", "Mark failed update as retryable")
             .option("--token <token>", "Auth token for actor (or set OPENCLAW_ANSIBLE_TOKEN)")
             .action(async (...args) => {
             const taskId = args[0];
@@ -1688,6 +1847,14 @@ export function registerAnsibleCli(api, config) {
                 toolArgs.agentId = opts.as;
             if (opts.idempotencyKey)
                 toolArgs.idempotency_key = opts.idempotencyKey;
+            if (opts.failureClass)
+                toolArgs.failure_class = opts.failureClass;
+            if (opts.failureCode)
+                toolArgs.failure_code = opts.failureCode;
+            if (opts.terminal)
+                toolArgs.terminal = true;
+            if (opts.retryable)
+                toolArgs.retryable = true;
             const token = resolveAgentToken(opts.token);
             if (token)
                 toolArgs.agent_token = token;
@@ -1710,6 +1877,55 @@ export function registerAnsibleCli(api, config) {
             console.log(`✓ Task updated: status=${opts.status}`);
             if (result.notified)
                 console.log(`  Creator notified (messageId: ${result.notifyMessageId})`);
+        });
+        tasksCmd
+            .command("approve <taskId>")
+            .description("Record a high-risk approval artifact so execution can proceed")
+            .option("--artifact <id>", "Approval artifact reference (ticket/URL/hash)")
+            .option("--note <text>", "Optional approval note")
+            .option("--as <agentId>", "Approve as this agent")
+            .option("--token <token>", "Auth token for approver (or set OPENCLAW_ANSIBLE_TOKEN)")
+            .action(async (...args) => {
+            const taskId = args[0];
+            const opts = (args[1] || {});
+            if (!opts.artifact || !opts.artifact.trim()) {
+                console.log("✗ --artifact is required");
+                return;
+            }
+            const toolArgs = {
+                taskId,
+                approval_artifact_id: opts.artifact.trim(),
+            };
+            if (opts.note)
+                toolArgs.note = opts.note;
+            if (opts.as)
+                toolArgs.agentId = opts.as;
+            const token = resolveAgentToken(opts.token);
+            if (token)
+                toolArgs.agent_token = token;
+            let result;
+            try {
+                result = await callGateway("ansible_approve_task", toolArgs);
+            }
+            catch (err) {
+                console.log(`✗ ${err.message}`);
+                return;
+            }
+            if (result.error) {
+                console.log(`✗ ${result.error}`);
+                return;
+            }
+            if (result.idempotent) {
+                console.log(`↺ ${result.message || "Approval already recorded."}`);
+                return;
+            }
+            console.log("✓ Task approved for high-risk execution.");
+            if (result.approval?.approvedByAgentId) {
+                console.log(`  approvedBy=${result.approval.approvedByAgentId}`);
+            }
+            if (result.approval?.approvalArtifactId) {
+                console.log(`  artifact=${result.approval.approvalArtifactId}`);
+            }
         });
         tasksCmd
             .command("complete <taskId>")

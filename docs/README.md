@@ -16,10 +16,13 @@
 - **[skill-pair-manifest-schema-v1.md](skill-pair-manifest-schema-v1.md)** — Canonical JSON schema for manifest contract between ansible-meta (author) and ansible-main (enforcer)
 - **[skill-pair-publish-executor-v1.md](skill-pair-publish-executor-v1.md)** — Normative gate execution order for publish/update/unpublish, including rollback and audit events
 - **[ansible-completion-checklist-v1.md](ansible-completion-checklist-v1.md)** — Remaining implementation + release checklist to reach commit/push/deploy readiness
+- **[mvp-proposals/README.md](mvp-proposals/README.md)** — Per-MVP proposal/disposition index with one status/evidence document per MVP phase
 - **[documentation-status-v1.md](documentation-status-v1.md)** — Canonical vs historical doc map to prevent stale concepts from driving implementation
 - **[clawhub-publish-prep-v1.md](clawhub-publish-prep-v1.md)** — Packaging, security, docs, and quality gates for publishing this plugin/skill to Clawhub
 - **[deployment-runbook-v1.md](deployment-runbook-v1.md)** — Step-by-step canary rollout and rollback runbook with safe SLA defaults and go/no-go checks
 - **[ansible-e2e-deployment-test-plan-v1.md](ansible-e2e-deployment-test-plan-v1.md)** — Standard end-to-end deployment validation plan (mesh transport matrix, task lifecycle, capability pipeline, SLA checks, and release gates)
+- **[mvp1-industrial-test-plan-v1.md](mvp1-industrial-test-plan-v1.md)** — Industrial stress-analysis plan for MVP-1 fanout safety (deterministic fixtures + live read-only risk checks)
+- **[rust-port-proposal-v1.md](rust-port-proposal-v1.md)** — Quick proposal for a phased Rust migration (what to port first, hybrid architecture, risks, and rollout plan)
 - **[mvp0-soak-log-2026-02-27.md](mvp0-soak-log-2026-02-27.md)** — Active 24h MVP-0 soak log, start timestamp, baseline health, and checkpoint/exit rules
 - **[mvp0-handoff-checklist.md](mvp0-handoff-checklist.md)** — Commit/push/deploy handoff checklist for MVP-0 hardening and rollout
 - **[setup.md](setup.md)** — Practical setup and operations guide (new agent, new gateway, coordinator sweep)
@@ -32,6 +35,8 @@
 ## Tracking
 
 - **[DEFECTS.md](DEFECTS.md)** — Known bugs, workarounds, and technical debt
+- **[work-items/WI-20260302-mvp1-industrial-testing.md](work-items/WI-20260302-mvp1-industrial-testing.md)** — Dedicated work item for MVP-1 industrial stress harness and evidence-driven fanout testing
+- **[evidence/mvp1/20260302-mvp1-exit-gates.md](evidence/mvp1/20260302-mvp1-exit-gates.md)** — MVP-1 gate closure evidence for synthetic stress fanout controls and staging rollback drill
 
 ## Quick Links
 

@@ -1,0 +1,108 @@
+{
+  "mode": "snapshot",
+  "source": "/Users/jaredlikes/code/openclaw-plugin-ansible/scripts/testdata/mvp1-industrial/storm-snapshot.json",
+  "generatedAt": "2023-11-14T22:30:00.000Z",
+  "tasksScanned": 8,
+  "config": {
+    "maxMessagesPerSweep": 3,
+    "fyiAgents": [
+      "architect"
+    ],
+    "maxUnknownAssignees": 0,
+    "minBreachesForStress": 1
+  },
+  "fanout": {
+    "breachCount": 10,
+    "perAgentBreachCount": {
+      "vps-jane": 3,
+      "mbp-jane": 3,
+      "chief-of-staff": 1,
+      "claude-code": 1,
+      "ghost-bot": 1,
+      "unknown-agent": 1
+    },
+    "breachSamples": [
+      {
+        "taskId": "task-storm-001",
+        "title": "Storm pending 1",
+        "assignedTo": "vps-jane",
+        "breachType": "accept",
+        "dueAt": 1700000000000
+      },
+      {
+        "taskId": "task-storm-002",
+        "title": "Storm pending 2",
+        "assignedTo": "mbp-jane",
+        "breachType": "accept",
+        "dueAt": 1700000000000
+      },
+      {
+        "taskId": "task-storm-003",
+        "title": "Storm pending 3",
+        "assignedTo": "chief-of-staff",
+        "breachType": "accept",
+        "dueAt": 1700000000000
+      },
+      {
+        "taskId": "task-storm-004",
+        "title": "Storm pending 4",
+        "assignedTo": "claude-code",
+        "breachType": "accept",
+        "dueAt": 1700000000000
+      },
+      {
+        "taskId": "task-storm-005",
+        "title": "Storm pending 5",
+        "assignedTo": "ghost-bot",
+        "breachType": "accept",
+        "dueAt": 1700000000000
+      },
+      {
+        "taskId": "task-storm-006",
+        "title": "Storm claimed progress",
+        "assignedTo": "vps-jane",
+        "breachType": "progress",
+        "dueAt": 1700000001000
+      },
+      {
+        "taskId": "task-storm-006",
+        "title": "Storm claimed progress",
+        "assignedTo": "vps-jane",
+        "breachType": "complete",
+        "dueAt": 1700000002000
+      },
+      {
+        "taskId": "task-storm-007",
+        "title": "Storm in_progress progress",
+        "assignedTo": "mbp-jane",
+        "breachType": "progress",
+        "dueAt": 1700000001000
+      },
+      {
+        "taskId": "task-storm-007",
+        "title": "Storm in_progress progress",
+        "assignedTo": "mbp-jane",
+        "breachType": "complete",
+        "dueAt": 1700000002000
+      },
+      {
+        "taskId": "task-storm-008",
+        "title": "Storm in_progress complete",
+        "assignedTo": "unknown-agent",
+        "breachType": "complete",
+        "dueAt": 1700000002000
+      }
+    ],
+    "potentialMessagesUnbounded": 20,
+    "boundedMessages": 6,
+    "preventedByBudget": 14
+  },
+  "unknownAssignees": [
+    "ghost-bot",
+    "unknown-agent"
+  ],
+  "pass": false,
+  "failReasons": [
+    "unknown_assignees_exceeded: count=2 max=0"
+  ]
+}

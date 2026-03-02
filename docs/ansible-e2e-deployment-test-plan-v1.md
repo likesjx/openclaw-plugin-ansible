@@ -151,6 +151,12 @@ Pass criteria:
 2. `unpublishPipeline` gate progression visible.
 3. Capability ends disabled/unpublished as intended.
 
+Automation harness:
+
+```bash
+OPENCLAW_INTEGRATION=1 OPENCLAW_ALLOW_MUTATION=1 npm run test:integration:capability-lifecycle
+```
+
 ## Phase 6: SLA Sweep Safety
 
 Run:
@@ -158,6 +164,7 @@ Run:
 ```bash
 openclaw ansible sla sweep --dry-run --limit 200
 openclaw ansible sla sweep --record-only --limit 200
+node scripts/integration-mvp1-industrial.mjs --mode live --max-messages 3 --fyi architect --min-breaches-for-stress 0 --max-unknown-assignees 0
 ```
 
 Pass criteria:
@@ -165,6 +172,7 @@ Pass criteria:
 1. Command succeeds.
 2. No escalation storm/fanout anomaly.
 3. Breach outcomes (if any) include reason metadata.
+4. Industrial harness reports `pass=true` with no unknown assignee gaps.
 
 ## Phase 7: Post-Deploy Stability Check
 
@@ -210,4 +218,3 @@ For each deployment run, record:
 4. pass/fail per phase
 5. defects/quirks observed
 6. promote/hold/rollback decision
-
