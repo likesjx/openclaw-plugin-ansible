@@ -1458,6 +1458,47 @@ export function registerAnsibleCli(api, config) {
             }
         });
         capability
+            .command("evidence")
+            .description("Show lifecycle install/wire evidence for a capability version")
+            .option("--id <capabilityId>", "Capability id")
+            .option("-v, --cap-version <version>", "Optional capability version (defaults to active/current)")
+            .option("--format <fmt>", "Output format: text (default) or json")
+            .action(async (...args) => {
+            const opts = (args[0] || {});
+            if (!opts.id) {
+                console.log("✗ --id is required.");
+                return;
+            }
+            const toolArgs = { capability_id: opts.id };
+            if (opts.capVersion)
+                toolArgs.version = opts.capVersion;
+            let out;
+            try {
+                out = await callGateway("ansible_capability_lifecycle_evidence", toolArgs);
+            }
+            catch (err) {
+                console.log(`✗ ${err.message}`);
+                return;
+            }
+            if (out.error) {
+                console.log(`✗ ${out.error}`);
+                return;
+            }
+            if (opts.format === "json") {
+                console.log(JSON.stringify(out, null, 2));
+                return;
+            }
+            console.log("\n=== Capability Lifecycle Evidence ===\n");
+            console.log(`id=${out.capabilityId}`);
+            console.log(`version=${out.version}`);
+            console.log(`manifestKey=${out.manifestKey}`);
+            console.log(`fingerprint=${out.lifecycleFingerprint}`);
+            const stage = out.installStage || {};
+            const wiring = out.wiring || {};
+            console.log(`installStage=${stage.status || "none"} stagedAt=${stage.stagedAt ? new Date(stage.stagedAt).toISOString() : "n/a"} updatedAt=${stage.updatedAt ? new Date(stage.updatedAt).toISOString() : "n/a"}`);
+            console.log(`wiringActive=${wiring.active === true ? "true" : "false"} wiredAt=${wiring.wiredAt ? new Date(wiring.wiredAt).toISOString() : "n/a"} unwiredAt=${wiring.unwiredAt ? new Date(wiring.unwiredAt).toISOString() : "n/a"}`);
+        });
+        capability
             .command("publish")
             .description("Publish or update a capability contract")
             .option("--id <capabilityId>", "Capability id (e.g., cap.fs.diff-apply)")
@@ -1532,6 +1573,11 @@ export function registerAnsibleCli(api, config) {
                     .map((g) => `${String(g.id || g.gateId || g.gate || "?")}:${String(g.status || "?")}`)
                     .join(" ");
                 console.log(`  publishPipeline=${gates}`);
+            }
+            if (out.lifecycleCoreEvidence?.install?.action || out.lifecycleCoreEvidence?.wire?.action) {
+                const installAction = out.lifecycleCoreEvidence?.install?.action || "unknown";
+                const wireAction = out.lifecycleCoreEvidence?.wire?.action || "unknown";
+                console.log(`  lifecycleCore=G4:${installAction} G5:${wireAction}`);
             }
             if (out.skillDistributionTask?.taskId) {
                 console.log(`  skillDistributionTask=${out.skillDistributionTask.taskId}`);

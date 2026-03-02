@@ -601,6 +601,21 @@ type CapabilityWiringRecord = {
   unwiredByAgentId?: string;
 };
 
+type LifecycleCoreTransitionAction = "applied" | "idempotent";
+
+type LifecycleCoreTransitionEvidence = {
+  gate: "G4_INSTALL_STAGE" | "G5_WIRE_STAGE";
+  action: LifecycleCoreTransitionAction;
+  at: number;
+  detail: string;
+};
+
+type LifecycleCoreEvidence = {
+  manifestKey: string;
+  install: LifecycleCoreTransitionEvidence;
+  wire: LifecycleCoreTransitionEvidence;
+};
+
 const OWNER_LEASE_STALE_MS = 90_000;
 
 type PublishGateId =
@@ -652,6 +667,7 @@ type PublishPipelineActivation = {
   lifecycleMessageId: string | null;
   workspaceStage?: CapabilityInstallStageRecord;
   workspaceWiring?: CapabilityWiringRecord;
+  lifecycleCoreEvidence?: LifecycleCoreEvidence;
 };
 
 type PublishPipelineResult = {
@@ -1194,52 +1210,137 @@ function executeCapabilityPublishPipeline(args: {
     return { ok: false, failedGate: "G4_INSTALL_STAGE", rollbackRequired: false, gateResults };
   }
 
-  const installStageGate = runPublishGate(gateResults, "G4_INSTALL_STAGE", () => {
-    const now = Date.now();
-    const targets = resolveCapabilityStageTargets(doc, capabilityId, manifest.ownerAgentId);
-    const stageRecord: CapabilityInstallStageRecord = {
-      capabilityId,
-      version: manifest.version,
-      ownerAgentId: manifest.ownerAgentId,
-      executorTargetAgentIds: targets.executorTargetAgentIds,
-      delegationTargetAgentIds: targets.delegationTargetAgentIds,
-      status: "staged",
-      stagedAt: now,
-      stagedByAgentId: publishedByAgentId,
-      updatedAt: now,
-      updatedByAgentId: publishedByAgentId,
+  const normalized = (ids: string[]) => Array.from(new Set(ids)).sort();
+  const sameStringArray = (a: string[], b: string[]) => {
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i += 1) {
+      if (a[i] !== b[i]) return false;
+    }
+    return true;
+  };
+  const nowGate = Date.now();
+  const desiredTargets = resolveCapabilityStageTargets(doc, capabilityId, manifest.ownerAgentId);
+  const desiredExecutorTargets = normalized(desiredTargets.executorTargetAgentIds);
+  const desiredDelegationTargets = normalized(desiredTargets.delegationTargetAgentIds);
+  const priorStage = installStageMap.get(manifestKey) as CapabilityInstallStageRecord | undefined;
+  let installTransition: LifecycleCoreTransitionEvidence;
+  if (
+    priorStage &&
+    priorStage.capabilityId === capabilityId &&
+    priorStage.version === manifest.version &&
+    priorStage.ownerAgentId === manifest.ownerAgentId &&
+    priorStage.status !== "archived" &&
+    sameStringArray(normalized(priorStage.executorTargetAgentIds), desiredExecutorTargets) &&
+    sameStringArray(normalized(priorStage.delegationTargetAgentIds), desiredDelegationTargets)
+  ) {
+    gateResults.push({
+      gate: "G4_INSTALL_STAGE",
+      status: "skipped",
+      at: nowGate,
+      detail: "idempotent: existing install stage matches desired targets",
+    });
+    installTransition = {
+      gate: "G4_INSTALL_STAGE",
+      action: "idempotent",
+      at: nowGate,
+      detail: "existing install stage reused",
     };
-    installStageMap.set(manifestKey, stageRecord);
-  });
-  if (!installStageGate.ok) {
-    return { ok: false, failedGate: "G4_INSTALL_STAGE", rollbackRequired: false, gateResults };
+  } else {
+    const installStageGate = runPublishGate(gateResults, "G4_INSTALL_STAGE", () => {
+      const now = Date.now();
+      const stageRecord: CapabilityInstallStageRecord = {
+        capabilityId,
+        version: manifest.version,
+        ownerAgentId: manifest.ownerAgentId,
+        executorTargetAgentIds: desiredExecutorTargets,
+        delegationTargetAgentIds: desiredDelegationTargets,
+        status: "staged",
+        stagedAt: priorStage?.stagedAt ?? now,
+        stagedByAgentId: priorStage?.stagedByAgentId ?? publishedByAgentId,
+        updatedAt: now,
+        updatedByAgentId: publishedByAgentId,
+      };
+      installStageMap.set(manifestKey, stageRecord);
+    });
+    if (!installStageGate.ok) {
+      return { ok: false, failedGate: "G4_INSTALL_STAGE", rollbackRequired: false, gateResults };
+    }
+    installTransition = {
+      gate: "G4_INSTALL_STAGE",
+      action: "applied",
+      at: Date.now(),
+      detail: "install stage set/updated",
+    };
   }
 
-  const wireStageGate = runPublishGate(gateResults, "G5_WIRE_STAGE", () => {
-    const now = Date.now();
-    const stage = installStageMap.get(manifestKey) as CapabilityInstallStageRecord | undefined;
-    if (!stage) throw new Error(`wire_failed: missing install stage for '${manifestKey}'`);
-    if (stage.status === "archived") throw new Error(`wire_failed: install stage '${manifestKey}' is archived`);
-    const wiringRecord: CapabilityWiringRecord = {
-      capabilityId,
-      version: manifest.version,
-      ownerAgentId: manifest.ownerAgentId,
-      executorTargetAgentIds: stage.executorTargetAgentIds,
-      delegationTargetAgentIds: stage.delegationTargetAgentIds,
-      active: true,
-      wiredAt: now,
-      wiredByAgentId: publishedByAgentId,
-    };
-    wiringMap.set(manifestKey, wiringRecord);
-    installStageMap.set(manifestKey, {
-      ...stage,
-      status: "wired",
-      updatedAt: now,
-      updatedByAgentId: publishedByAgentId,
-    } satisfies CapabilityInstallStageRecord);
-  });
-  if (!wireStageGate.ok) {
+  const stageAfterInstall = installStageMap.get(manifestKey) as CapabilityInstallStageRecord | undefined;
+  if (!stageAfterInstall) {
     return { ok: false, failedGate: "G5_WIRE_STAGE", rollbackRequired: true, gateResults };
+  }
+  if (stageAfterInstall.status === "archived") {
+    gateResults.push({
+      gate: "G5_WIRE_STAGE",
+      status: "failed",
+      at: Date.now(),
+      error: `wire_failed: install stage '${manifestKey}' is archived`,
+    });
+    return { ok: false, failedGate: "G5_WIRE_STAGE", rollbackRequired: true, gateResults };
+  }
+
+  const priorWiring = wiringMap.get(manifestKey) as CapabilityWiringRecord | undefined;
+  let wireTransition: LifecycleCoreTransitionEvidence;
+  if (
+    priorWiring &&
+    priorWiring.capabilityId === capabilityId &&
+    priorWiring.version === manifest.version &&
+    priorWiring.ownerAgentId === manifest.ownerAgentId &&
+    priorWiring.active === true &&
+    sameStringArray(normalized(priorWiring.executorTargetAgentIds), normalized(stageAfterInstall.executorTargetAgentIds)) &&
+    sameStringArray(normalized(priorWiring.delegationTargetAgentIds), normalized(stageAfterInstall.delegationTargetAgentIds)) &&
+    stageAfterInstall.status === "wired"
+  ) {
+    gateResults.push({
+      gate: "G5_WIRE_STAGE",
+      status: "skipped",
+      at: Date.now(),
+      detail: "idempotent: existing active wiring matches desired targets",
+    });
+    wireTransition = {
+      gate: "G5_WIRE_STAGE",
+      action: "idempotent",
+      at: Date.now(),
+      detail: "existing wiring reused",
+    };
+  } else {
+    const wireStageGate = runPublishGate(gateResults, "G5_WIRE_STAGE", () => {
+      const now = Date.now();
+      const wiringRecord: CapabilityWiringRecord = {
+        capabilityId,
+        version: manifest.version,
+        ownerAgentId: manifest.ownerAgentId,
+        executorTargetAgentIds: stageAfterInstall.executorTargetAgentIds,
+        delegationTargetAgentIds: stageAfterInstall.delegationTargetAgentIds,
+        active: true,
+        wiredAt: priorWiring?.wiredAt ?? now,
+        wiredByAgentId: priorWiring?.wiredByAgentId ?? publishedByAgentId,
+      };
+      wiringMap.set(manifestKey, wiringRecord);
+      installStageMap.set(manifestKey, {
+        ...stageAfterInstall,
+        status: "wired",
+        updatedAt: now,
+        updatedByAgentId: publishedByAgentId,
+      } satisfies CapabilityInstallStageRecord);
+    });
+    if (!wireStageGate.ok) {
+      return { ok: false, failedGate: "G5_WIRE_STAGE", rollbackRequired: true, gateResults };
+    }
+    wireTransition = {
+      gate: "G5_WIRE_STAGE",
+      action: "applied",
+      at: Date.now(),
+      detail: "wiring set/updated and stage marked wired",
+    };
   }
 
   runPublishGateNoop(gateResults, "G6_SMOKE_TEST", "skeleton: smoke gate not yet implemented");
@@ -1385,6 +1486,11 @@ function executeCapabilityPublishPipeline(args: {
       lifecycleMessageId,
       workspaceStage,
       workspaceWiring,
+      lifecycleCoreEvidence: {
+        manifestKey,
+        install: installTransition,
+        wire: wireTransition,
+      },
     },
   };
 }
@@ -3550,6 +3656,7 @@ export function registerAnsibleTools(
           previousActiveVersion: activation.previousActiveVersion,
           lifecycleMessageId: activation.lifecycleMessageId,
           publishPipeline: pipeline.gateResults,
+          lifecycleCoreEvidence: activation.lifecycleCoreEvidence,
           skillDistributionTask: activation.distribution.created
             ? { taskId: activation.distribution.taskId, targets: activation.distribution.targets }
             : null,
@@ -3643,6 +3750,87 @@ export function registerAnsibleTools(
           revision: pipeline.revision,
           lifecycleMessageId: pipeline.lifecycleMessageId,
           unpublishPipeline: pipeline.gateResults,
+        });
+      } catch (err: any) {
+        return toolResult({ error: err.message });
+      }
+    },
+  });
+
+  // === ansible_capability_lifecycle_evidence ===
+  api.registerTool({
+    name: "ansible_capability_lifecycle_evidence",
+    label: "Ansible Capability Lifecycle Evidence",
+    description:
+      "Return install/wire lifecycle state for a capability version to support idempotency and rollout evidence capture.",
+    parameters: {
+      type: "object",
+      properties: {
+        capability_id: { type: "string", description: "Capability id (required)." },
+        version: {
+          type: "string",
+          description:
+            "Optional explicit version. If omitted, uses current active version, otherwise most recent catalog version.",
+        },
+      },
+      required: ["capability_id"],
+    },
+    async execute(_id, params) {
+      const doc = getDoc();
+      const nodeId = getNodeId();
+      if (!doc || !nodeId) return toolResult({ error: "Ansible not initialized" });
+      try {
+        requireAuth(nodeId);
+        const capabilityId = validateString(params.capability_id, 160, "capability_id").trim();
+        const requestedVersion =
+          typeof params.version === "string" && params.version.trim().length > 0
+            ? validateString(params.version, 120, "version").trim()
+            : undefined;
+
+        const catalogMap = getCapabilityCatalogMap(doc);
+        const revisionMap = getCapabilityRevisionMap(doc);
+        const installStageMap = getCapabilityInstallStageMap(doc);
+        const wiringMap = getCapabilityWiringMap(doc);
+        if (!catalogMap || !revisionMap || !installStageMap || !wiringMap) {
+          return toolResult({ error: "Capability lifecycle maps unavailable" });
+        }
+
+        const catalog = catalogMap.get(capabilityId) as CapabilityCatalogRecord | undefined;
+        const revision = revisionMap.get(capabilityId) as CapabilityRevisionRecord | undefined;
+        if (!catalog && !revision) {
+          return toolResult({ error: `Capability '${capabilityId}' not found` });
+        }
+
+        const resolvedVersion =
+          requestedVersion || revision?.activeVersion || catalog?.version || revision?.versions?.[revision.versions.length - 1];
+        if (!resolvedVersion) {
+          return toolResult({ error: `Unable to resolve version for capability '${capabilityId}'` });
+        }
+        const manifestKey = `${capabilityId}:${resolvedVersion}`;
+        const installStage = installStageMap.get(manifestKey) as CapabilityInstallStageRecord | undefined;
+        const wiring = wiringMap.get(manifestKey) as CapabilityWiringRecord | undefined;
+        const normalized = (ids: string[] | undefined) => Array.from(new Set((ids || []).map(String))).sort();
+        const fingerprintInput = {
+          capabilityId,
+          version: resolvedVersion,
+          ownerAgentId: installStage?.ownerAgentId || wiring?.ownerAgentId || catalog?.ownerAgentId || null,
+          installStatus: installStage?.status || null,
+          activeWiring: wiring?.active === true,
+          executorTargets: normalized(installStage?.executorTargetAgentIds || wiring?.executorTargetAgentIds),
+          delegationTargets: normalized(installStage?.delegationTargetAgentIds || wiring?.delegationTargetAgentIds),
+        };
+        const fingerprint = `sha256:${createHash("sha256").update(JSON.stringify(fingerprintInput), "utf8").digest("hex")}`;
+
+        return toolResult({
+          capabilityId,
+          version: resolvedVersion,
+          manifestKey,
+          catalog: catalog || null,
+          revision: revision || null,
+          installStage: installStage || null,
+          wiring: wiring || null,
+          lifecycleFingerprint: fingerprint,
+          capturedAt: Date.now(),
         });
       } catch (err: any) {
         return toolResult({ error: err.message });

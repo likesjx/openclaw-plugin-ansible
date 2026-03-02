@@ -1,0 +1,138 @@
+{
+  "capabilityId": "cap.mvp2.lifecycle.core.1772483439263",
+  "version": "0.2.39263",
+  "actor": "architect",
+  "owner": "architect",
+  "firstPipeline": [
+    {
+      "gate": "G4_INSTALL_STAGE",
+      "status": "passed"
+    },
+    {
+      "gate": "G5_WIRE_STAGE",
+      "status": "passed"
+    },
+    {
+      "gate": "G6_SMOKE_TEST",
+      "status": "skipped"
+    },
+    {
+      "gate": "G7_ROLLOUT",
+      "status": "skipped"
+    },
+    {
+      "gate": "G8_INDEX_ACTIVATE",
+      "status": "passed"
+    },
+    {
+      "gate": "G9_POSTCHECK",
+      "status": "passed"
+    }
+  ],
+  "secondPipeline": [
+    {
+      "gate": "G4_INSTALL_STAGE",
+      "status": "skipped"
+    },
+    {
+      "gate": "G5_WIRE_STAGE",
+      "status": "skipped"
+    },
+    {
+      "gate": "G6_SMOKE_TEST",
+      "status": "skipped"
+    },
+    {
+      "gate": "G7_ROLLOUT",
+      "status": "skipped"
+    },
+    {
+      "gate": "G8_INDEX_ACTIVATE",
+      "status": "passed"
+    },
+    {
+      "gate": "G9_POSTCHECK",
+      "status": "passed"
+    }
+  ],
+  "evidence": {
+    "capabilityId": "cap.mvp2.lifecycle.core.1772483439263",
+    "version": "0.2.39263",
+    "manifestKey": "cap.mvp2.lifecycle.core.1772483439263:0.2.39263",
+    "catalog": {
+      "capabilityId": "cap.mvp2.lifecycle.core.1772483439263",
+      "name": "MVP2 Lifecycle Core",
+      "version": "0.2.39263",
+      "status": "active",
+      "ownerAgentId": "architect",
+      "ownerNodeId": "mac-jane",
+      "delegationSkillRef": {
+        "name": "ansible-delegation-smoke",
+        "version": "1.0.0"
+      },
+      "executorSkillRef": {
+        "name": "ansible-executor-smoke",
+        "version": "1.0.0"
+      },
+      "contractSchemaRef": "schema://ansible/mvp2/lifecycle-core/1.0.0",
+      "defaultEtaSeconds": 1800,
+      "publishedAt": 1772483443127,
+      "publishedByAgentId": "architect"
+    },
+    "revision": {
+      "capabilityId": "cap.mvp2.lifecycle.core.1772483439263",
+      "versions": [
+        "0.2.39263"
+      ],
+      "activeVersion": "0.2.39263",
+      "archivedVersions": [],
+      "currentOwnerAgentId": "architect",
+      "updatedAt": 1772483443127,
+      "updatedByAgentId": "architect",
+      "lastAction": "published"
+    },
+    "installStage": {
+      "capabilityId": "cap.mvp2.lifecycle.core.1772483439263",
+      "version": "0.2.39263",
+      "ownerAgentId": "architect",
+      "executorTargetAgentIds": [
+        "architect"
+      ],
+      "delegationTargetAgentIds": [
+        "chief-of-staff",
+        "claude-code",
+        "librarian",
+        "mac-jane",
+        "mbp-jane",
+        "vps-jane"
+      ],
+      "status": "wired",
+      "stagedAt": 1772483441144,
+      "stagedByAgentId": "architect",
+      "updatedAt": 1772483441156,
+      "updatedByAgentId": "architect"
+    },
+    "wiring": {
+      "capabilityId": "cap.mvp2.lifecycle.core.1772483439263",
+      "version": "0.2.39263",
+      "ownerAgentId": "architect",
+      "executorTargetAgentIds": [
+        "architect"
+      ],
+      "delegationTargetAgentIds": [
+        "chief-of-staff",
+        "claude-code",
+        "librarian",
+        "mac-jane",
+        "mbp-jane",
+        "vps-jane"
+      ],
+      "active": true,
+      "wiredAt": 1772483441156,
+      "wiredByAgentId": "architect"
+    },
+    "lifecycleFingerprint": "sha256:7466cd893d76856f8e901646cd944c6363a4405a2b7b69ffabf327420f13b5a4",
+    "capturedAt": 1772483445258
+  },
+  "generatedAt": "2026-03-02T20:30:45.282Z"
+}

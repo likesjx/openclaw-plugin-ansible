@@ -36,8 +36,10 @@
 
 - **[DEFECTS.md](DEFECTS.md)** — Known bugs, workarounds, and technical debt
 - **[work-items/WI-20260302-mvp1-industrial-testing.md](work-items/WI-20260302-mvp1-industrial-testing.md)** — Dedicated work item for MVP-1 industrial stress harness and evidence-driven fanout testing
+- **[work-items/WI-20260302-mvp2-lifecycle-automation-kickoff.md](work-items/WI-20260302-mvp2-lifecycle-automation-kickoff.md)** — MVP-2 kickoff work item for lifecycle automation (installer/wirer/unwire/rollout/remediation)
 - **[evidence/mvp1/20260302-mvp1-exit-gates.md](evidence/mvp1/20260302-mvp1-exit-gates.md)** — MVP-1 gate closure evidence for synthetic stress fanout controls and staging rollback drill
 - **[evidence/mvp1/20260302-deploy-smoke.md](evidence/mvp1/20260302-deploy-smoke.md)** — MVP-1 deployment disposition evidence (commit rollout + 3-gateway smoke validation)
+- **[evidence/mvp2/README.md](evidence/mvp2/README.md)** — MVP-2 evidence artifact guide (lifecycle core, rollback, rollout soak, remediation bounds)
 
 ## Quick Links
 
