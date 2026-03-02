@@ -1624,6 +1624,15 @@ export function registerAnsibleCli(api, config) {
                     .join(" ");
                 console.log(`  unpublishPipeline=${gates}`);
             }
+            if (out.unwindEvidence) {
+                const scanned = Array.isArray(out.unwindEvidence.manifestKeysScanned)
+                    ? out.unwindEvidence.manifestKeysScanned.length
+                    : 0;
+                const touched = Array.isArray(out.unwindEvidence.manifestKeysTouched)
+                    ? out.unwindEvidence.manifestKeysTouched.length
+                    : 0;
+                console.log(`  unwindEvidence: scanned=${scanned} touched=${touched}`);
+            }
         });
         // === ansible sla ===
         const sla = ansible.command("sla").description("Task SLA monitoring and escalation");

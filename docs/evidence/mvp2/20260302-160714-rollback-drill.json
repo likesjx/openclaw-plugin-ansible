@@ -1,0 +1,357 @@
+{
+  "capabilityId": "cap.mvp2.rollback.drill.1772485699188",
+  "versions": {
+    "v1": "0.2.99188",
+    "v2": "0.2.99189"
+  },
+  "actor": "architect",
+  "owner": "architect",
+  "publishV1": [
+    {
+      "gate": "G4_INSTALL_STAGE",
+      "status": "passed"
+    },
+    {
+      "gate": "G5_WIRE_STAGE",
+      "status": "passed"
+    },
+    {
+      "gate": "G6_SMOKE_TEST",
+      "status": "skipped"
+    },
+    {
+      "gate": "G7_ROLLOUT",
+      "status": "skipped"
+    },
+    {
+      "gate": "G8_INDEX_ACTIVATE",
+      "status": "passed"
+    },
+    {
+      "gate": "G9_POSTCHECK",
+      "status": "passed"
+    }
+  ],
+  "publishV2": [
+    {
+      "gate": "G4_INSTALL_STAGE",
+      "status": "passed"
+    },
+    {
+      "gate": "G5_WIRE_STAGE",
+      "status": "passed"
+    },
+    {
+      "gate": "G6_SMOKE_TEST",
+      "status": "skipped"
+    },
+    {
+      "gate": "G7_ROLLOUT",
+      "status": "skipped"
+    },
+    {
+      "gate": "G8_INDEX_ACTIVATE",
+      "status": "passed"
+    },
+    {
+      "gate": "G9_POSTCHECK",
+      "status": "passed"
+    }
+  ],
+  "rollbackToV1": [
+    {
+      "gate": "G4_INSTALL_STAGE",
+      "status": "skipped"
+    },
+    {
+      "gate": "G5_WIRE_STAGE",
+      "status": "skipped"
+    },
+    {
+      "gate": "G6_SMOKE_TEST",
+      "status": "skipped"
+    },
+    {
+      "gate": "G7_ROLLOUT",
+      "status": "skipped"
+    },
+    {
+      "gate": "G8_INDEX_ACTIVATE",
+      "status": "passed"
+    },
+    {
+      "gate": "G9_POSTCHECK",
+      "status": "passed"
+    }
+  ],
+  "unpublish": [
+    {
+      "gate": "U1_DISABLE_ROUTING",
+      "status": "passed"
+    },
+    {
+      "gate": "U2_UNWIRE",
+      "status": "passed"
+    },
+    {
+      "gate": "U3_ARCHIVE",
+      "status": "passed"
+    },
+    {
+      "gate": "U4_EMIT",
+      "status": "passed"
+    }
+  ],
+  "fingerprintParity": {
+    "beforeV1": "sha256:ff5ce41a3da30486ef1fb0d78c9e16a1f9ab9d537a0711d10c14cef0bd7334df",
+    "afterRollbackV1": "sha256:ff5ce41a3da30486ef1fb0d78c9e16a1f9ab9d537a0711d10c14cef0bd7334df",
+    "matched": true
+  },
+  "evidence": {
+    "v1Before": {
+      "capabilityId": "cap.mvp2.rollback.drill.1772485699188",
+      "version": "0.2.99188",
+      "manifestKey": "cap.mvp2.rollback.drill.1772485699188:0.2.99188",
+      "catalog": {
+        "capabilityId": "cap.mvp2.rollback.drill.1772485699188",
+        "name": "MVP2 Rollback Drill",
+        "version": "0.2.99188",
+        "status": "active",
+        "ownerAgentId": "architect",
+        "ownerNodeId": "mac-jane",
+        "delegationSkillRef": {
+          "name": "ansible-delegation-smoke",
+          "version": "1.0.0"
+        },
+        "executorSkillRef": {
+          "name": "ansible-executor-smoke",
+          "version": "1.0.0"
+        },
+        "contractSchemaRef": "schema://ansible/mvp2/rollback-drill/1.0.0",
+        "defaultEtaSeconds": 1800,
+        "publishedAt": 1772485701087,
+        "publishedByAgentId": "architect"
+      },
+      "revision": {
+        "capabilityId": "cap.mvp2.rollback.drill.1772485699188",
+        "versions": [
+          "0.2.99188"
+        ],
+        "activeVersion": "0.2.99188",
+        "archivedVersions": [],
+        "currentOwnerAgentId": "architect",
+        "updatedAt": 1772485701116,
+        "updatedByAgentId": "architect",
+        "lastAction": "published"
+      },
+      "installStage": {
+        "capabilityId": "cap.mvp2.rollback.drill.1772485699188",
+        "version": "0.2.99188",
+        "ownerAgentId": "architect",
+        "executorTargetAgentIds": [
+          "architect"
+        ],
+        "delegationTargetAgentIds": [
+          "chief-of-staff",
+          "claude-code",
+          "librarian",
+          "mac-jane",
+          "mbp-jane",
+          "vps-jane"
+        ],
+        "status": "wired",
+        "stagedAt": 1772485701087,
+        "stagedByAgentId": "architect",
+        "updatedAt": 1772485701099,
+        "updatedByAgentId": "architect"
+      },
+      "wiring": {
+        "capabilityId": "cap.mvp2.rollback.drill.1772485699188",
+        "version": "0.2.99188",
+        "ownerAgentId": "architect",
+        "executorTargetAgentIds": [
+          "architect"
+        ],
+        "delegationTargetAgentIds": [
+          "chief-of-staff",
+          "claude-code",
+          "librarian",
+          "mac-jane",
+          "mbp-jane",
+          "vps-jane"
+        ],
+        "active": true,
+        "wiredAt": 1772485701099,
+        "wiredByAgentId": "architect"
+      },
+      "lifecycleFingerprint": "sha256:ff5ce41a3da30486ef1fb0d78c9e16a1f9ab9d537a0711d10c14cef0bd7334df",
+      "capturedAt": 1772485703309
+    },
+    "v2": {
+      "capabilityId": "cap.mvp2.rollback.drill.1772485699188",
+      "version": "0.2.99189",
+      "manifestKey": "cap.mvp2.rollback.drill.1772485699188:0.2.99189",
+      "catalog": {
+        "capabilityId": "cap.mvp2.rollback.drill.1772485699188",
+        "name": "MVP2 Rollback Drill",
+        "version": "0.2.99189",
+        "status": "active",
+        "ownerAgentId": "architect",
+        "ownerNodeId": "mac-jane",
+        "delegationSkillRef": {
+          "name": "ansible-delegation-smoke",
+          "version": "1.0.0"
+        },
+        "executorSkillRef": {
+          "name": "ansible-executor-smoke",
+          "version": "1.0.0"
+        },
+        "contractSchemaRef": "schema://ansible/mvp2/rollback-drill/1.0.0",
+        "defaultEtaSeconds": 1800,
+        "publishedAt": 1772485705963,
+        "publishedByAgentId": "architect"
+      },
+      "revision": {
+        "capabilityId": "cap.mvp2.rollback.drill.1772485699188",
+        "versions": [
+          "0.2.99188",
+          "0.2.99189"
+        ],
+        "activeVersion": "0.2.99189",
+        "archivedVersions": [
+          "0.2.99188"
+        ],
+        "currentOwnerAgentId": "architect",
+        "updatedAt": 1772485705985,
+        "updatedByAgentId": "architect",
+        "lastAction": "published"
+      },
+      "installStage": {
+        "capabilityId": "cap.mvp2.rollback.drill.1772485699188",
+        "version": "0.2.99189",
+        "ownerAgentId": "architect",
+        "executorTargetAgentIds": [
+          "architect"
+        ],
+        "delegationTargetAgentIds": [
+          "chief-of-staff",
+          "claude-code",
+          "librarian",
+          "mac-jane",
+          "mbp-jane",
+          "vps-jane"
+        ],
+        "status": "wired",
+        "stagedAt": 1772485705963,
+        "stagedByAgentId": "architect",
+        "updatedAt": 1772485705971,
+        "updatedByAgentId": "architect"
+      },
+      "wiring": {
+        "capabilityId": "cap.mvp2.rollback.drill.1772485699188",
+        "version": "0.2.99189",
+        "ownerAgentId": "architect",
+        "executorTargetAgentIds": [
+          "architect"
+        ],
+        "delegationTargetAgentIds": [
+          "chief-of-staff",
+          "claude-code",
+          "librarian",
+          "mac-jane",
+          "mbp-jane",
+          "vps-jane"
+        ],
+        "active": true,
+        "wiredAt": 1772485705971,
+        "wiredByAgentId": "architect"
+      },
+      "lifecycleFingerprint": "sha256:dd6892477c793e4a6a7a0cf55cb1596d5d68d6c742a97c29f836c9a811f5cd55",
+      "capturedAt": 1772485708183
+    },
+    "v1AfterRollback": {
+      "capabilityId": "cap.mvp2.rollback.drill.1772485699188",
+      "version": "0.2.99188",
+      "manifestKey": "cap.mvp2.rollback.drill.1772485699188:0.2.99188",
+      "catalog": {
+        "capabilityId": "cap.mvp2.rollback.drill.1772485699188",
+        "name": "MVP2 Rollback Drill",
+        "version": "0.2.99188",
+        "status": "active",
+        "ownerAgentId": "architect",
+        "ownerNodeId": "mac-jane",
+        "delegationSkillRef": {
+          "name": "ansible-delegation-smoke",
+          "version": "1.0.0"
+        },
+        "executorSkillRef": {
+          "name": "ansible-executor-smoke",
+          "version": "1.0.0"
+        },
+        "contractSchemaRef": "schema://ansible/mvp2/rollback-drill/1.0.0",
+        "defaultEtaSeconds": 1800,
+        "publishedAt": 1772485710272,
+        "publishedByAgentId": "architect"
+      },
+      "revision": {
+        "capabilityId": "cap.mvp2.rollback.drill.1772485699188",
+        "versions": [
+          "0.2.99188",
+          "0.2.99189"
+        ],
+        "activeVersion": "0.2.99188",
+        "archivedVersions": [
+          "0.2.99188",
+          "0.2.99189"
+        ],
+        "currentOwnerAgentId": "architect",
+        "updatedAt": 1772485710272,
+        "updatedByAgentId": "architect",
+        "lastAction": "published"
+      },
+      "installStage": {
+        "capabilityId": "cap.mvp2.rollback.drill.1772485699188",
+        "version": "0.2.99188",
+        "ownerAgentId": "architect",
+        "executorTargetAgentIds": [
+          "architect"
+        ],
+        "delegationTargetAgentIds": [
+          "chief-of-staff",
+          "claude-code",
+          "librarian",
+          "mac-jane",
+          "mbp-jane",
+          "vps-jane"
+        ],
+        "status": "wired",
+        "stagedAt": 1772485701087,
+        "stagedByAgentId": "architect",
+        "updatedAt": 1772485701099,
+        "updatedByAgentId": "architect"
+      },
+      "wiring": {
+        "capabilityId": "cap.mvp2.rollback.drill.1772485699188",
+        "version": "0.2.99188",
+        "ownerAgentId": "architect",
+        "executorTargetAgentIds": [
+          "architect"
+        ],
+        "delegationTargetAgentIds": [
+          "chief-of-staff",
+          "claude-code",
+          "librarian",
+          "mac-jane",
+          "mbp-jane",
+          "vps-jane"
+        ],
+        "active": true,
+        "wiredAt": 1772485701099,
+        "wiredByAgentId": "architect"
+      },
+      "lifecycleFingerprint": "sha256:ff5ce41a3da30486ef1fb0d78c9e16a1f9ab9d537a0711d10c14cef0bd7334df",
+      "capturedAt": 1772485713102
+    }
+  },
+  "generatedAt": "2026-03-02T21:08:35.113Z"
+}

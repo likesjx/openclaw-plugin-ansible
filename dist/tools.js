@@ -1110,7 +1110,7 @@ function executeCapabilityPublishPipeline(args) {
             versions,
             activeVersion: catalogRec.status === "active" ? manifest.version : existingRevision?.activeVersion,
             pendingVersion: undefined,
-            archivedVersions: Array.from(archivedVersions),
+            archivedVersions: Array.from(archivedVersions).sort((a, b) => a.localeCompare(b)),
             currentOwnerAgentId: manifest.ownerAgentId,
             updatedAt: now,
             updatedByAgentId: publishedByAgentId,
@@ -1235,30 +1235,95 @@ function executeCapabilityUnpublishPipeline(args) {
     if (!disable.ok)
         return { ok: false, failedGate: "U1_DISABLE_ROUTING", gateResults };
     const unwire = runUnpublishGate(gateResults, "U2_UNWIRE", () => {
+        const manifestKeySet = new Set();
         for (const [k, raw] of wiringMap.entries()) {
             const key = String(k);
             const rec = raw;
             if (!rec || rec.capabilityId !== capabilityId)
                 continue;
-            wiringMap.set(key, {
-                ...rec,
-                active: false,
-                unwiredAt: now,
-                unwiredByAgentId: actingAdmin,
-            });
+            manifestKeySet.add(key);
         }
         for (const [k, raw] of installStageMap.entries()) {
             const key = String(k);
             const rec = raw;
             if (!rec || rec.capabilityId !== capabilityId)
                 continue;
-            installStageMap.set(key, {
-                ...rec,
-                status: "unwired",
-                updatedAt: now,
-                updatedByAgentId: actingAdmin,
+            manifestKeySet.add(key);
+        }
+        const manifestKeys = Array.from(manifestKeySet).sort((a, b) => a.localeCompare(b));
+        const touched = [];
+        const steps = [];
+        for (const key of manifestKeys) {
+            const wiringRec = wiringMap.get(key);
+            const stageRec = installStageMap.get(key);
+            let wiringAction = "none";
+            let wiringBefore = false;
+            let wiringAfter = false;
+            if (wiringRec) {
+                wiringBefore = wiringRec.active === true;
+                if (wiringRec.active === true ||
+                    typeof wiringRec.unwiredAt !== "number" ||
+                    typeof wiringRec.unwiredByAgentId !== "string") {
+                    wiringMap.set(key, {
+                        ...wiringRec,
+                        active: false,
+                        unwiredAt: now,
+                        unwiredByAgentId: actingAdmin,
+                    });
+                    wiringAction = "applied";
+                    wiringAfter = false;
+                }
+                else {
+                    wiringAction = "idempotent";
+                    wiringAfter = false;
+                }
+            }
+            let stageAction = "none";
+            let stageBefore;
+            let stageAfter;
+            if (stageRec) {
+                stageBefore = stageRec.status;
+                if (stageRec.status !== "unwired") {
+                    installStageMap.set(key, {
+                        ...stageRec,
+                        status: "unwired",
+                        updatedAt: now,
+                        updatedByAgentId: actingAdmin,
+                    });
+                    stageAction = "applied";
+                    stageAfter = "unwired";
+                }
+                else {
+                    stageAction = "idempotent";
+                    stageAfter = "unwired";
+                }
+            }
+            if (wiringAction === "applied" || stageAction === "applied") {
+                touched.push(key);
+            }
+            steps.push({
+                manifestKey: key,
+                wiring: {
+                    action: wiringAction,
+                    existed: !!wiringRec,
+                    activeBefore: wiringBefore,
+                    activeAfter: wiringAfter,
+                },
+                installStage: {
+                    action: stageAction,
+                    existed: !!stageRec,
+                    statusBefore: stageBefore,
+                    statusAfter: stageAfter,
+                },
             });
         }
+        unwindEvidence = {
+            capabilityId,
+            at: now,
+            manifestKeysScanned: manifestKeys,
+            manifestKeysTouched: touched,
+            steps,
+        };
     });
     if (!unwire.ok)
         return { ok: false, failedGate: "U2_UNWIRE", gateResults };
@@ -1271,7 +1336,7 @@ function executeCapabilityUnpublishPipeline(args) {
                 ? undefined
                 : existingRevision?.activeVersion,
             pendingVersion: undefined,
-            archivedVersions: Array.from(new Set([...(existingRevision?.archivedVersions || []), existing.version])),
+            archivedVersions: Array.from(new Set([...(existingRevision?.archivedVersions || []), existing.version])).sort((a, b) => a.localeCompare(b)),
             currentOwnerAgentId: undefined,
             updatedAt: now,
             updatedByAgentId: actingAdmin,
@@ -1300,6 +1365,7 @@ function executeCapabilityUnpublishPipeline(args) {
         capability: next,
         revision,
         lifecycleMessageId,
+        unwindEvidence,
     };
 }
 function readTaskIdempotency(task) {
@@ -6123,4 +6189,5 @@ export function registerAnsibleTools(api, config) {
         },
     });
 }
+let unwindEvidence;
 //# sourceMappingURL=tools.js.map

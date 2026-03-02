@@ -138,3 +138,5 @@ Definition of done for Slice 1:
 2. Kickoff WI opened and proposal expanded.
 3. Slice 1 implementation started (lifecycle core idempotency + evidence API/CLI).
 4. First evidence artifact captured: `docs/evidence/mvp2/20260302-153035-lifecycle-core.json`.
+5. Slice 2 implementation started (deterministic unwind evidence + rollback parity drill harness).
+6. First Slice 2 evidence artifact captured: `docs/evidence/mvp2/20260302-160714-rollback-drill.json`.

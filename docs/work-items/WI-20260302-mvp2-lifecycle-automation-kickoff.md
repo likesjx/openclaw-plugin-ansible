@@ -53,3 +53,5 @@ Kick off MVP-2 so delegation/executor lifecycle becomes automated, deterministic
 3. MVP-2 starts with deterministic install/wire/unwire before advanced remediation policies.
 4. Slice 1 owner: Codex. Scope: lifecycle core idempotency + evidence surface.
 5. First Slice 1 evidence artifact: `docs/evidence/mvp2/20260302-153035-lifecycle-core.json`.
+6. Slice 2 started: rollback/unpublish unwind determinism + rollback parity drill.
+7. First Slice 2 evidence artifact: `docs/evidence/mvp2/20260302-160714-rollback-drill.json`.
