@@ -25,7 +25,8 @@
     "prepublishOnly": "npm run build",
     "clean": "rm -rf dist",
     "typecheck": "tsc --noEmit",
-    "migrate:v2026.2.19": "node ./scripts/migrate-v2026-2-19.mjs"
+    "migrate:v2026.2.19": "node ./scripts/migrate-v2026-2-19.mjs",
+    "deploy:safe": "./scripts/safe-deploy-pull.sh"
   },
   "keywords": [
     "openclaw",

@@ -443,6 +443,26 @@ After updating the plugin:
 
 `openclaw ansible setup` intentionally updates **skill + config only**. Plugin code update remains a separate explicit step.
 
+### Gateway Deploy Hygiene (Recommended)
+
+To avoid recurring `dist/*` merge conflicts on gateways:
+
+1. Use the repo Node version from `.nvmrc` (`22.22.0`).
+2. Deploy from a clean checkout only.
+3. Use:
+
+```bash
+./scripts/safe-deploy-pull.sh
+```
+
+This script:
+
+1. fails fast if tracked files are dirty,
+2. runs `git pull --ff-only`, and
+3. runs `npm run build`.
+
+If it fails with a dirty tree, resolve/stash local changes first (do not force pull).
+
 ## Troubleshooting
 
 ### Connection Refused
