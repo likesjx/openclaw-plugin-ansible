@@ -31,6 +31,7 @@ Evidence:
 5. `docs/evidence/mvp1/20260302-122707-safe.json`
 6. `docs/evidence/mvp1/20260302-122707-storm.json`
 7. `docs/evidence/mvp1/20260302-122707-live.json`
+8. `docs/evidence/mvp1/20260302-deploy-smoke.md`
 
 Decision:
 
