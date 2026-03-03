@@ -1,0 +1,207 @@
+{
+  "contractSchemaRef": "schema://ansible/rust-core/sla-sweep/1.0.0",
+  "caseId": "storm",
+  "nowMs": 1700001000000,
+  "nodeId": "backbone-alpha",
+  "options": {
+    "dryRun": false,
+    "recordOnly": true,
+    "maxMessages": 3,
+    "fyiAgents": [
+      "architect"
+    ]
+  },
+  "tasks": [
+    {
+      "id": "task-storm-001",
+      "title": "Storm pending 1",
+      "status": "pending",
+      "assignedTo_agent": "vps-jane",
+      "metadata": {
+        "ansible": {
+          "sla": {
+            "acceptByAt": 1700000000000,
+            "escalations": {},
+            "escalationOutcomes": {
+              "accept": {
+                "at": 1700001000000,
+                "reason": "record_only",
+                "notifiedAgents": []
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "task-storm-002",
+      "title": "Storm pending 2",
+      "status": "pending",
+      "assignedTo_agent": "mbp-jane",
+      "metadata": {
+        "ansible": {
+          "sla": {
+            "acceptByAt": 1700000000000,
+            "escalations": {},
+            "escalationOutcomes": {
+              "accept": {
+                "at": 1700001000000,
+                "reason": "record_only",
+                "notifiedAgents": []
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "task-storm-003",
+      "title": "Storm pending 3",
+      "status": "pending",
+      "assignedTo_agent": "chief-of-staff",
+      "metadata": {
+        "ansible": {
+          "sla": {
+            "acceptByAt": 1700000000000,
+            "escalations": {},
+            "escalationOutcomes": {
+              "accept": {
+                "at": 1700001000000,
+                "reason": "record_only",
+                "notifiedAgents": []
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "task-storm-004",
+      "title": "Storm pending 4",
+      "status": "pending",
+      "assignedTo_agent": "claude-code",
+      "metadata": {
+        "ansible": {
+          "sla": {
+            "acceptByAt": 1700000000000,
+            "escalations": {},
+            "escalationOutcomes": {
+              "accept": {
+                "at": 1700001000000,
+                "reason": "record_only",
+                "notifiedAgents": []
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "task-storm-005",
+      "title": "Storm pending 5",
+      "status": "pending",
+      "assignedTo_agent": "ghost-bot",
+      "metadata": {
+        "ansible": {
+          "sla": {
+            "acceptByAt": 1700000000000,
+            "escalations": {},
+            "escalationOutcomes": {
+              "accept": {
+                "at": 1700001000000,
+                "reason": "record_only",
+                "notifiedAgents": []
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "task-storm-006",
+      "title": "Storm claimed progress",
+      "status": "claimed",
+      "assignedTo_agent": "vps-jane",
+      "metadata": {
+        "ansible": {
+          "sla": {
+            "acceptByAt": 1700000000000,
+            "progressByAt": 1700000001000,
+            "completeByAt": 1700000002000,
+            "escalations": {
+              "acceptAt": 1700000000500
+            },
+            "escalationOutcomes": {
+              "progress": {
+                "at": 1700001000000,
+                "reason": "record_only",
+                "notifiedAgents": []
+              },
+              "complete": {
+                "at": 1700001000000,
+                "reason": "record_only",
+                "notifiedAgents": []
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "task-storm-007",
+      "title": "Storm in_progress progress",
+      "status": "in_progress",
+      "assignedTo_agent": "mbp-jane",
+      "metadata": {
+        "ansible": {
+          "sla": {
+            "acceptByAt": 1700000000000,
+            "progressByAt": 1700000001000,
+            "completeByAt": 1700000002000,
+            "escalations": {
+              "acceptAt": 1700000000500
+            },
+            "escalationOutcomes": {
+              "progress": {
+                "at": 1700001000000,
+                "reason": "record_only",
+                "notifiedAgents": []
+              },
+              "complete": {
+                "at": 1700001000000,
+                "reason": "record_only",
+                "notifiedAgents": []
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "task-storm-008",
+      "title": "Storm in_progress complete",
+      "status": "in_progress",
+      "assignedTo_agent": "unknown-agent",
+      "metadata": {
+        "ansible": {
+          "sla": {
+            "acceptByAt": 1700000000000,
+            "progressByAt": 1700000001000,
+            "completeByAt": 1700000002000,
+            "escalations": {
+              "acceptAt": 1700000000500,
+              "progressAt": 1700000000600
+            },
+            "escalationOutcomes": {
+              "complete": {
+                "at": 1700001000000,
+                "reason": "record_only",
+                "notifiedAgents": []
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

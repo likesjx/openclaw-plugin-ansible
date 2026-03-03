@@ -1,0 +1,300 @@
+{
+  "contractSchemaRef": "schema://ansible/rust-core/sla-sweep/1.0.0",
+  "caseId": "storm",
+  "result": {
+    "success": true,
+    "dryRun": false,
+    "scanned": 8,
+    "breaches": [
+      {
+        "taskId": "task-storm-001",
+        "title": "Storm pending 1",
+        "breachType": "accept",
+        "dueAt": 1700000000000,
+        "status": "pending"
+      },
+      {
+        "taskId": "task-storm-002",
+        "title": "Storm pending 2",
+        "breachType": "accept",
+        "dueAt": 1700000000000,
+        "status": "pending"
+      },
+      {
+        "taskId": "task-storm-003",
+        "title": "Storm pending 3",
+        "breachType": "accept",
+        "dueAt": 1700000000000,
+        "status": "pending"
+      },
+      {
+        "taskId": "task-storm-004",
+        "title": "Storm pending 4",
+        "breachType": "accept",
+        "dueAt": 1700000000000,
+        "status": "pending"
+      },
+      {
+        "taskId": "task-storm-005",
+        "title": "Storm pending 5",
+        "breachType": "accept",
+        "dueAt": 1700000000000,
+        "status": "pending"
+      },
+      {
+        "taskId": "task-storm-006",
+        "title": "Storm claimed progress",
+        "breachType": "progress",
+        "dueAt": 1700000001000,
+        "status": "claimed"
+      },
+      {
+        "taskId": "task-storm-006",
+        "title": "Storm claimed progress",
+        "breachType": "complete",
+        "dueAt": 1700000002000,
+        "status": "claimed"
+      },
+      {
+        "taskId": "task-storm-007",
+        "title": "Storm in_progress progress",
+        "breachType": "progress",
+        "dueAt": 1700000001000,
+        "status": "in_progress"
+      },
+      {
+        "taskId": "task-storm-007",
+        "title": "Storm in_progress progress",
+        "breachType": "complete",
+        "dueAt": 1700000002000,
+        "status": "in_progress"
+      },
+      {
+        "taskId": "task-storm-008",
+        "title": "Storm in_progress complete",
+        "breachType": "complete",
+        "dueAt": 1700000002000,
+        "status": "in_progress"
+      }
+    ],
+    "breachCount": 10,
+    "escalationsWritten": 0
+  },
+  "tasksAfter": [
+    {
+      "id": "task-storm-001",
+      "title": "Storm pending 1",
+      "status": "pending",
+      "assignedTo_agent": "vps-jane",
+      "metadata": {
+        "ansible": {
+          "sla": {
+            "acceptByAt": 1700000000000,
+            "escalations": {
+              "acceptAt": 1700001000000
+            },
+            "escalationOutcomes": {
+              "accept": {
+                "at": 1700001000000,
+                "reason": "record_only",
+                "notifiedAgents": []
+              }
+            }
+          }
+        }
+      },
+      "updatedAt": 1700001000000
+    },
+    {
+      "id": "task-storm-002",
+      "title": "Storm pending 2",
+      "status": "pending",
+      "assignedTo_agent": "mbp-jane",
+      "metadata": {
+        "ansible": {
+          "sla": {
+            "acceptByAt": 1700000000000,
+            "escalations": {
+              "acceptAt": 1700001000000
+            },
+            "escalationOutcomes": {
+              "accept": {
+                "at": 1700001000000,
+                "reason": "record_only",
+                "notifiedAgents": []
+              }
+            }
+          }
+        }
+      },
+      "updatedAt": 1700001000000
+    },
+    {
+      "id": "task-storm-003",
+      "title": "Storm pending 3",
+      "status": "pending",
+      "assignedTo_agent": "chief-of-staff",
+      "metadata": {
+        "ansible": {
+          "sla": {
+            "acceptByAt": 1700000000000,
+            "escalations": {
+              "acceptAt": 1700001000000
+            },
+            "escalationOutcomes": {
+              "accept": {
+                "at": 1700001000000,
+                "reason": "record_only",
+                "notifiedAgents": []
+              }
+            }
+          }
+        }
+      },
+      "updatedAt": 1700001000000
+    },
+    {
+      "id": "task-storm-004",
+      "title": "Storm pending 4",
+      "status": "pending",
+      "assignedTo_agent": "claude-code",
+      "metadata": {
+        "ansible": {
+          "sla": {
+            "acceptByAt": 1700000000000,
+            "escalations": {
+              "acceptAt": 1700001000000
+            },
+            "escalationOutcomes": {
+              "accept": {
+                "at": 1700001000000,
+                "reason": "record_only",
+                "notifiedAgents": []
+              }
+            }
+          }
+        }
+      },
+      "updatedAt": 1700001000000
+    },
+    {
+      "id": "task-storm-005",
+      "title": "Storm pending 5",
+      "status": "pending",
+      "assignedTo_agent": "ghost-bot",
+      "metadata": {
+        "ansible": {
+          "sla": {
+            "acceptByAt": 1700000000000,
+            "escalations": {
+              "acceptAt": 1700001000000
+            },
+            "escalationOutcomes": {
+              "accept": {
+                "at": 1700001000000,
+                "reason": "record_only",
+                "notifiedAgents": []
+              }
+            }
+          }
+        }
+      },
+      "updatedAt": 1700001000000
+    },
+    {
+      "id": "task-storm-006",
+      "title": "Storm claimed progress",
+      "status": "claimed",
+      "assignedTo_agent": "vps-jane",
+      "metadata": {
+        "ansible": {
+          "sla": {
+            "acceptByAt": 1700000000000,
+            "progressByAt": 1700000001000,
+            "completeByAt": 1700000002000,
+            "escalations": {
+              "acceptAt": 1700000000500,
+              "progressAt": 1700001000000,
+              "completeAt": 1700001000000
+            },
+            "escalationOutcomes": {
+              "progress": {
+                "at": 1700001000000,
+                "reason": "record_only",
+                "notifiedAgents": []
+              },
+              "complete": {
+                "at": 1700001000000,
+                "reason": "record_only",
+                "notifiedAgents": []
+              }
+            }
+          }
+        }
+      },
+      "updatedAt": 1700001000000
+    },
+    {
+      "id": "task-storm-007",
+      "title": "Storm in_progress progress",
+      "status": "in_progress",
+      "assignedTo_agent": "mbp-jane",
+      "metadata": {
+        "ansible": {
+          "sla": {
+            "acceptByAt": 1700000000000,
+            "progressByAt": 1700000001000,
+            "completeByAt": 1700000002000,
+            "escalations": {
+              "acceptAt": 1700000000500,
+              "progressAt": 1700001000000,
+              "completeAt": 1700001000000
+            },
+            "escalationOutcomes": {
+              "progress": {
+                "at": 1700001000000,
+                "reason": "record_only",
+                "notifiedAgents": []
+              },
+              "complete": {
+                "at": 1700001000000,
+                "reason": "record_only",
+                "notifiedAgents": []
+              }
+            }
+          }
+        }
+      },
+      "updatedAt": 1700001000000
+    },
+    {
+      "id": "task-storm-008",
+      "title": "Storm in_progress complete",
+      "status": "in_progress",
+      "assignedTo_agent": "unknown-agent",
+      "metadata": {
+        "ansible": {
+          "sla": {
+            "acceptByAt": 1700000000000,
+            "progressByAt": 1700000001000,
+            "completeByAt": 1700000002000,
+            "escalations": {
+              "acceptAt": 1700000000500,
+              "progressAt": 1700000000600,
+              "completeAt": 1700001000000
+            },
+            "escalationOutcomes": {
+              "complete": {
+                "at": 1700001000000,
+                "reason": "record_only",
+                "notifiedAgents": []
+              }
+            }
+          }
+        }
+      },
+      "updatedAt": 1700001000000
+    }
+  ],
+  "messagesAfter": []
+}

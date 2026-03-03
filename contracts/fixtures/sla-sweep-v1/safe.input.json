@@ -1,0 +1,106 @@
+{
+  "contractSchemaRef": "schema://ansible/rust-core/sla-sweep/1.0.0",
+  "caseId": "safe",
+  "nowMs": 1700001000000,
+  "nodeId": "backbone-alpha",
+  "options": {
+    "dryRun": false,
+    "recordOnly": true,
+    "maxMessages": 3,
+    "fyiAgents": [
+      "architect"
+    ]
+  },
+  "tasks": [
+    {
+      "id": "task-safe-001",
+      "title": "Safe pending accept breach",
+      "status": "pending",
+      "assignedTo_agent": "vps-jane",
+      "metadata": {
+        "ansible": {
+          "sla": {
+            "acceptByAt": 1700000000000,
+            "progressByAt": 1700000600000,
+            "completeByAt": 1700001200000,
+            "escalations": {},
+            "escalationOutcomes": {
+              "accept": {
+                "at": 1700001000000,
+                "reason": "record_only",
+                "notifiedAgents": []
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "task-safe-002",
+      "title": "Safe claimed progress breach",
+      "status": "claimed",
+      "assignedTo_agent": "mbp-jane",
+      "metadata": {
+        "ansible": {
+          "sla": {
+            "acceptByAt": 1700000000000,
+            "progressByAt": 1700000100000,
+            "completeByAt": 1700001200000,
+            "escalations": {
+              "acceptAt": 1700000010000
+            },
+            "escalationOutcomes": {
+              "progress": {
+                "at": 1700001000000,
+                "reason": "record_only",
+                "notifiedAgents": []
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "task-safe-003",
+      "title": "Safe in-progress complete breach",
+      "status": "in_progress",
+      "assignedTo_agent": "chief-of-staff",
+      "metadata": {
+        "ansible": {
+          "sla": {
+            "acceptByAt": 1700000000000,
+            "progressByAt": 1700000050000,
+            "completeByAt": 1700000150000,
+            "escalations": {
+              "acceptAt": 1700000010000,
+              "progressAt": 1700000060000
+            },
+            "escalationOutcomes": {
+              "complete": {
+                "at": 1700001000000,
+                "reason": "record_only",
+                "notifiedAgents": []
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "task-safe-004",
+      "title": "Already escalated - ignored",
+      "status": "pending",
+      "assignedTo_agent": "vps-jane",
+      "metadata": {
+        "ansible": {
+          "sla": {
+            "acceptByAt": 1700000005000,
+            "escalations": {
+              "acceptAt": 1700000007000
+            }
+          }
+        }
+      }
+    }
+  ]
+}

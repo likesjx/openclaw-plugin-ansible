@@ -1,0 +1,9 @@
+[package]
+name = "ansible-core-security"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+ansible-core-model = { path = "../ansible-core-model" }

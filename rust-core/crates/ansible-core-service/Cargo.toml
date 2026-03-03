@@ -1,0 +1,11 @@
+[package]
+name = "ansible-core-service"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+ansible-core-model = { path = "../ansible-core-model" }
+ansible-core-runtime = { path = "../ansible-core-runtime" }
+ansible-core-security = { path = "../ansible-core-security" }
