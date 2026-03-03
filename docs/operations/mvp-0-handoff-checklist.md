@@ -23,7 +23,7 @@ Covers:
    - `message_budget_exhausted`
    - `no_targets`
 4. 24h soak started at `2026-02-27T07:02:32Z`:
-   - see `docs/mvp0-soak-log-2026-02-27.md`
+   - see `docs/operations/mvp-0-soak-log-2026-02-27.md`
 
 ## Pre-Push Gate
 
@@ -74,5 +74,5 @@ PR notes:
 1. Push branch and open PR.
 2. Land after review.
 3. Keep soak running for full 24h window.
-4. At T+24h, apply exit rules from `docs/mvp0-soak-log-2026-02-27.md`.
+4. At T+24h, apply exit rules from `docs/operations/mvp-0-soak-log-2026-02-27.md`.
 

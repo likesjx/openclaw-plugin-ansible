@@ -14,9 +14,9 @@ This document defines concrete wire-level contracts for:
 
 This spec assumes the architecture decisions in:
 
-- `docs/state-model-v2.md`
-- `docs/distributed-pipes-v2.md`
-- `docs/external-agent-auth-v1.md`
+- `docs/protocols/state-model-v2.md`
+- `docs/protocols/distributed-pipes-v2.md`
+- `docs/protocols/external-agent-auth-v1.md`
 
 ## Terminology (Quick)
 

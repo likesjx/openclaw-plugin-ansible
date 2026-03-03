@@ -2,9 +2,9 @@
 
 > Scope note (2026-02-26):
 > This document is component-oriented and operational. For normative protocol/state contracts, prefer:
-> - `docs/state-model-v2.md`
-> - `docs/distributed-pipes-v2.md`
-> - `docs/runtime-protocol-v1.md`
+> - `docs/protocols/state-model-v2.md`
+> - `docs/protocols/distributed-pipes-v2.md`
+> - `docs/protocols/runtime-protocol-v1.md`
 
 ## System Overview
 

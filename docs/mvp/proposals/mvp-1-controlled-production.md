@@ -24,14 +24,14 @@ Outcome: **complete**.
 
 Evidence:
 
-1. `docs/ansible-completion-checklist-v1.md` (MVP-1 gates marked complete)
-2. `docs/mvp1-industrial-test-plan-v1.md`
-3. `docs/work-items/WI-20260302-mvp1-industrial-testing.md`
-4. `docs/evidence/mvp1/20260302-mvp1-exit-gates.md`
-5. `docs/evidence/mvp1/20260302-122707-safe.json`
-6. `docs/evidence/mvp1/20260302-122707-storm.json`
-7. `docs/evidence/mvp1/20260302-122707-live.json`
-8. `docs/evidence/mvp1/20260302-deploy-smoke.md`
+1. `docs/operations/ansible-completion-checklist-v1.md` (MVP-1 gates marked complete)
+2. `docs/operations/mvp-1-industrial-test-plan-v1.md`
+3. `docs/mvp/work-items/mvp-1/wi-20260302-industrial-testing.md`
+4. `docs/mvp/evidence/mvp-1/20260302-mvp1-exit-gates.md`
+5. `docs/mvp/evidence/mvp-1/20260302-122707-safe.json`
+6. `docs/mvp/evidence/mvp-1/20260302-122707-storm.json`
+7. `docs/mvp/evidence/mvp-1/20260302-122707-live.json`
+8. `docs/mvp/evidence/mvp-1/20260302-deploy-smoke.md`
 
 Decision:
 

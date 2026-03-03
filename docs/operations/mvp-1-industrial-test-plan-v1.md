@@ -97,4 +97,4 @@ MVP-1 `#2` is considered complete when:
 ## Notes
 
 1. This harness is intentionally non-mutating; it does not emit escalation messages.
-2. For rollback execution (`#3`), use `docs/deployment-runbook-v1.md` staging drill and record separately.
+2. For rollback execution (`#3`), use `docs/operations/deployment-runbook-v1.md` staging drill and record separately.

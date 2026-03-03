@@ -24,7 +24,7 @@ Kick off MVP-2 so delegation/executor lifecycle becomes automated, deterministic
 
 1. MVP-2 proposal expanded to implementation-grade plan.
 2. Implementation workstream slices for installer, wiring, unwind, rollout controller, and remediation.
-3. MVP-2 evidence template and closure artifact path under `docs/evidence/mvp2/`.
+3. MVP-2 evidence template and closure artifact path under `docs/mvp/evidence/mvp-2/`.
 
 ## Acceptance Criteria
 
@@ -52,6 +52,6 @@ Kick off MVP-2 so delegation/executor lifecycle becomes automated, deterministic
 2. Any schema evolution must include migration/read-compat handling.
 3. MVP-2 starts with deterministic install/wire/unwire before advanced remediation policies.
 4. Slice 1 owner: Codex. Scope: lifecycle core idempotency + evidence surface.
-5. First Slice 1 evidence artifact: `docs/evidence/mvp2/20260302-153035-lifecycle-core.json`.
+5. First Slice 1 evidence artifact: `docs/mvp/evidence/mvp-2/20260302-153035-lifecycle-core.json`.
 6. Slice 2 started: rollback/unpublish unwind determinism + rollback parity drill.
-7. First Slice 2 evidence artifact: `docs/evidence/mvp2/20260302-160714-rollback-drill.json`.
+7. First Slice 2 evidence artifact: `docs/mvp/evidence/mvp-2/20260302-160714-rollback-drill.json`.

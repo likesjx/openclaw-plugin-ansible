@@ -2,9 +2,9 @@
 
 > Superseded note (2026-02-26):
 > This document is retained as historical context. For current normative behavior, use:
-> - `docs/runtime-protocol-v1.md`
-> - `docs/distributed-pipes-v2.md`
-> - `docs/state-model-v2.md`
+> - `docs/protocols/runtime-protocol-v1.md`
+> - `docs/protocols/distributed-pipes-v2.md`
+> - `docs/protocols/state-model-v2.md`
 >
 > Some sections below describe pre-refactor reliability limitations and should not be treated as current implementation truth.
 
@@ -84,8 +84,8 @@ For delegation to happen consistently across the entire mesh, use the Delegation
 
 Reference:
 
-- `docs/delegation-directory.md`
-- `docs/identity-delegation-template.md`
+- `docs/architecture/delegation-directory-standard.md`
+- `docs/architecture/identity-delegation-template.md`
 
 This gives a deterministic routing contract while keeping local identity files human-auditable.
 

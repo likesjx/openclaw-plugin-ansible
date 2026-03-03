@@ -257,8 +257,9 @@ What this means today:
 
 If you want to "completely rely" on Ansible for inter-agent communication, treat the shared Yjs doc as the source of truth and the dispatcher as the delivery worker. You can still keep manual tools (`ansible_read_messages`, `ansible_find_task`) as an operator backstop.
 
-For a concrete protocol and improvement plan, see `docs/protocol.md`.
-For the practical "how do I add a new agent/gateway" guide, see `docs/setup.md`.
+For current protocol and reliability semantics, see `docs/protocols/runtime-protocol-v1.md` and `docs/protocols/distributed-pipes-v2.md`.
+For historical context only, see `docs/protocols/protocol-historical-v1.md`.
+For the practical "how do I add a new agent/gateway" guide, see `docs/operations/setup.md`.
 
 ### 3. Bootstrap the Network
 
@@ -490,7 +491,7 @@ If it fails with a dirty tree, resolve/stash local changes first (do not force p
 
 ## Architecture
 
-See [docs/architecture.md](docs/architecture.md) for detailed technical architecture.
+See [docs/architecture/core-architecture.md](docs/architecture/core-architecture.md) for detailed technical architecture.
 
 ## License
 

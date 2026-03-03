@@ -59,7 +59,7 @@ Use the **Architect-managed inbox** operating model:
 - Operator agent polls `ansible_read_messages` and replies via `ansible_send_message`.
 
 **Fix (planned)**:
-Implement startup backlog dispatch + retry semantics, as specified in `docs/protocol.md`.
+Implement startup backlog dispatch + retry semantics, as specified in `docs/protocols/runtime-protocol-v1.md` and `docs/protocols/distributed-pipes-v2.md`.
 
 ---
 
@@ -136,4 +136,4 @@ The plugin has no unit or integration tests. Key areas to test:
 - **Severity**: Low
 - **Points**: 1
 
-`ANSIBLE-ANALYSIS.md`, `ANSIBLE-ARCHITECTURE.md`, `ANSIBLE-PLAN.md`, and `DEBUG_STATUS.md` are development artifacts from the initial build. They've been superseded by `docs/architecture.md` and `docs/openclaw-internals.md`. Should be cleaned up or moved to a `docs/archive/` directory.
+`ANSIBLE-ANALYSIS.md`, `ANSIBLE-ARCHITECTURE.md`, `ANSIBLE-PLAN.md`, and `DEBUG_STATUS.md` are development artifacts from the initial build. They've been superseded by `docs/architecture/core-architecture.md` and `docs/architecture/openclaw-internals-reference.md`, and are now archived under `docs/archive/legacy-root/`.

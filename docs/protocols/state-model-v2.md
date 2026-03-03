@@ -275,7 +275,7 @@ Security note:
 External-agent note:
 
 - External agents (Codex/Claude Code) should use gateway agent-auth endpoints and must not connect directly to Yjs rooms.
-- See `docs/external-agent-auth-v1.md` for endpoint and token lifecycle specs.
+- See `docs/protocols/external-agent-auth-v1.md` for endpoint and token lifecycle specs.
 
 ## Migration Plan (Zero Big-Bang)
 

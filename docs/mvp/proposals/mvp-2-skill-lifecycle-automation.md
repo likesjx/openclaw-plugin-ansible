@@ -2,7 +2,7 @@
 
 Status: in_progress  
 Last updated: 2026-03-02
-Related WI: `docs/work-items/WI-20260302-mvp2-lifecycle-automation-kickoff.md`
+Related WI: `docs/mvp/work-items/mvp-2/wi-20260302-lifecycle-automation-kickoff.md`
 
 ## Launch Theme
 
@@ -95,7 +95,7 @@ Exit check:
 
 Evidence root:
 
-1. `docs/evidence/mvp2/`
+1. `docs/mvp/evidence/mvp-2/`
 
 Required artifacts:
 
@@ -130,13 +130,13 @@ Definition of done for Slice 1:
 
 1. installer/wirer transitions are idempotent under replay.
 2. both delegation + executor paths share consistent stage outcomes.
-3. evidence artifact produced under `docs/evidence/mvp2/`.
+3. evidence artifact produced under `docs/mvp/evidence/mvp-2/`.
 
 ## Disposition (current)
 
 1. MVP-2 initiated.
 2. Kickoff WI opened and proposal expanded.
 3. Slice 1 implementation started (lifecycle core idempotency + evidence API/CLI).
-4. First evidence artifact captured: `docs/evidence/mvp2/20260302-153035-lifecycle-core.json`.
+4. First evidence artifact captured: `docs/mvp/evidence/mvp-2/20260302-153035-lifecycle-core.json`.
 5. Slice 2 implementation started (deterministic unwind evidence + rollback parity drill harness).
-6. First Slice 2 evidence artifact captured: `docs/evidence/mvp2/20260302-160714-rollback-drill.json`.
+6. First Slice 2 evidence artifact captured: `docs/mvp/evidence/mvp-2/20260302-160714-rollback-drill.json`.

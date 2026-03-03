@@ -212,8 +212,8 @@ This directory is what every listener uses to decide:
 
 Implemented documentation standard:
 
-- `docs/delegation-directory.md`
-- `docs/identity-delegation-template.md`
+- `docs/architecture/delegation-directory-standard.md`
+- `docs/architecture/identity-delegation-template.md`
 
 ### Rollout Checklist (All Agents)
 

@@ -366,7 +366,7 @@ External agents are not transport peers.
 - Gateway mediates routing and emits pipe events on their behalf.
 
 Reference:
-- `docs/external-agent-auth-v1.md`
+- `docs/protocols/external-agent-auth-v1.md`
 
 ## 13) Minimal Implementation Plan
 

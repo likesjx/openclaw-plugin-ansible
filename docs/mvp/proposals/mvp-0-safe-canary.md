@@ -19,9 +19,9 @@ Outcome: **promoted baseline**.
 
 Evidence:
 
-1. `docs/mvp0-soak-log-2026-02-27.md`
-2. `docs/deployment-runbook-v1.md` (latest execution notes)
-3. `docs/mvp0-handoff-checklist.md`
+1. `docs/operations/mvp-0-soak-log-2026-02-27.md`
+2. `docs/operations/deployment-runbook-v1.md` (latest execution notes)
+3. `docs/operations/mvp-0-handoff-checklist.md`
 
 Decision:
 

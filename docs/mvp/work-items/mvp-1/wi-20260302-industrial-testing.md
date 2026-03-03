@@ -20,7 +20,7 @@ MVP-1 exit criteria `#2` (synthetic stress fanout safety) and `#3` (rollback sta
 1. `scripts/integration-mvp1-industrial.mjs`
 2. `scripts/testdata/mvp1-industrial/safe-snapshot.json`
 3. `scripts/testdata/mvp1-industrial/storm-snapshot.json`
-4. `docs/mvp1-industrial-test-plan-v1.md`
+4. `docs/operations/mvp-1-industrial-test-plan-v1.md`
 5. docs index updates + checklist traceability updates
 
 ## Acceptance Criteria

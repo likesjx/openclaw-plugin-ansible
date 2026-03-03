@@ -16,9 +16,9 @@ Harness:
 
 Artifacts:
 
-1. `docs/evidence/mvp1/20260302-122707-safe.json` (expected pass)
-2. `docs/evidence/mvp1/20260302-122707-storm.json` (expected controlled fail)
-3. `docs/evidence/mvp1/20260302-122707-live.json` (live read-only)
+1. `docs/mvp/evidence/mvp-1/20260302-122707-safe.json` (expected pass)
+2. `docs/mvp/evidence/mvp-1/20260302-122707-storm.json` (expected controlled fail)
+3. `docs/mvp/evidence/mvp-1/20260302-122707-live.json` (live read-only)
 
 Observed outcomes:
 

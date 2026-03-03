@@ -28,15 +28,15 @@ Prepare the Ansible plugin/skill package for clean publication to Clawhub with m
 Include in publish bundle:
 
 1. `README.md` (quickstart + security notes)
-2. `docs/setup.md` (operator flow)
-3. `docs/runtime-protocol-v1.md` (runtime contract)
-4. `docs/skill-pair-manifest-schema-v1.md` (manifest contract)
-5. `docs/skill-pair-publish-executor-v1.md` (gate behavior)
-6. `docs/documentation-status-v1.md` (source-of-truth map)
+2. `docs/operations/setup.md` (operator flow)
+3. `docs/protocols/runtime-protocol-v1.md` (runtime contract)
+4. `docs/standards/skill-pair-manifest-schema-v1.md` (manifest contract)
+5. `docs/standards/skill-pair-publish-executor-v1.md` (gate behavior)
+6. `docs/tracking/documentation-status-v1.md` (source-of-truth map)
 
 Exclude from publish bundle (context only):
 
-1. `docs/protocol.md` (historical)
+1. `docs/protocols/protocol-historical-v1.md` (historical)
 2. migration-only notes unless explicitly needed by release
 
 ## 4) Security Readiness
