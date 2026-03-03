@@ -53,6 +53,22 @@ export interface AnsibleConfig {
      */
     dispatchIncoming?: boolean;
     /**
+     * Dispatcher reconcile heartbeat interval in seconds.
+     *
+     * Ensures missed message/task injections are retried even if a map observe
+     * event was missed during transient runtime issues.
+     *
+     * Default: 20
+     */
+    dispatchHeartbeatSeconds?: number;
+    /**
+     * Optional default recipients for "send receipt" notifications when an agent
+     * places a message/task onto ansible.
+     *
+     * These are additive to the gateway-admin default.
+     */
+    sendReceiptAgents?: string[];
+    /**
      * Periodically sweep stale session lock files (per-gateway reliability guard).
      *
      * This addresses cases where a crashed/interrupted agent run leaves behind a

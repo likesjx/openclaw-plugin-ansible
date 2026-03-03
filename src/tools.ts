@@ -1470,6 +1470,26 @@ function normalizeAgentList(value: unknown): string[] {
   return Array.from(out);
 }
 
+function defaultSendReceiptTargets(
+  doc: ReturnType<typeof getDoc>,
+  nodeId: string,
+  config: AnsibleConfig,
+  senderAgentId: string,
+): string[] {
+  const out = new Set<string>();
+  const admin = resolveRequiredAdminAgentId(doc, nodeId, config);
+  if (admin && admin !== senderAgentId) out.add(admin);
+  if (Array.isArray(config.sendReceiptAgents)) {
+    for (const id of config.sendReceiptAgents) {
+      if (typeof id !== "string") continue;
+      const clean = id.trim();
+      if (!clean || clean === senderAgentId) continue;
+      out.add(clean);
+    }
+  }
+  return Array.from(out);
+}
+
 function writeSendReceiptMessage(
   doc: ReturnType<typeof getDoc>,
   fromNodeId: string,
@@ -4625,8 +4645,8 @@ export function registerAnsibleTools(
 
         const tasks = doc.getMap("tasks");
         tasks.set(task.id, task);
-        const defaultAdmin = resolveRequiredAdminAgentId(doc, nodeId, config);
-        if (defaultAdmin && defaultAdmin !== nodeId) {
+        const receiptTargets = defaultSendReceiptTargets(doc, nodeId, config, nodeId);
+        if (receiptTargets.length > 0) {
           writeSendReceiptMessage(
             doc,
             nodeId,
@@ -4634,7 +4654,7 @@ export function registerAnsibleTools(
             task.id,
             task.assignedTo_agents ?? [task.assignedTo_agent || ""].filter(Boolean),
             `[task] ${task.title}: ${task.description}`,
-            [defaultAdmin],
+            receiptTargets,
           );
         }
         requestDispatcherReconcile("local-task-created");
@@ -4684,7 +4704,7 @@ export function registerAnsibleTools(
         notify_on_send: {
           type: "boolean",
           description:
-            "When true (default), also send a compact delivery receipt to your gateway-admin agent so you get visible confirmation in chat.",
+            "When true (default), also send a compact delivery receipt to default receipt agents (gateway admin + configured sendReceiptAgents) so you get visible confirmation in chat.",
         },
         notify_to: {
           type: "string",
@@ -4773,9 +4793,13 @@ export function registerAnsibleTools(
         const notifyOnSend = params.notify_on_send !== false;
         const notifyTo = normalizeAgentList(params.notify_to);
         if (notifyOnSend) {
-          const defaultAdmin = resolveRequiredAdminAgentId(doc, nodeId, config);
-          if (notifyTo.length === 0 && defaultAdmin && defaultAdmin !== effectiveFrom) {
-            notifyTo.push(defaultAdmin);
+          const defaults = defaultSendReceiptTargets(doc, nodeId, config, effectiveFrom);
+          if (notifyTo.length === 0) {
+            notifyTo.push(...defaults);
+          } else {
+            for (const id of defaults) {
+              if (!notifyTo.includes(id)) notifyTo.push(id);
+            }
           }
           writeSendReceiptMessage(doc, nodeId, effectiveFrom, message.id, toAgents, content, notifyTo);
         }

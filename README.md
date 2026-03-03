@@ -173,6 +173,8 @@ services:
           "backbonePeers": [
             "ws://jane-vps:1235"
           ],
+          "dispatchHeartbeatSeconds": 20,
+          "sendReceiptAgents": ["architect"],
           "capabilities": ["local-files", "voice"]
         }
       }
@@ -259,7 +261,15 @@ What this means today:
 - **Auto-dispatch is best-effort realtime + reconnect-safe**:
   - New messages dispatch immediately while connected.
   - On reconnect (provider `sync=true`), the dispatcher reconciles backlog deterministically (timestamp order) and injects any undelivered items.
+  - Heartbeat reconciliation (default every 20s) re-scans pending deliveries so missed observe events do not strand messages/tasks.
   - Dispatch failures are retried with exponential backoff (with jitter) instead of being "seen forever".
+
+Send/delegate visibility:
+
+- `ansible_send_message` and `ansible_delegate_task` emit a compact send receipt message.
+- Default receipt recipients are:
+  - gateway admin agent
+  - plus any configured `sendReceiptAgents`
 
 If you want to "completely rely" on Ansible for inter-agent communication, treat the shared Yjs doc as the source of truth and the dispatcher as the delivery worker. You can still keep manual tools (`ansible_read_messages`, `ansible_find_task`) as an operator backstop.
 

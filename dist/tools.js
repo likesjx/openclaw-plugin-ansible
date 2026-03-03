@@ -1091,6 +1091,23 @@ function normalizeAgentList(value) {
     }
     return Array.from(out);
 }
+function defaultSendReceiptTargets(doc, nodeId, config, senderAgentId) {
+    const out = new Set();
+    const admin = resolveRequiredAdminAgentId(doc, nodeId, config);
+    if (admin && admin !== senderAgentId)
+        out.add(admin);
+    if (Array.isArray(config.sendReceiptAgents)) {
+        for (const id of config.sendReceiptAgents) {
+            if (typeof id !== "string")
+                continue;
+            const clean = id.trim();
+            if (!clean || clean === senderAgentId)
+                continue;
+            out.add(clean);
+        }
+    }
+    return Array.from(out);
+}
 function writeSendReceiptMessage(doc, fromNodeId, senderAgentId, originalMessageId, originalTargets, originalContent, notifyToAgents) {
     if (!doc)
         return null;
@@ -4050,9 +4067,9 @@ export function registerAnsibleTools(api, config) {
                 };
                 const tasks = doc.getMap("tasks");
                 tasks.set(task.id, task);
-                const defaultAdmin = resolveRequiredAdminAgentId(doc, nodeId, config);
-                if (defaultAdmin && defaultAdmin !== nodeId) {
-                    writeSendReceiptMessage(doc, nodeId, nodeId, task.id, task.assignedTo_agents ?? [task.assignedTo_agent || ""].filter(Boolean), `[task] ${task.title}: ${task.description}`, [defaultAdmin]);
+                const receiptTargets = defaultSendReceiptTargets(doc, nodeId, config, nodeId);
+                if (receiptTargets.length > 0) {
+                    writeSendReceiptMessage(doc, nodeId, nodeId, task.id, task.assignedTo_agents ?? [task.assignedTo_agent || ""].filter(Boolean), `[task] ${task.title}: ${task.description}`, receiptTargets);
                 }
                 requestDispatcherReconcile("local-task-created");
                 api.logger?.info(`Ansible: task ${task.id.slice(0, 8)} delegated`);
@@ -4095,7 +4112,7 @@ export function registerAnsibleTools(api, config) {
                 },
                 notify_on_send: {
                     type: "boolean",
-                    description: "When true (default), also send a compact delivery receipt to your gateway-admin agent so you get visible confirmation in chat.",
+                    description: "When true (default), also send a compact delivery receipt to default receipt agents (gateway admin + configured sendReceiptAgents) so you get visible confirmation in chat.",
                 },
                 notify_to: {
                     type: "string",
@@ -4177,9 +4194,15 @@ export function registerAnsibleTools(api, config) {
                 const notifyOnSend = params.notify_on_send !== false;
                 const notifyTo = normalizeAgentList(params.notify_to);
                 if (notifyOnSend) {
-                    const defaultAdmin = resolveRequiredAdminAgentId(doc, nodeId, config);
-                    if (notifyTo.length === 0 && defaultAdmin && defaultAdmin !== effectiveFrom) {
-                        notifyTo.push(defaultAdmin);
+                    const defaults = defaultSendReceiptTargets(doc, nodeId, config, effectiveFrom);
+                    if (notifyTo.length === 0) {
+                        notifyTo.push(...defaults);
+                    }
+                    else {
+                        for (const id of defaults) {
+                            if (!notifyTo.includes(id))
+                                notifyTo.push(id);
+                        }
                     }
                     writeSendReceiptMessage(doc, nodeId, effectiveFrom, message.id, toAgents, content, notifyTo);
                 }

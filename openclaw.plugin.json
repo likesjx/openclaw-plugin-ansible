@@ -52,6 +52,16 @@
         "default": true,
         "description": "Auto-dispatch inbound ansible messages into agent turns"
       },
+      "dispatchHeartbeatSeconds": {
+        "type": "number",
+        "default": 20,
+        "description": "Dispatcher heartbeat reconcile interval in seconds (recovers missed injections)"
+      },
+      "sendReceiptAgents": {
+        "type": "array",
+        "items": { "type": "string" },
+        "description": "Optional default agent ids to notify when an agent posts a message/task on ansible"
+      },
       "lockSweep": {
         "type": "object",
         "description": "Per-gateway stale session lock sweeper",
@@ -154,6 +164,16 @@
     "dispatchIncoming": {
       "label": "Dispatch Incoming",
       "help": "Auto-route inbound ansible messages into agent turns",
+      "advanced": true
+    },
+    "dispatchHeartbeatSeconds": {
+      "label": "Dispatch Heartbeat",
+      "help": "Periodic reconcile interval to recover missed message/task injection events.",
+      "advanced": true
+    },
+    "sendReceiptAgents": {
+      "label": "Send Receipt Agents",
+      "help": "Default agents to notify when send/delegate actions post work onto ansible.",
       "advanced": true
     },
     "lockSweep": {

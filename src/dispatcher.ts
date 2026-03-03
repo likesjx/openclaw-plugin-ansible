@@ -19,6 +19,7 @@ const RETRY_JITTER = 0.2;
 const MAX_DELIVERY_ATTEMPTS = 15;
 const MAX_ATTEMPTS_ERROR = `dispatch:max_delivery_attempts_exceeded:${MAX_DELIVERY_ATTEMPTS}`;
 const AUTO_DISPATCH_BLOCKED_TASK_INTENTS = new Set(["skill_distribution"]);
+const DEFAULT_DISPATCH_HEARTBEAT_SECONDS = 20;
 let requestReconcileHook: ((reason: string) => void) | null = null;
 
 function safeErr(err: unknown): string {
@@ -149,6 +150,10 @@ export function startMessageDispatcher(api: OpenClawPluginApi, config: AnsibleCo
   const inFlight = new Set<string>();
   const scheduled = new Map<string, ReturnType<typeof setTimeout>>();
   let reconcileQueued = false;
+  const heartbeatSeconds =
+    typeof config.dispatchHeartbeatSeconds === "number" && Number.isFinite(config.dispatchHeartbeatSeconds)
+      ? Math.max(5, Math.floor(config.dispatchHeartbeatSeconds))
+      : DEFAULT_DISPATCH_HEARTBEAT_SECONDS;
 
   const queueReconcile = (reason: string) => {
     if (reconcileQueued) return;
@@ -306,8 +311,11 @@ export function startMessageDispatcher(api: OpenClawPluginApi, config: AnsibleCo
     if (!synced) return;
     queueReconcile(`sync:${peer || "peer"}`);
   });
+  setInterval(() => queueReconcile("heartbeat"), heartbeatSeconds * 1000);
 
-  api.logger?.info("Ansible dispatcher: enabled (live dispatch + reconnect reconciliation)");
+  api.logger?.info(
+    `Ansible dispatcher: enabled (live dispatch + reconnect reconciliation + heartbeat ${heartbeatSeconds}s)`,
+  );
   queueReconcile("startup");
 }
 
@@ -559,7 +567,7 @@ async function dispatchAnsibleMessage(
   });
 
   // 2. Build and finalize the message context
-  const sessionKey = `agent:${targetAgent}:ansible:msg:${messageId}`;
+  const sessionKey = `agent:${targetAgent}:ansible:inbox`;
   const ctx = reply.finalizeInboundContext({
     Body: body,
     RawBody: rawBody,
@@ -673,7 +681,7 @@ async function dispatchAnsibleTask(
     body: rawBody,
   });
 
-  const sessionKey = `agent:${targetAgent}:ansible:task:${taskId}`;
+  const sessionKey = `agent:${targetAgent}:ansible:inbox`;
   const ctx = reply.finalizeInboundContext({
     Body: body,
     RawBody: rawBody,

@@ -15,6 +15,7 @@ const RETRY_JITTER = 0.2;
 const MAX_DELIVERY_ATTEMPTS = 15;
 const MAX_ATTEMPTS_ERROR = `dispatch:max_delivery_attempts_exceeded:${MAX_DELIVERY_ATTEMPTS}`;
 const AUTO_DISPATCH_BLOCKED_TASK_INTENTS = new Set(["skill_distribution"]);
+const DEFAULT_DISPATCH_HEARTBEAT_SECONDS = 20;
 let requestReconcileHook = null;
 function safeErr(err) {
     if (err instanceof Error)
@@ -137,6 +138,9 @@ export function startMessageDispatcher(api, config) {
     const inFlight = new Set();
     const scheduled = new Map();
     let reconcileQueued = false;
+    const heartbeatSeconds = typeof config.dispatchHeartbeatSeconds === "number" && Number.isFinite(config.dispatchHeartbeatSeconds)
+        ? Math.max(5, Math.floor(config.dispatchHeartbeatSeconds))
+        : DEFAULT_DISPATCH_HEARTBEAT_SECONDS;
     const queueReconcile = (reason) => {
         if (reconcileQueued)
             return;
@@ -299,7 +303,8 @@ export function startMessageDispatcher(api, config) {
             return;
         queueReconcile(`sync:${peer || "peer"}`);
     });
-    api.logger?.info("Ansible dispatcher: enabled (live dispatch + reconnect reconciliation)");
+    setInterval(() => queueReconcile("heartbeat"), heartbeatSeconds * 1000);
+    api.logger?.info(`Ansible dispatcher: enabled (live dispatch + reconnect reconciliation + heartbeat ${heartbeatSeconds}s)`);
     queueReconcile("startup");
 }
 export function requestDispatcherReconcile(reason = "manual") {
@@ -509,7 +514,7 @@ async function dispatchAnsibleMessage(api, reply, session, cfg, myNodeId, target
         body: rawBody,
     });
     // 2. Build and finalize the message context
-    const sessionKey = `agent:${targetAgent}:ansible:msg:${messageId}`;
+    const sessionKey = `agent:${targetAgent}:ansible:inbox`;
     const ctx = reply.finalizeInboundContext({
         Body: body,
         RawBody: rawBody,
@@ -604,7 +609,7 @@ async function dispatchAnsibleTask(api, reply, session, cfg, myNodeId, targetAge
         envelope: envelopeOptions,
         body: rawBody,
     });
-    const sessionKey = `agent:${targetAgent}:ansible:task:${taskId}`;
+    const sessionKey = `agent:${targetAgent}:ansible:inbox`;
     const ctx = reply.finalizeInboundContext({
         Body: body,
         RawBody: rawBody,
