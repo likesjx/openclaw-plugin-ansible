@@ -32,7 +32,8 @@
     "test:integration:mvp1-industrial": "node ./scripts/integration-mvp1-industrial-suite.mjs",
     "test:integration:mvp2-lifecycle-core": "node ./scripts/integration-mvp2-lifecycle-core.mjs",
     "test:integration:mvp2-rollback-drill": "node ./scripts/integration-mvp2-rollback-drill.mjs",
-    "test:release:gate": "node ./scripts/release-gate.mjs"
+    "test:release:gate": "node ./scripts/release-gate.mjs",
+    "test:provenance:gate": "node ./scripts/provenance-gate.mjs"
   },
   "keywords": [
     "openclaw",

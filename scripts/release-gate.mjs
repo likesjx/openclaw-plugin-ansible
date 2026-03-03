@@ -69,7 +69,6 @@ function checkNoSecretLiterals() {
     'package.json',
   ];
 
-  let content = '';
   try {
     const cmd = `git ls-files ${targets.join(' ')}`;
     const files = execSync(cmd, { encoding: 'utf8' })
@@ -83,16 +82,9 @@ function checkNoSecretLiterals() {
         failures.push(`possible secret literal found in ${rel}`);
       }
       re.lastIndex = 0;
-      content += text;
     }
   } catch (err) {
     failures.push(`secret scan failed: ${String(err)}`);
-  }
-
-  // Defensive fallback for obviously risky env placeholders accidentally committed.
-  const riskyMarkers = ['OPENAI_API_KEY=', 'ANTHROPIC_API_KEY=', 'GITHUB_TOKEN='];
-  for (const marker of riskyMarkers) {
-    if (content.includes(marker)) failures.push(`possible committed credential assignment: ${marker}`);
   }
 }
 

@@ -15,6 +15,12 @@ Begin MVP-3 execution on `main` and make Clawhub readiness measurable with repea
 3. Normalize package metadata required for publication.
 4. Define the immediate next slices for security/provenance hardening.
 
+## Scope (Slice B)
+
+1. Add CI governance gates for provenance and release readiness on `main` PR/push.
+2. Add a provenance gate script that asserts runtime/doc/checklist provenance hooks stay intact.
+3. Wire CI to run typecheck/build + release/provenance gates together.
+
 ## Delivered in this slice
 
 1. `scripts/release-gate.mjs`:
@@ -32,6 +38,12 @@ Begin MVP-3 execution on `main` and make Clawhub readiness measurable with repea
 2. Signed provenance checks in CI and release process.
 3. Publish-path redaction/secret policy enforcement coverage.
 4. Clawhub docs bundle final curation and submit runbook.
+
+## Slice B deliverables (started)
+
+1. `.github/workflows/mvp3-governance-gates.yml`
+2. `scripts/provenance-gate.mjs`
+3. `npm run test:provenance:gate`
 
 ## Exit Criteria for this WI
 

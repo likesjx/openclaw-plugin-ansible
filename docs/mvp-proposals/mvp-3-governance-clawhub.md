@@ -28,3 +28,6 @@ Disposition (current):
    1. publication metadata normalization
    2. release gate automation (`npm run test:release:gate`)
    3. checklist hardening for Clawhub submit readiness
+3. Slice B started:
+   1. CI governance workflow (`.github/workflows/mvp3-governance-gates.yml`)
+   2. provenance contract gate (`npm run test:provenance:gate`)
