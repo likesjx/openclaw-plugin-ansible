@@ -1,10 +1,29 @@
 # OpenClaw Plugin: Ansible
 
-**Distributed coordination layer for OpenClaw — one agent, multiple bodies (or one operator, many agents).**
+**Secure mesh control plane for OpenClaw: invite/join handshake, durable routing, and auditable delegation contracts.**
 
-Ansible enables a single agent identity (e.g., "Jane") to operate seamlessly across multiple devices. It synchronizes tasks, messages, and shared context in real-time using CRDTs (Yjs) over a secure mesh network (Tailscale).
+Ansible enables a single agent identity (e.g., "Jane") to operate seamlessly across multiple devices. It synchronizes tasks, messages, and shared context in real-time using CRDTs (Yjs) over a secure mesh network (Tailscale), with explicit safety and governance gates for high-risk operations.
 
 This repo also documents a pragmatic way to use Ansible as a reliable inter-agent communication substrate today: treat the shared Yjs document as the durable inbox, and treat auto-dispatch as an optimization (not the only delivery mechanism).
+
+## Full Functional Surface
+
+1. Invite/join onboarding with token exchange and optional auth-gate websocket ticket handshake before Yjs attach.
+2. Durable shared-state transport for messages and tasks with per-agent delivery tracking.
+3. Reconcile heartbeat + retry logic so missed task/message injection is recovered automatically.
+4. Send receipts so operators can see when agents place work onto the mesh.
+5. Capability lifecycle (publish/unpublish/list/health/evidence) with provenance trust controls.
+6. Delegation policy distribution + per-node ACK tracking.
+7. Task governance (claim/accept/close, SLA sweep, backpressure policy, escalation controls).
+8. Admin controls (gateway admin nomination/distribution plus scoped token patterns).
+
+## Delegation + Execution Skill Pair Model
+
+1. A capability publish registers a contract, not just a label.
+2. Each capability contract references a **delegation skill** (requester side) and an **execution skill** (executor side).
+3. The delegation skill defines when/how to create tasks/messages and expected ACK/completion semantics.
+4. The execution skill defines accept-to-close lifecycle behavior in one run, including replies and error paths.
+5. Publishing/unpublishing updates routing eligibility, and lifecycle evidence records install/wire outcomes per target.
 
 ## Key Concepts
 

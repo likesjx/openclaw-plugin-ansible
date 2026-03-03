@@ -1,7 +1,7 @@
 {
   "name": "@jaredlikes/openclaw-plugin-ansible",
-  "version": "0.1.0",
-  "description": "Distributed coordination layer for OpenClaw - one agent, multiple bodies",
+  "version": "0.1.1",
+  "description": "Secure mesh coordination plugin for OpenClaw: invite/join handshake, resilient task+message routing, capability lifecycle, and delegation/execution skill-pair contracts.",
   "type": "module",
   "main": "dist/index.js",
   "exports": {
