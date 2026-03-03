@@ -134,6 +134,12 @@ Add the `ansible` plugin to `~/.openclaw/openclaw.json` on each node.
             "rateLimitMax": 30,
             "rateLimitWindowSeconds": 60
           },
+          "manifestTrust": {
+            "allowUnsignedLegacy": true,
+            "trustedPublisherKeys": {
+              "vps-jane": "-----BEGIN PUBLIC KEY-----\n<ed25519-pubkey>\n-----END PUBLIC KEY-----"
+            }
+          },
           "capabilities": ["always-on"]
         }
       }
@@ -341,6 +347,12 @@ openclaw ansible bootstrap           # Initialize as first node
 openclaw ansible invite --tier edge --node <expected-node-id>  # Generate node-bound invite token
 openclaw ansible join --token <tok>  # Join with invite token
 ```
+
+Capability publish provenance (`G2_PROVENANCE`) verifies signed manifests with configured trusted keys:
+
+- signature formats: `ed25519:<base64>` or `ed25519:<keyId>:<base64>`
+- trust source: `manifestTrust.trustedPublisherKeys`
+- legacy fallback: `manifestTrust.allowUnsignedLegacy` (only when `signedManifestRequired=false`)
 
 ### Gateway Transport Security (CLI -> Gateway)
 

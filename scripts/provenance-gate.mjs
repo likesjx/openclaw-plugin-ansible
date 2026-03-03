@@ -18,6 +18,9 @@ function checkRuntimeProvenanceHooks() {
   mustContain(tools, 'G2_PROVENANCE', 'runtime gate pipeline');
   mustContain(tools, 'manifest.provenance.manifestChecksum', 'runtime provenance checksum handling');
   mustContain(tools, 'manifestSignature', 'runtime provenance signature handling');
+  mustContain(tools, 'verifyManifestSignatureOrThrow', 'runtime provenance signature verification path');
+  mustContain(tools, 'invalid_signature', 'runtime provenance failure taxonomy');
+  mustContain(tools, 'manifestTrust', 'runtime trust-store configuration hook');
   mustContain(
     tools,
     'provenance.manifestChecksum does not match canonicalized manifest payload',
@@ -32,6 +35,10 @@ function checkSchemaContract() {
   mustContain(schema, '"manifestSignature"', 'manifest schema');
   mustContain(schema, '"publishedByAgentId"', 'manifest schema');
   mustContain(schema, '"publishedAt"', 'manifest schema');
+  const pluginSchema = read('openclaw.plugin.json');
+  mustContain(pluginSchema, '"manifestTrust"', 'plugin config schema');
+  mustContain(pluginSchema, '"trustedPublisherKeys"', 'plugin config schema');
+  mustContain(pluginSchema, '"allowUnsignedLegacy"', 'plugin config schema');
 }
 
 function checkDocGateSpec() {

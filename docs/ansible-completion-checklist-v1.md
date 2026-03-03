@@ -80,7 +80,7 @@ Goal:
 
 Must-have:
 
-- [ ] Signature verification trust path + key store integration.
+- [x] Signature verification trust path + key store integration.
 - [ ] Approval artifact recording for high-risk capabilities.
 - [ ] Secret scanning/redaction checks in publish path.
 - [ ] Signed provenance checks in CI.
@@ -144,3 +144,4 @@ Notes:
 - 2026-03-02: MVP-2 Slice 2 started: deterministic unpublish unwind evidence added (`unwindEvidence` in `ansible_capability_unpublish`) and rollback parity harness `scripts/integration-mvp2-rollback-drill.mjs`; first artifact `docs/evidence/mvp2/20260302-160714-rollback-drill.json`.
 - 2026-03-03: MVP-3 kickoff started on `main` with WI `docs/work-items/WI-20260303-mvp3-governance-clawhub-kickoff.md`; added baseline publication gate `npm run test:release:gate` (`scripts/release-gate.mjs`) and normalized package publication metadata (author/repository/homepage/bugs).
 - 2026-03-03: MVP-3 Slice B started: added CI governance workflow `.github/workflows/mvp3-governance-gates.yml` and provenance contract checker `npm run test:provenance:gate` (`scripts/provenance-gate.mjs`) to keep release/provenance controls enforced on push/PR.
+- 2026-03-03: MVP-3 Slice C started: `G2_PROVENANCE` now verifies `ed25519` manifest signatures against configured `manifestTrust.trustedPublisherKeys`, with explicit `allowUnsignedLegacy` fallback control for legacy unsigned manifests.

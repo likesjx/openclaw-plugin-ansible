@@ -31,3 +31,7 @@ Disposition (current):
 3. Slice B started:
    1. CI governance workflow (`.github/workflows/mvp3-governance-gates.yml`)
    2. provenance contract gate (`npm run test:provenance:gate`)
+4. Slice C started:
+   1. `G2_PROVENANCE` signature verification (`ed25519`) implemented in runtime
+   2. trust key-store configuration wired via `manifestTrust.trustedPublisherKeys`
+   3. legacy unsigned policy switch added via `manifestTrust.allowUnsignedLegacy`

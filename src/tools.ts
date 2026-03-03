@@ -4,7 +4,7 @@
  * Tools available to the agent for inter-hemisphere coordination.
  */
 
-import { createHash, randomBytes, randomUUID, timingSafeEqual } from "crypto";
+import { createHash, createPublicKey, randomBytes, randomUUID, timingSafeEqual, verify as cryptoVerify } from "crypto";
 import type { OpenClawPluginApi } from "./types.js";
 import type { AnsibleConfig, Task, Message, NodeContext, Decision, Thread, PulseData, CoordinationPreference } from "./schema.js";
 import { VALIDATION_LIMITS } from "./schema.js";
@@ -789,15 +789,127 @@ function deepSortObject(value: unknown): unknown {
   return out;
 }
 
-function checksumPayloadForManifest(manifest: SkillPairManifestV1): string {
+function canonicalManifestPayload(manifest: SkillPairManifestV1): string {
   const payload = JSON.parse(JSON.stringify(manifest)) as SkillPairManifestV1;
   payload.provenance = {
     ...payload.provenance,
     manifestChecksum: "",
     manifestSignature: "",
   };
-  const canonical = JSON.stringify(deepSortObject(payload));
+  return JSON.stringify(deepSortObject(payload));
+}
+
+function checksumPayloadForManifest(manifest: SkillPairManifestV1): string {
+  const canonical = canonicalManifestPayload(manifest);
   return `sha256:${createHash("sha256").update(canonical, "utf8").digest("hex")}`;
+}
+
+type ParsedManifestSignature =
+  | { type: "unsigned"; raw: string }
+  | {
+      type: "ed25519";
+      raw: string;
+      keyId?: string;
+      signatureB64: string;
+      signature: Buffer;
+    };
+
+function decodeBase64Strict(value: string, fieldName: string): Buffer {
+  const compact = String(value || "").trim().replace(/\s+/g, "");
+  if (!compact) throw new Error(`${fieldName} cannot be empty`);
+  const decoded = Buffer.from(compact, "base64");
+  if (!decoded.length) throw new Error(`${fieldName} is not valid base64`);
+  const normalizedInput = compact.replace(/=+$/, "");
+  const normalizedDecoded = decoded.toString("base64").replace(/=+$/, "");
+  if (normalizedDecoded !== normalizedInput) {
+    throw new Error(`${fieldName} is not valid base64`);
+  }
+  return decoded;
+}
+
+function parseManifestSignature(rawSignature: string): ParsedManifestSignature {
+  const raw = String(rawSignature || "").trim();
+  if (!raw) throw new Error("provenance.manifestSignature is required");
+  if (raw.startsWith("unsigned:")) return { type: "unsigned", raw };
+
+  const parts = raw.split(":");
+  if (parts[0] !== "ed25519") {
+    throw new Error("provenance.manifestSignature must use ed25519:<base64> or ed25519:<keyId>:<base64>");
+  }
+  if (parts.length !== 2 && parts.length !== 3) {
+    throw new Error("provenance.manifestSignature must use ed25519:<base64> or ed25519:<keyId>:<base64>");
+  }
+  const keyId = parts.length === 3 ? parts[1].trim() : undefined;
+  const signatureB64 = parts.length === 3 ? parts[2].trim() : parts[1].trim();
+  const signature = decodeBase64Strict(signatureB64, "provenance.manifestSignature");
+  return { type: "ed25519", raw, keyId, signatureB64, signature };
+}
+
+function resolveTrustedManifestPublicKey(
+  config: AnsibleConfig,
+  publisherAgentId: string,
+  keyId?: string,
+): { trustedId: string; pem: string } | null {
+  const keysRaw = (config?.manifestTrust?.trustedPublisherKeys || {}) as Record<string, unknown>;
+  const directId = (keyId || publisherAgentId || "").trim();
+  if (directId && typeof keysRaw[directId] === "string" && String(keysRaw[directId]).trim().length > 0) {
+    return { trustedId: directId, pem: String(keysRaw[directId]).trim() };
+  }
+  if (
+    !keyId &&
+    publisherAgentId &&
+    typeof keysRaw[publisherAgentId] === "string" &&
+    String(keysRaw[publisherAgentId]).trim().length > 0
+  ) {
+    return { trustedId: publisherAgentId, pem: String(keysRaw[publisherAgentId]).trim() };
+  }
+  return null;
+}
+
+function verifyManifestSignatureOrThrow(manifest: SkillPairManifestV1, config: AnsibleConfig): {
+  mode: "signed" | "unsigned-legacy";
+  algorithm?: "ed25519";
+  trustedKeyId?: string;
+} {
+  const parsed = parseManifestSignature(manifest.provenance.manifestSignature);
+  const signedRequired = manifest.governance.signedManifestRequired === true;
+  const allowUnsignedLegacy = config?.manifestTrust?.allowUnsignedLegacy !== false;
+
+  if (parsed.type === "unsigned") {
+    if (signedRequired) {
+      throw new Error("invalid_signature: signed manifest required by governance.signedManifestRequired=true");
+    }
+    if (!allowUnsignedLegacy) {
+      throw new Error("invalid_signature: unsigned manifest blocked by manifestTrust.allowUnsignedLegacy=false");
+    }
+    return { mode: "unsigned-legacy" };
+  }
+
+  const trusted = resolveTrustedManifestPublicKey(config, manifest.provenance.publishedByAgentId, parsed.keyId);
+  if (!trusted) {
+    throw new Error(
+      `invalid_signature: no trusted manifest public key configured for '${parsed.keyId || manifest.provenance.publishedByAgentId}'`,
+    );
+  }
+  const payload = Buffer.from(canonicalManifestPayload(manifest), "utf8");
+  let key: ReturnType<typeof createPublicKey>;
+  try {
+    key = createPublicKey(trusted.pem);
+  } catch {
+    throw new Error(`invalid_signature: trusted key '${trusted.trustedId}' is not a valid PEM public key`);
+  }
+  let ok = false;
+  try {
+    ok = cryptoVerify(null, payload, key, parsed.signature);
+  } catch {
+    throw new Error("invalid_signature: signature verification error");
+  }
+  if (!ok) throw new Error("invalid_signature: signature verification failed");
+  return {
+    mode: "signed",
+    algorithm: "ed25519",
+    trustedKeyId: trusted.trustedId,
+  };
 }
 
 function validateSkillPairManifest(value: unknown): SkillPairManifestV1 {
@@ -3818,6 +3930,7 @@ export function registerAnsibleTools(
       if (!doc || !nodeId) return toolResult({ error: "Ansible not initialized" });
       let gate = "G0_AUTHZ";
       let capabilityIdHint = "";
+      let signatureCheck: { mode: "signed" | "unsigned-legacy"; algorithm?: "ed25519"; trustedKeyId?: string } | undefined;
       try {
         gate = "G0_AUTHZ";
         requireAuth(nodeId);
@@ -3844,6 +3957,7 @@ export function registerAnsibleTools(
         }
 
         gate = "G2_PROVENANCE";
+        signatureCheck = verifyManifestSignatureOrThrow(manifest, config);
         const capabilityId = manifest.capabilityId;
         capabilityIdHint = capabilityId;
         const version = manifest.version;
@@ -3938,6 +4052,7 @@ export function registerAnsibleTools(
         return toolResult({
           success: true,
           manifest: activation.manifest,
+          provenanceVerification: signatureCheck,
           manifestKey: activation.manifestKey,
           capability: activation.capability,
           index: activation.index,

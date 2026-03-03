@@ -45,6 +45,17 @@ Begin MVP-3 execution on `main` and make Clawhub readiness measurable with repea
 2. `scripts/provenance-gate.mjs`
 3. `npm run test:provenance:gate`
 
+## Slice C deliverables (started)
+
+1. Runtime signature verification for `G2_PROVENANCE`:
+   1. supports `ed25519:<base64>` and `ed25519:<keyId>:<base64>` signature formats
+   2. verifies canonical manifest payload against configured trusted public key
+2. Trust store integration:
+   1. `manifestTrust.trustedPublisherKeys` config in plugin schema/runtime
+   2. `manifestTrust.allowUnsignedLegacy` policy switch for compatibility mode
+3. Provenance CI gate hardened:
+   1. asserts runtime signature verifier/trust-store hooks remain present
+
 ## Exit Criteria for this WI
 
 1. `npm run test:release:gate` passes.

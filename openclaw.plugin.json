@@ -93,6 +93,22 @@
           "rateLimitMax": { "type": "number", "default": 30, "description": "Auth exchange max requests per window (fixed-window)" },
           "rateLimitWindowSeconds": { "type": "number", "default": 60, "description": "Auth exchange fixed-window seconds" }
         }
+      },
+      "manifestTrust": {
+        "type": "object",
+        "description": "Capability manifest provenance trust controls (G2 signature verification).",
+        "properties": {
+          "allowUnsignedLegacy": {
+            "type": "boolean",
+            "default": true,
+            "description": "Allow legacy unsigned manifests when manifest governance does not require signatures."
+          },
+          "trustedPublisherKeys": {
+            "type": "object",
+            "description": "Map of trusted publisher IDs to PEM public keys for ed25519 signature verification.",
+            "additionalProperties": { "type": "string" }
+          }
+        }
       }
     },
     "required": ["tier"]
@@ -153,6 +169,11 @@
     "authGate": {
       "label": "Auth Gate",
       "help": "Optional websocket admission gate for unknown nodes (invite token at handshake).",
+      "advanced": true
+    },
+    "manifestTrust": {
+      "label": "Manifest Trust",
+      "help": "Trusted public keys and legacy-unsigned policy for capability manifest signatures.",
       "advanced": true
     }
   }

@@ -160,6 +160,24 @@ export interface AnsibleConfig {
     /** Fixed-window size in seconds. Default: 60. */
     rateLimitWindowSeconds?: number;
   };
+
+  /**
+   * Capability manifest provenance trust settings.
+   *
+   * Used by `ansible_capability_publish` gate G2 to verify signed manifests.
+   */
+  manifestTrust?: {
+    /**
+     * Trusted publisher public keys (PEM). Keyed by agent id (or optional key id
+     * present in manifest signature payload).
+     */
+    trustedPublisherKeys?: Record<string, string>;
+    /**
+     * Allow legacy `unsigned:*` manifest signatures when
+     * governance.signedManifestRequired=false. Default: true.
+     */
+    allowUnsignedLegacy?: boolean;
+  };
 }
 
 // ============================================================================

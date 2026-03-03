@@ -152,6 +152,10 @@ Define the canonical manifest exchanged between:
 3. `rollout.mode=canary` should include at least one target unless environment has one eligible node.
 4. `riskClass=high` requires `governance.requiresHumanApprovalForHighRisk=true`.
 5. `manifestChecksum` must match canonicalized manifest payload.
+6. `manifestSignature` runtime verification supports:
+   - `ed25519:<base64-signature>`
+   - `ed25519:<keyId>:<base64-signature>`
+   Trusted keys are resolved from runtime `manifestTrust.trustedPublisherKeys`.
 
 ## Canonicalization
 
