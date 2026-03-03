@@ -1185,6 +1185,67 @@ function emitLifecycleEvent(
   return id;
 }
 
+function normalizeAgentList(value: unknown): string[] {
+  if (!value) return [];
+  const raw = Array.isArray(value) ? value : [value];
+  const out = new Set<string>();
+  for (const item of raw) {
+    if (typeof item !== "string") continue;
+    for (const part of item.split(",")) {
+      const id = part.trim();
+      if (!id) continue;
+      out.add(id);
+    }
+  }
+  return Array.from(out);
+}
+
+function writeSendReceiptMessage(
+  doc: ReturnType<typeof getDoc>,
+  fromNodeId: string,
+  senderAgentId: string,
+  originalMessageId: string,
+  originalTargets: string[],
+  originalContent: string,
+  notifyToAgents: string[],
+): string | null {
+  if (!doc) return null;
+  const targets = Array.from(new Set(notifyToAgents.map((x) => String(x || "").trim()).filter(Boolean)));
+  if (targets.length === 0) return null;
+
+  const messages = doc.getMap("messages");
+  const receiptId = randomUUID();
+  const now = Date.now();
+  const short = originalContent.replace(/\s+/g, " ").trim().slice(0, 180);
+  const targetLabel = originalTargets.length > 0 ? originalTargets.join(", ") : "broadcast";
+  const content =
+    `[Ansible Send Receipt] ${senderAgentId} posted on ansible.\n` +
+    `messageId: ${originalMessageId}\n` +
+    `targets: ${targetLabel}\n` +
+    (short ? `excerpt: ${short}` : "excerpt: (empty)");
+
+  messages.set(receiptId, {
+    id: receiptId,
+    from_agent: senderAgentId,
+    from_node: fromNodeId,
+    to_agents: targets,
+    intent: "send_receipt",
+    content,
+    timestamp: now,
+    updatedAt: now,
+    readBy_agents: [senderAgentId],
+    metadata: {
+      kind: "send_receipt",
+      corr: originalMessageId,
+      originalMessageId,
+      originalTargets,
+      notifyTo: targets,
+    },
+  } satisfies Message);
+
+  return receiptId;
+}
+
 function runPublishGate(
   gateResults: PublishGateRecord[],
   gate: PublishGateId,
@@ -4268,6 +4329,18 @@ export function registerAnsibleTools(
 
         const tasks = doc.getMap("tasks");
         tasks.set(task.id, task);
+        const defaultAdmin = resolveRequiredAdminAgentId(doc, nodeId, config);
+        if (defaultAdmin && defaultAdmin !== nodeId) {
+          writeSendReceiptMessage(
+            doc,
+            nodeId,
+            nodeId,
+            task.id,
+            task.assignedTo_agents ?? [task.assignedTo_agent || ""].filter(Boolean),
+            `[task] ${task.title}: ${task.description}`,
+            [defaultAdmin],
+          );
+        }
         requestDispatcherReconcile("local-task-created");
 
         api.logger?.info(`Ansible: task ${task.id.slice(0, 8)} delegated`);
@@ -4312,6 +4385,16 @@ export function registerAnsibleTools(
           type: "string",
           description: "Specific agent to send to (single agent id or comma-separated). If omitted, broadcasts to all.",
         },
+        notify_on_send: {
+          type: "boolean",
+          description:
+            "When true (default), also send a compact delivery receipt to your gateway-admin agent so you get visible confirmation in chat.",
+        },
+        notify_to: {
+          type: "string",
+          description:
+            "Optional receipt target agent id (or comma-separated list). Overrides default gateway-admin receipt routing.",
+        },
         metadata: {
           type: "object",
           description: "Optional structured metadata (e.g., CoreMetadata fields like conversation_id, corr, kind).",
@@ -4342,9 +4425,7 @@ export function registerAnsibleTools(
             ? params.agent_token.trim()
             : undefined;
 
-        const toAgents: string[] = params.to
-          ? (Array.isArray(params.to) ? params.to : [params.to as string])
-          : [];
+        const toAgents = normalizeAgentList(params.to);
 
         // Default sender is this node's id (internal agent identity).
         // Allow override only for registered external agents so operators can
@@ -4393,11 +4474,22 @@ export function registerAnsibleTools(
 
         const messages = doc.getMap("messages");
         messages.set(message.id, message);
+        const notifyOnSend = params.notify_on_send !== false;
+        const notifyTo = normalizeAgentList(params.notify_to);
+        if (notifyOnSend) {
+          const defaultAdmin = resolveRequiredAdminAgentId(doc, nodeId, config);
+          if (notifyTo.length === 0 && defaultAdmin && defaultAdmin !== effectiveFrom) {
+            notifyTo.push(defaultAdmin);
+          }
+          writeSendReceiptMessage(doc, nodeId, effectiveFrom, message.id, toAgents, content, notifyTo);
+        }
         requestDispatcherReconcile("local-message-created");
 
         return toolResult({
           success: true,
           messageId: message.id,
+          notifyOnSend,
+          notifyTo: notifyOnSend ? notifyTo : [],
           message: toAgents.length > 0
             ? `Message sent to ${toAgents.join(", ")}`
             : "Message broadcast to all hemispheres",

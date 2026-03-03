@@ -2573,6 +2573,8 @@ export function registerAnsibleCli(
       .option("--kind <kind>", "Message kind: proposal, status, result, alert, decision")
       .option("--metadata <json>", "Additional metadata as JSON object")
       .option("--broadcast", "Explicitly broadcast to all agents (same as omitting --to)")
+      .option("--notify-to <agentId>", "Receipt target agent(s), comma-separated, for 'message was sent' confirmations")
+      .option("--no-notify-on-send", "Disable automatic send receipt notification")
       .option("--token <token>", "Auth token for sender agent (or set OPENCLAW_ANSIBLE_TOKEN)")
       .action(async (...args: unknown[]) => {
         const opts = (args[0] || {}) as {
@@ -2583,6 +2585,8 @@ export function registerAnsibleCli(
           kind?: string;
           metadata?: string;
           broadcast?: boolean;
+          notifyTo?: string;
+          notifyOnSend?: boolean;
           token?: string;
         };
 
@@ -2620,6 +2624,8 @@ export function registerAnsibleCli(
         const toolArgs: Record<string, unknown> = { content: opts.message };
         if (toAgents.length > 0) toolArgs.to = toAgents.join(",");
         if (opts.from) toolArgs.from_agent = opts.from;
+        if (opts.notifyTo) toolArgs.notify_to = opts.notifyTo;
+        if (opts.notifyOnSend === false) toolArgs.notify_on_send = false;
         const token = resolveAgentToken(opts.token);
         if (token) toolArgs.agent_token = token;
         if (Object.keys(metadata).length > 0) toolArgs.metadata = metadata;
@@ -2641,6 +2647,12 @@ export function registerAnsibleCli(
           console.log(`✓ Message sent to ${toAgents.join(", ")}`);
         } else {
           console.log("✓ Message broadcast to all agents");
+        }
+        if (result.notifyOnSend) {
+          const targets = Array.isArray(result.notifyTo) ? result.notifyTo : [];
+          if (targets.length > 0) {
+            console.log(`  Receipt notify: ${targets.join(", ")}`);
+          }
         }
       });
 
