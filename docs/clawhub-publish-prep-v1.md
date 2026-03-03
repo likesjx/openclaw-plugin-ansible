@@ -5,16 +5,21 @@ Last updated: 2026-03-03
 
 ## Goal
 
-Prepare the Ansible plugin/skill package for clean publication to Clawhub with minimal rework.
+Prepare the Ansible skill for Clawhub and the Ansible plugin for npm with minimal rework.
+
+Release split:
+
+1. Clawhub: `openclaw-skill-ansible` skill assets
+2. npm: `@likesjx/openclaw-plugin-ansible` gateway plugin package
 
 ## 1) Package Identity and Metadata
 
-- [ ] Confirm plugin name/id is stable and unique.
+- [x] Confirm plugin name/id is stable and unique.
 - [ ] Confirm version is semver and changelog-aligned.
 - [ ] Add concise description and capability summary.
 - [ ] Add maintainer/contact metadata.
-- [ ] Add repository URL and docs URL.
-- [ ] Verify license is explicit and compatible with publication.
+- [x] Add repository URL and docs URL.
+- [x] Verify license is explicit and compatible with publication.
 
 ## 2) Manifest and Config Surface
 
@@ -87,3 +92,7 @@ For each release, include:
 2. Automated baseline gate added:
    1. `npm run test:release:gate`
    2. `scripts/release-gate.mjs`
+3. Dual-track preflight added:
+   1. `npm run test:npm:preflight`
+   2. `npm run test:skill:preflight -- --skill-dir=/Users/jaredlikes/code/openclaw-skill-ansible`
+   3. `docs/release-dual-track-v1.md`

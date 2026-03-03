@@ -19,6 +19,7 @@
 - **[mvp-proposals/README.md](mvp-proposals/README.md)** — Per-MVP proposal/disposition index with one status/evidence document per MVP phase
 - **[documentation-status-v1.md](documentation-status-v1.md)** — Canonical vs historical doc map to prevent stale concepts from driving implementation
 - **[clawhub-publish-prep-v1.md](clawhub-publish-prep-v1.md)** — Packaging, security, docs, and quality gates for publishing this plugin/skill to Clawhub
+- **[release-dual-track-v1.md](release-dual-track-v1.md)** — Practical two-lane release runbook (ClawHub skill + npm plugin) with preflight commands
 - **[deployment-runbook-v1.md](deployment-runbook-v1.md)** — Step-by-step canary rollout and rollback runbook with safe SLA defaults and go/no-go checks
 - **[ansible-e2e-deployment-test-plan-v1.md](ansible-e2e-deployment-test-plan-v1.md)** — Standard end-to-end deployment validation plan (mesh transport matrix, task lifecycle, capability pipeline, SLA checks, and release gates)
 - **[mvp1-industrial-test-plan-v1.md](mvp1-industrial-test-plan-v1.md)** — Industrial stress-analysis plan for MVP-1 fanout safety (deterministic fixtures + live read-only risk checks)

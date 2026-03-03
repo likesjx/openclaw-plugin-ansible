@@ -448,6 +448,23 @@ This plugin is typically installed from GitHub, so **`dist/` must be committed**
 3. Verify `dist/` changed as expected.
 4. Commit both `src/` and `dist/` (plus docs), then push.
 
+### Release Preflight (Plugin + Skill)
+
+For npm plugin release readiness in this repo:
+
+```bash
+npm run release:preflight
+```
+
+For ClawHub skill readiness against the skill repo:
+
+```bash
+npm run test:skill:preflight -- --skill-dir=/Users/jaredlikes/code/openclaw-skill-ansible
+```
+
+For full dual-track release steps, see:
+- `docs/release-dual-track-v1.md`
+
 ### Users (machines running OpenClaw)
 
 After updating the plugin:

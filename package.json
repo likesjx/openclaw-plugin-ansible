@@ -1,5 +1,5 @@
 {
-  "name": "ansible",
+  "name": "@likesjx/openclaw-plugin-ansible",
   "version": "0.1.0",
   "description": "Distributed coordination layer for OpenClaw - one agent, multiple bodies",
   "type": "module",
@@ -33,7 +33,10 @@
     "test:integration:mvp2-lifecycle-core": "node ./scripts/integration-mvp2-lifecycle-core.mjs",
     "test:integration:mvp2-rollback-drill": "node ./scripts/integration-mvp2-rollback-drill.mjs",
     "test:release:gate": "node ./scripts/release-gate.mjs",
-    "test:provenance:gate": "node ./scripts/provenance-gate.mjs"
+    "test:provenance:gate": "node ./scripts/provenance-gate.mjs",
+    "test:npm:preflight": "node ./scripts/npm-publish-preflight.mjs",
+    "test:skill:preflight": "node ./scripts/skill-clawhub-preflight.mjs",
+    "release:preflight": "npm run typecheck && npm run build && npm run test:release:gate && npm run test:provenance:gate && npm run test:npm:preflight"
   },
   "keywords": [
     "openclaw",
@@ -51,6 +54,9 @@
   "repository": {
     "type": "git",
     "url": "https://github.com/likesjx/openclaw-plugin-ansible.git"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "license": "MIT",
   "dependencies": {
