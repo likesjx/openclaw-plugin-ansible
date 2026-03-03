@@ -1,5 +1,5 @@
 {
-  "name": "@likesjx/openclaw-plugin-ansible",
+  "name": "@jaredlikes/openclaw-plugin-ansible",
   "version": "0.1.0",
   "description": "Distributed coordination layer for OpenClaw - one agent, multiple bodies",
   "type": "module",
