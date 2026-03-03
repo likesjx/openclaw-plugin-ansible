@@ -35,3 +35,7 @@ Disposition (current):
    1. `G2_PROVENANCE` signature verification (`ed25519`) implemented in runtime
    2. trust key-store configuration wired via `manifestTrust.trustedPublisherKeys`
    3. legacy unsigned policy switch added via `manifestTrust.allowUnsignedLegacy`
+5. Slice D started:
+   1. high-risk capability publish requires approval artifact recording
+   2. publish-path secret-literal checks block unsafe manifests before activation
+   3. lifecycle event metadata redaction added for sensitive keys/patterns

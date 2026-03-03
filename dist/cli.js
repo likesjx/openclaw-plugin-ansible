@@ -1554,6 +1554,9 @@ export function registerAnsibleCli(api, config) {
             .option("--contract <ref>", "Contract schema reference")
             .option("--eta <seconds>", "Default ETA seconds", "900")
             .option("--status <status>", "Capability status: active|deprecated|disabled", "active")
+            .option("--approval-artifact <id>", "Approval artifact id (required for high-risk capability publishes)")
+            .option("--approved-by <agentId>", "Optional approver agent id (defaults to publishing actor)")
+            .option("--approval-note <text>", "Optional high-risk approval note")
             .option("--as <agentId>", "Acting admin agent id", "admin")
             .option("--token <token>", "Auth token for acting admin (or set OPENCLAW_ANSIBLE_TOKEN)")
             .action(async (...args) => {
@@ -1592,6 +1595,15 @@ export function registerAnsibleCli(api, config) {
                 status: opts.status || "active",
                 from_agent: opts.as || "admin",
             };
+            if (typeof opts.approvalArtifact === "string" && opts.approvalArtifact.trim().length > 0) {
+                toolArgs.approval_artifact_id = opts.approvalArtifact.trim();
+            }
+            if (typeof opts.approvedBy === "string" && opts.approvedBy.trim().length > 0) {
+                toolArgs.approved_by_agent = opts.approvedBy.trim();
+            }
+            if (typeof opts.approvalNote === "string" && opts.approvalNote.trim().length > 0) {
+                toolArgs.approval_note = opts.approvalNote.trim();
+            }
             const token = resolveAgentToken(opts.token);
             if (token)
                 toolArgs.agent_token = token;
@@ -1610,6 +1622,10 @@ export function registerAnsibleCli(api, config) {
             console.log("✓ Capability published");
             console.log(`  id=${out.capability?.capabilityId || opts.id}`);
             console.log(`  status=${out.capability?.status || opts.status}`);
+            if (out.approval?.approvalArtifactId) {
+                console.log(`  approvalArtifact=${out.approval.approvalArtifactId}`);
+                console.log(`  approvedBy=${out.approval.approvedByAgentId || "unknown"}`);
+            }
             if (Array.isArray(out.publishPipeline) && out.publishPipeline.length > 0) {
                 const gates = out.publishPipeline
                     .map((g) => `${String(g.id || g.gateId || g.gate || "?")}:${String(g.status || "?")}`)

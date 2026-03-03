@@ -56,6 +56,17 @@ Begin MVP-3 execution on `main` and make Clawhub readiness measurable with repea
 3. Provenance CI gate hardened:
    1. asserts runtime signature verifier/trust-store hooks remain present
 
+## Slice D deliverables (started)
+
+1. High-risk capability governance:
+   1. `ansible_capability_publish` enforces `approval_artifact_id` when manifest declares high-risk + human approval required
+   2. approval metadata recorded on published catalog entries and returned in publish result
+2. Publish-path secret safeguards:
+   1. manifest secret-literal scan blocks publish on sensitive candidates
+   2. lifecycle metadata redaction prevents sensitive field/value leakage in emitted events
+3. CLI support:
+   1. `openclaw ansible capability publish` adds `--approval-artifact`, `--approved-by`, `--approval-note`
+
 ## Exit Criteria for this WI
 
 1. `npm run test:release:gate` passes.

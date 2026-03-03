@@ -81,8 +81,8 @@ Goal:
 Must-have:
 
 - [x] Signature verification trust path + key store integration.
-- [ ] Approval artifact recording for high-risk capabilities.
-- [ ] Secret scanning/redaction checks in publish path.
+- [x] Approval artifact recording for high-risk capabilities.
+- [x] Secret scanning/redaction checks in publish path.
 - [ ] Signed provenance checks in CI.
 - [ ] Clawhub package docs/metadata finalized.
 
@@ -145,3 +145,4 @@ Notes:
 - 2026-03-03: MVP-3 kickoff started on `main` with WI `docs/work-items/WI-20260303-mvp3-governance-clawhub-kickoff.md`; added baseline publication gate `npm run test:release:gate` (`scripts/release-gate.mjs`) and normalized package publication metadata (author/repository/homepage/bugs).
 - 2026-03-03: MVP-3 Slice B started: added CI governance workflow `.github/workflows/mvp3-governance-gates.yml` and provenance contract checker `npm run test:provenance:gate` (`scripts/provenance-gate.mjs`) to keep release/provenance controls enforced on push/PR.
 - 2026-03-03: MVP-3 Slice C started: `G2_PROVENANCE` now verifies `ed25519` manifest signatures against configured `manifestTrust.trustedPublisherKeys`, with explicit `allowUnsignedLegacy` fallback control for legacy unsigned manifests.
+- 2026-03-03: MVP-3 Slice D started: high-risk capability publishes now require `approval_artifact_id` and persist approval metadata; publish path now blocks secret-like manifest literals and redacts sensitive lifecycle metadata.

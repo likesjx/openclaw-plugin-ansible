@@ -21,6 +21,10 @@ function checkRuntimeProvenanceHooks() {
   mustContain(tools, 'verifyManifestSignatureOrThrow', 'runtime provenance signature verification path');
   mustContain(tools, 'invalid_signature', 'runtime provenance failure taxonomy');
   mustContain(tools, 'manifestTrust', 'runtime trust-store configuration hook');
+  mustContain(tools, 'approval_required', 'runtime high-risk approval gate');
+  mustContain(tools, 'approval_artifact_id', 'runtime high-risk approval artifact contract');
+  mustContain(tools, 'assertNoManifestSecretLiterals', 'runtime publish-path secret scan');
+  mustContain(tools, 'redactLifecycleValue', 'runtime lifecycle redaction hook');
   mustContain(
     tools,
     'provenance.manifestChecksum does not match canonicalized manifest payload',
@@ -50,6 +54,8 @@ function checkDocGateSpec() {
 function checkChecklistAlignment() {
   const checklist = read('docs/ansible-completion-checklist-v1.md');
   mustContain(checklist, 'Signature verification trust path + key store integration', 'MVP-3 checklist');
+  mustContain(checklist, 'Approval artifact recording for high-risk capabilities', 'MVP-3 checklist');
+  mustContain(checklist, 'Secret scanning/redaction checks in publish path', 'MVP-3 checklist');
   mustContain(checklist, 'Signed provenance checks in CI', 'MVP-3 checklist');
 }
 

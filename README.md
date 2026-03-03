@@ -341,6 +341,7 @@ openclaw ansible delegation set      # Publish policy from markdown file (coordi
 openclaw ansible delegation ack      # ACK current policy
 openclaw ansible capability list     # List published capability contracts + eligibility
 openclaw ansible capability publish --id cap.example --name "Example" --version 1.0.0 --owner executor --delegation-skill-name ansible-delegate-example --delegation-skill-version 1.0.0 --executor-skill-name ansible-executor-example --executor-skill-version 1.0.0 --contract schema://ansible/cap.example/1.0.0
+openclaw ansible capability publish --id cap.highrisk --name "High Risk" --version 1.0.0 --owner executor --delegation-skill-name ansible-delegate-highrisk --delegation-skill-version 1.0.0 --executor-skill-name ansible-executor-highrisk --executor-skill-version 1.0.0 --contract schema://ansible/cap.highrisk/1.0.0 --approval-artifact CAB-1234 --approval-note "Approved in CAB on 2026-03-03"
 openclaw ansible capability unpublish --id cap.example
 openclaw ansible tasks claim <taskId> --eta-seconds 900 --plan "scan, patch, validate"   # emits accepted ACK contract
 openclaw ansible bootstrap           # Initialize as first node
@@ -353,6 +354,8 @@ Capability publish provenance (`G2_PROVENANCE`) verifies signed manifests with c
 - signature formats: `ed25519:<base64>` or `ed25519:<keyId>:<base64>`
 - trust source: `manifestTrust.trustedPublisherKeys`
 - legacy fallback: `manifestTrust.allowUnsignedLegacy` (only when `signedManifestRequired=false`)
+- high-risk governance: when `riskClass=high` and `requiresHumanApprovalForHighRisk=true`, publish requires `approval_artifact_id` (CLI: `--approval-artifact`)
+- publish-path safety: manifest secret-like literals are blocked before publish; lifecycle metadata is redacted for sensitive keys/patterns
 
 ### Gateway Transport Security (CLI -> Gateway)
 

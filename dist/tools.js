@@ -504,6 +504,120 @@ function deepSortObject(value) {
         out[k] = deepSortObject(v);
     return out;
 }
+const SECRET_FIELD_RE = /(secret|token|password|passphrase|private[-_]?key|api[-_]?key|client[-_]?secret|authorization)/i;
+const SECRET_VALUE_PATTERNS = [
+    { re: /-----BEGIN (?:RSA |EC |OPENSSH |)?PRIVATE KEY-----/, code: "private_key_pem" },
+    { re: /\bghp_[A-Za-z0-9]{20,}\b/, code: "github_pat" },
+    { re: /\bgithub_pat_[A-Za-z0-9_]{20,}\b/, code: "github_pat_fine_grained" },
+    { re: /\bsk-[A-Za-z0-9]{20,}\b/, code: "api_secret_prefix_sk" },
+    { re: /\bAKIA[0-9A-Z]{16}\b/, code: "aws_access_key_id" },
+    { re: /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/, code: "slack_token" },
+    { re: /\bBearer\s+[A-Za-z0-9._=-]{20,}\b/i, code: "bearer_token" },
+    { re: /https?:\/\/[^/\s:@]+:[^/\s@]+@/i, code: "url_embedded_credentials" },
+];
+function hasManifestPathPrefix(path, prefix) {
+    return path === prefix || path.startsWith(`${prefix}.`) || path.startsWith(`${prefix}[`);
+}
+function scanSecretFindings(value, path, findings, ignorePaths, maxFindings) {
+    if (findings.length >= maxFindings)
+        return;
+    for (const ignore of ignorePaths) {
+        if (hasManifestPathPrefix(path, ignore))
+            return;
+    }
+    if (typeof value === "string") {
+        for (const sig of SECRET_VALUE_PATTERNS) {
+            if (sig.re.test(value)) {
+                findings.push({ path, code: sig.code });
+                return;
+            }
+        }
+        return;
+    }
+    if (!value || typeof value !== "object")
+        return;
+    if (Array.isArray(value)) {
+        for (let i = 0; i < value.length && findings.length < maxFindings; i += 1) {
+            scanSecretFindings(value[i], `${path}[${i}]`, findings, ignorePaths, maxFindings);
+        }
+        return;
+    }
+    for (const [k, v] of Object.entries(value)) {
+        if (findings.length >= maxFindings)
+            return;
+        const nextPath = path ? `${path}.${k}` : k;
+        if (SECRET_FIELD_RE.test(k) && typeof v === "string" && String(v || "").trim().length > 0) {
+            findings.push({ path: nextPath, code: "sensitive_field_name" });
+            continue;
+        }
+        scanSecretFindings(v, nextPath, findings, ignorePaths, maxFindings);
+    }
+}
+function assertNoManifestSecretLiterals(manifest) {
+    const findings = [];
+    scanSecretFindings(manifest, "manifest", findings, ["manifest.provenance.manifestSignature", "manifest.provenance.manifestChecksum"], 6);
+    if (findings.length > 0) {
+        const summary = findings.map((f) => `${f.path}(${f.code})`).join(", ");
+        throw new Error(`secret_literal_detected: manifest contains sensitive literal candidates at ${summary}`);
+    }
+}
+function redactLifecycleValue(value, path) {
+    if (value === null || value === undefined)
+        return value;
+    if (typeof value === "string") {
+        if (SECRET_FIELD_RE.test(path))
+            return "[REDACTED]";
+        for (const sig of SECRET_VALUE_PATTERNS) {
+            if (sig.re.test(value))
+                return "[REDACTED]";
+        }
+        if (value.length > 4000)
+            return `${value.slice(0, 4000)}…`;
+        return value;
+    }
+    if (Array.isArray(value))
+        return value.map((v, i) => redactLifecycleValue(v, `${path}[${i}]`));
+    if (typeof value !== "object")
+        return value;
+    const out = {};
+    for (const [k, v] of Object.entries(value)) {
+        const nextPath = path ? `${path}.${k}` : k;
+        if (SECRET_FIELD_RE.test(k)) {
+            out[k] = "[REDACTED]";
+            continue;
+        }
+        out[k] = redactLifecycleValue(v, nextPath);
+    }
+    return out;
+}
+function resolveCapabilityPublishApprovalOrThrow(args) {
+    const { doc, nodeId, config, manifest, publishedByAgentId, params } = args;
+    const approvalRequired = manifest.riskClass === "high" && manifest.governance.requiresHumanApprovalForHighRisk === true;
+    if (!approvalRequired)
+        return undefined;
+    const artifactIdRaw = typeof params.approval_artifact_id === "string" ? validateString(params.approval_artifact_id, 300, "approval_artifact_id").trim() : "";
+    if (!artifactIdRaw) {
+        throw new Error("approval_required: high-risk capability publish requires approval_artifact_id (governance.requiresHumanApprovalForHighRisk=true)");
+    }
+    const approvedByAgentId = typeof params.approved_by_agent === "string" && params.approved_by_agent.trim().length > 0
+        ? validateString(params.approved_by_agent, 100, "approved_by_agent").trim()
+        : publishedByAgentId;
+    const note = typeof params.approval_note === "string" && params.approval_note.trim().length > 0
+        ? validateString(params.approval_note, VALIDATION_LIMITS.maxDescriptionLength, "approval_note").trim()
+        : undefined;
+    const adminAgentId = resolveRequiredAdminAgentId(doc, nodeId, config);
+    if (approvedByAgentId !== publishedByAgentId && approvedByAgentId !== adminAgentId) {
+        throw new Error(`approval_required: approved_by_agent must be publisher '${publishedByAgentId}' or admin '${adminAgentId}'`);
+    }
+    return {
+        required: true,
+        approvalArtifactId: artifactIdRaw,
+        approvedAt: Date.now(),
+        approvedByAgentId,
+        approvedByNodeId: nodeId,
+        note,
+    };
+}
 function canonicalManifestPayload(manifest) {
     const payload = JSON.parse(JSON.stringify(manifest));
     payload.provenance = {
@@ -954,7 +1068,7 @@ function emitLifecycleEvent(doc, fromNodeId, intent, content, metadata) {
         readBy_agents: [fromNodeId],
         metadata: {
             kind: intent,
-            ...(metadata || {}),
+            ...redactLifecycleValue(metadata || {}, "metadata"),
         },
     };
     messages.set(id, msg);
@@ -1278,6 +1392,7 @@ function executeCapabilityPublishPipeline(args) {
         contractSchemaRef: catalogRec.contractSchemaRef,
         delegationSkillRef: manifest.delegationSkillRef,
         executorSkillRef: manifest.executorSkillRef,
+        approval: catalogRec.approval,
         manifestKey,
         previousActiveVersion,
         skillDistributionTaskIds: distribution.taskIds,
@@ -3434,6 +3549,15 @@ export function registerAnsibleTools(api, config) {
                 contract_schema_ref: { type: "string", description: "Schema reference for request/result contract" },
                 default_eta_seconds: { type: "number", description: "Default expected completion time (seconds)" },
                 status: { type: "string", enum: ["active", "deprecated", "disabled"] },
+                approval_artifact_id: {
+                    type: "string",
+                    description: "Required when publishing riskClass=high with governance.requiresHumanApprovalForHighRisk=true.",
+                },
+                approved_by_agent: {
+                    type: "string",
+                    description: "Optional approver agent id (defaults to publishing actor). Must be actor or gateway admin.",
+                },
+                approval_note: { type: "string", description: "Optional high-risk approval note." },
                 from_agent: { type: "string", description: "Acting internal agent id on this gateway" },
                 agent_token: { type: "string", description: "Auth token for acting internal agent" },
             },
@@ -3446,6 +3570,7 @@ export function registerAnsibleTools(api, config) {
             let gate = "G0_AUTHZ";
             let capabilityIdHint = "";
             let signatureCheck;
+            let publishApproval;
             try {
                 gate = "G0_AUTHZ";
                 requireAuth(nodeId);
@@ -3470,6 +3595,15 @@ export function registerAnsibleTools(api, config) {
                         error: `manifest provenance publisher '${manifest.provenance.publishedByAgentId}' does not match acting agent '${publishedByAgentId}'`,
                     });
                 }
+                assertNoManifestSecretLiterals(manifest);
+                publishApproval = resolveCapabilityPublishApprovalOrThrow({
+                    doc,
+                    nodeId,
+                    config,
+                    manifest,
+                    publishedByAgentId,
+                    params: params,
+                });
                 gate = "G2_PROVENANCE";
                 signatureCheck = verifyManifestSignatureOrThrow(manifest, config);
                 const capabilityId = manifest.capabilityId;
@@ -3504,6 +3638,7 @@ export function registerAnsibleTools(api, config) {
                     defaultEtaSeconds,
                     publishedAt: now,
                     publishedByAgentId,
+                    approval: publishApproval,
                 };
                 const indexRec = {
                     capabilityId,
@@ -3552,6 +3687,7 @@ export function registerAnsibleTools(api, config) {
                     success: true,
                     manifest: activation.manifest,
                     provenanceVerification: signatureCheck,
+                    approval: publishApproval || null,
                     manifestKey: activation.manifestKey,
                     capability: activation.capability,
                     index: activation.index,
