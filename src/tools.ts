@@ -3195,6 +3195,136 @@ export function registerAnsibleTools(
     },
   });
 
+  // === ansible_drain_distribution_tasks ===
+  api.registerTool({
+    name: "ansible_drain_distribution_tasks",
+    label: "Ansible Drain Distribution Tasks",
+    description:
+      "Admin-only: fail active skill-distribution tasks in bulk (incident stop-lever).",
+    parameters: {
+      type: "object",
+      properties: {
+        dry_run: {
+          type: "boolean",
+          description: "If true, only report candidates.",
+        },
+        limit: {
+          type: "number",
+          description: "Maximum tasks to scan (default 5000).",
+        },
+        reason: {
+          type: "string",
+          description: "Optional reason code suffix (default: operator_drain).",
+        },
+        from_agent: {
+          type: "string",
+          description: "Acting admin agent id for authorization.",
+        },
+        agent_token: {
+          type: "string",
+          description: "Auth token for acting admin agent.",
+        },
+      },
+    },
+    async execute(_id, params) {
+      const doc = getDoc();
+      const nodeId = getNodeId();
+      if (!doc || !nodeId) return toolResult({ error: "Ansible not initialized" });
+      try {
+        requireAuth(nodeId);
+        requireAdmin(nodeId, doc);
+        const adminAgentId = resolveRequiredAdminAgentId(doc, nodeId, config);
+        const requestedFrom = typeof params.from_agent === "string" ? String(params.from_agent) : undefined;
+        const token =
+          typeof params.agent_token === "string" && params.agent_token.trim().length > 0
+            ? params.agent_token.trim()
+            : undefined;
+        const actorResult = resolveAdminActorOrError(doc, nodeId, token, requestedFrom);
+        if (actorResult.error) return toolResult({ error: actorResult.error });
+        requireAdminActor(doc, nodeId, adminAgentId, actorResult.actor);
+
+        const dryRun = params.dry_run === true;
+        const limit =
+          typeof params.limit === "number" && Number.isFinite(params.limit)
+            ? Math.max(1, Math.min(20_000, Math.floor(params.limit)))
+            : 5_000;
+        const reasonSuffix =
+          typeof params.reason === "string" && params.reason.trim().length > 0
+            ? validateString(params.reason, 120, "reason").trim().replace(/[^a-zA-Z0-9._:-]+/g, "_")
+            : "operator_drain";
+        const failureCode = `distribution_drain:${reasonSuffix}`;
+
+        const tasks = doc.getMap("tasks");
+        const candidates: Array<{ taskId: string; title: string; assignedTo: string; status: string }> = [];
+        let scanned = 0;
+        for (const [taskKey, raw] of tasks.entries()) {
+          if (scanned >= limit) break;
+          scanned += 1;
+          const task = raw as Task | undefined;
+          if (!task || task.intent !== "skill_distribution") continue;
+          if (task.status !== "pending" && task.status !== "claimed" && task.status !== "in_progress") continue;
+          candidates.push({
+            taskId: String(task.id || taskKey),
+            title: String(task.title || ""),
+            assignedTo: typeof task.assignedTo_agent === "string" ? task.assignedTo_agent : "",
+            status: String(task.status || "unknown"),
+          });
+        }
+
+        let updated = 0;
+        if (!dryRun) {
+          const now = Date.now();
+          for (const c of candidates) {
+            const key = resolveTaskKey(tasks as any, c.taskId);
+            if (typeof key !== "string") continue;
+            const task = tasks.get(key) as Task | undefined;
+            if (!task) continue;
+            if (task.status !== "pending" && task.status !== "claimed" && task.status !== "in_progress") continue;
+            tasks.set(key, {
+              ...task,
+              status: "failed",
+              updatedAt: now,
+              result: failureCode,
+              metadata: {
+                ...(((task.metadata as Record<string, unknown>) || {}) as Record<string, unknown>),
+                ansible: {
+                  ...((((task.metadata as Record<string, unknown>) || {}).ansible as Record<string, unknown>) || {}),
+                  failure: {
+                    failureClass: "failed_terminal",
+                    failureCode,
+                    terminal: true,
+                    retryable: false,
+                    failedAt: now,
+                    failedByAgentId: actorResult.actor,
+                    failedByNodeId: nodeId,
+                    errorSummary: `distribution drain applied (${reasonSuffix})`,
+                  },
+                },
+              },
+              updates: [
+                { at: now, by_agent: actorResult.actor, status: "failed", note: failureCode },
+                ...((task.updates as any) || []),
+              ].slice(0, 50),
+            });
+            updated += 1;
+          }
+        }
+
+        return toolResult({
+          success: true,
+          dryRun,
+          scanned,
+          candidates: candidates.length,
+          updated,
+          failureCode,
+          items: candidates,
+        });
+      } catch (err: any) {
+        return toolResult({ error: err.message });
+      }
+    },
+  });
+
   // === ansible_set_coordination_preference ===
   api.registerTool({
     name: "ansible_set_coordination_preference",

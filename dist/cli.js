@@ -1322,6 +1322,48 @@ export function registerAnsibleCli(api, config) {
             }
         });
         admin
+            .command("drain-distribution")
+            .description("Emergency stop-lever: fail active skill-distribution tasks in bulk")
+            .option("--dry-run", "Preview candidates without mutating tasks")
+            .option("--limit <n>", "Max tasks to scan (default 5000)")
+            .option("--reason <code>", "Reason suffix for failure_code (default operator_drain)")
+            .option("--as <agentId>", "Acting current admin agent id")
+            .option("--token <token>", "Auth token for acting admin (or set OPENCLAW_ANSIBLE_TOKEN)")
+            .action(async (...args) => {
+            const opts = (args[0] || {});
+            const toolArgs = {};
+            if (opts.dryRun)
+                toolArgs.dry_run = true;
+            if (opts.limit && Number.isFinite(Number(opts.limit)))
+                toolArgs.limit = Math.floor(Number(opts.limit));
+            if (opts.reason)
+                toolArgs.reason = opts.reason;
+            if (opts.as)
+                toolArgs.from_agent = opts.as;
+            const token = resolveAgentToken(opts.token);
+            if (token)
+                toolArgs.agent_token = token;
+            let out;
+            try {
+                out = await callGateway("ansible_drain_distribution_tasks", toolArgs);
+            }
+            catch (err) {
+                console.log(`✗ ${err.message}`);
+                return;
+            }
+            if (out.error) {
+                console.log(`✗ ${out.error}`);
+                return;
+            }
+            console.log(`✓ Distribution drain ${out.dryRun ? "dry-run" : "applied"}: scanned=${out.scanned || 0} candidates=${out.candidates || 0} updated=${out.updated || 0}`);
+            if (out.failureCode)
+                console.log(`  failureCode=${out.failureCode}`);
+            const items = Array.isArray(out.items) ? out.items : [];
+            for (const item of items.slice(0, 20)) {
+                console.log(`  - ${String(item.taskId || "").slice(0, 8)} status=${item.status || "?"} assigned=${item.assignedTo || "(none)"}`);
+            }
+        });
+        admin
             .command("backpressure")
             .description("Set task backpressure limits (max concurrent claims, queue depth, retry budget)")
             .option("--max-concurrent <n>", "Max claimed/in_progress tasks per agent")

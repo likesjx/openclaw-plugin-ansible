@@ -17,6 +17,8 @@ const RETRY_BASE_MS = 2_000;
 const RETRY_MAX_MS = 5 * 60_000;
 const RETRY_JITTER = 0.2;
 const MAX_DELIVERY_ATTEMPTS = 15;
+const MAX_ATTEMPTS_ERROR = `dispatch:max_delivery_attempts_exceeded:${MAX_DELIVERY_ATTEMPTS}`;
+const AUTO_DISPATCH_BLOCKED_TASK_INTENTS = new Set(["skill_distribution"]);
 let requestReconcileHook: ((reason: string) => void) | null = null;
 
 function safeErr(err: unknown): string {
@@ -191,9 +193,12 @@ export function startMessageDispatcher(api: OpenClawPluginApi, config: AnsibleCo
         const key = `msg:${id}:${targetAgent}`;
         const msgAttempts = msg.delivery?.[targetAgent]?.attempts ?? 0;
         if (msgAttempts >= MAX_DELIVERY_ATTEMPTS) {
-          api.logger?.warn(
-            `Ansible dispatcher: message ${id.slice(0, 8)} from ${msg.from_agent} to ${targetAgent} exceeded ${MAX_DELIVERY_ATTEMPTS} delivery attempts — skipping.`
-          );
+          const marked = markMessageDispatchDeadLetter(msgs, id as string, targetAgent);
+          if (marked) {
+            api.logger?.warn(
+              `Ansible dispatcher: message ${id.slice(0, 8)} from ${msg.from_agent} to ${targetAgent} exceeded ${MAX_DELIVERY_ATTEMPTS} delivery attempts — dead-lettered (${MAX_ATTEMPTS_ERROR}).`
+            );
+          }
           continue;
         }
         if (scheduled.has(key)) continue;
@@ -212,6 +217,7 @@ export function startMessageDispatcher(api: OpenClawPluginApi, config: AnsibleCo
     for (const [id, value] of tasks.entries()) {
       const task = value as Task;
       if (!task || typeof task !== "object") continue;
+      if (task.intent && AUTO_DISPATCH_BLOCKED_TASK_INTENTS.has(task.intent)) continue;
       const assignees = getTaskAssignees(task);
       if (assignees.length === 0) continue; // only explicit assignments
       if (task.status !== "pending" && task.status !== "claimed" && task.status !== "in_progress") continue;
@@ -222,9 +228,12 @@ export function startMessageDispatcher(api: OpenClawPluginApi, config: AnsibleCo
         if (isDeliveredTask(task, targetAgent)) continue;
         const taskAttempts = task.delivery?.[targetAgent]?.attempts ?? 0;
         if (taskAttempts >= MAX_DELIVERY_ATTEMPTS) {
-          api.logger?.warn(
-            `Ansible dispatcher: task ${id.slice(0, 8)} "${task.title}" for ${targetAgent} exceeded ${MAX_DELIVERY_ATTEMPTS} delivery attempts — skipping.`
-          );
+          const marked = markTaskDispatchDeadLetter(tasks, id as string, targetAgent);
+          if (marked) {
+            api.logger?.warn(
+              `Ansible dispatcher: task ${id.slice(0, 8)} "${task.title}" for ${targetAgent} exceeded ${MAX_DELIVERY_ATTEMPTS} delivery attempts — marked failed_terminal (${MAX_ATTEMPTS_ERROR}).`
+            );
+          }
           continue;
         }
         if (task.skillRequired) {
@@ -441,6 +450,89 @@ function markDeliveredTask(tasks: any, taskId: string, myId: AgentId, attempts: 
     ...current,
     delivery: { ...(current.delivery || {}), [myId]: updated },
   } satisfies Task);
+}
+
+function markMessageDispatchDeadLetter(messages: any, messageId: string, myId: AgentId): boolean {
+  const current = messages.get(messageId) as Message | undefined;
+  if (!current) return false;
+
+  const prev = current.delivery?.[myId];
+  if (prev?.lastError === MAX_ATTEMPTS_ERROR) return false;
+
+  const attempts = Math.max(MAX_DELIVERY_ATTEMPTS, prev?.attempts ?? 0);
+  const now = Date.now();
+  const updated: DeliveryRecord = {
+    state: "attempted",
+    at: now,
+    by: myId,
+    attempts,
+    lastError: MAX_ATTEMPTS_ERROR,
+  };
+
+  messages.set(messageId, {
+    ...current,
+    updatedAt: now,
+    delivery: { ...(current.delivery || {}), [myId]: updated },
+  } satisfies Message);
+
+  return true;
+}
+
+function markTaskDispatchDeadLetter(tasks: any, taskId: string, myId: AgentId): boolean {
+  const current = tasks.get(taskId) as Task | undefined;
+  if (!current) return false;
+  if (current.status === "failed" || current.status === "completed") return false;
+
+  const existingFailure = ((((current.metadata as Record<string, unknown> | undefined)?.ansible as
+    | Record<string, unknown>
+    | undefined)?.failure || {}) as Record<string, unknown>);
+  if (existingFailure.failureCode === MAX_ATTEMPTS_ERROR) return false;
+
+  const now = Date.now();
+  const attempts = Math.max(MAX_DELIVERY_ATTEMPTS, current.delivery?.[myId]?.attempts ?? 0);
+  const updatedDelivery: DeliveryRecord = {
+    state: "attempted",
+    at: now,
+    by: myId,
+    attempts,
+    lastError: MAX_ATTEMPTS_ERROR,
+  };
+
+  tasks.set(taskId, {
+    ...current,
+    status: "failed",
+    updatedAt: now,
+    result: current.result || MAX_ATTEMPTS_ERROR,
+    metadata: {
+      ...(((current.metadata as Record<string, unknown>) || {}) as Record<string, unknown>),
+      ansible: {
+        ...((((current.metadata as Record<string, unknown>) || {}).ansible as Record<string, unknown>) || {}),
+        failure: {
+          ...existingFailure,
+          failureClass: "failed_terminal",
+          failureCode: MAX_ATTEMPTS_ERROR,
+          terminal: true,
+          retryable: false,
+          failedAt: now,
+          failedByAgentId: myId,
+          failedByNodeId: myId,
+          errorSummary: `dispatcher delivery attempts exceeded (${MAX_DELIVERY_ATTEMPTS})`,
+        },
+      },
+    },
+    updates: [
+      {
+        at: now,
+        by_agent: myId,
+        status: "failed",
+        note: MAX_ATTEMPTS_ERROR,
+      },
+      ...((current.updates as any) || []),
+    ].slice(0, 50),
+    delivery: { ...(current.delivery || {}), [myId]: updatedDelivery },
+  } satisfies Task);
+
+  return true;
 }
 
 async function dispatchAnsibleMessage(
