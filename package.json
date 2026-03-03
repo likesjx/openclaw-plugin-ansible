@@ -31,7 +31,8 @@
     "test:integration:capability-lifecycle": "node ./scripts/integration-capability-lifecycle-smoke.mjs",
     "test:integration:mvp1-industrial": "node ./scripts/integration-mvp1-industrial-suite.mjs",
     "test:integration:mvp2-lifecycle-core": "node ./scripts/integration-mvp2-lifecycle-core.mjs",
-    "test:integration:mvp2-rollback-drill": "node ./scripts/integration-mvp2-rollback-drill.mjs"
+    "test:integration:mvp2-rollback-drill": "node ./scripts/integration-mvp2-rollback-drill.mjs",
+    "test:release:gate": "node ./scripts/release-gate.mjs"
   },
   "keywords": [
     "openclaw",
@@ -41,7 +42,15 @@
     "yjs",
     "crdt"
   ],
-  "author": "",
+  "author": "Jared Likes",
+  "homepage": "https://github.com/likesjx/openclaw-plugin-ansible",
+  "bugs": {
+    "url": "https://github.com/likesjx/openclaw-plugin-ansible/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/likesjx/openclaw-plugin-ansible.git"
+  },
   "license": "MIT",
   "dependencies": {
     "yjs": "^13.6.0",

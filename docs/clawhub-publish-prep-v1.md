@@ -1,7 +1,7 @@
 # Clawhub Publish Prep v1
 
-Status: Draft checklist  
-Last updated: 2026-02-26
+Status: In progress checklist  
+Last updated: 2026-03-03
 
 ## Goal
 
@@ -79,3 +79,11 @@ For each release, include:
 3. Migration steps
 4. Security notes
 5. Rollback guidance
+
+## Execution Notes (2026-03-03 kickoff)
+
+1. MVP-3 kickoff WI:
+   1. `docs/work-items/WI-20260303-mvp3-governance-clawhub-kickoff.md`
+2. Automated baseline gate added:
+   1. `npm run test:release:gate`
+   2. `scripts/release-gate.mjs`

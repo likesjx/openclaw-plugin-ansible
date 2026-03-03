@@ -1,0 +1,40 @@
+# WI-20260303 MVP-3 Governance + Clawhub Kickoff
+
+Status: in_progress  
+Owner: Codex + Jared  
+Created: 2026-03-03
+
+## Objective
+
+Begin MVP-3 execution on `main` and make Clawhub readiness measurable with repeatable quality gates.
+
+## Scope (Slice A)
+
+1. Move MVP-3 from `draft` to active execution tracking.
+2. Add a release gate script for metadata/docs/secret checks and package artifact validation.
+3. Normalize package metadata required for publication.
+4. Define the immediate next slices for security/provenance hardening.
+
+## Delivered in this slice
+
+1. `scripts/release-gate.mjs`:
+   1. package + plugin metadata checks
+   2. required docs bundle presence checks
+   3. secret-literal scan on tracked sources/docs/scripts
+   4. `npm pack --dry-run --json` artifact checks
+2. `npm run test:release:gate` script in `package.json`.
+3. package metadata set: author/repository/homepage/bugs.
+4. MVP-3 status and checklists updated to reflect kickoff.
+
+## Remaining MVP-3 work
+
+1. Signature verification trust path + key store integration.
+2. Signed provenance checks in CI and release process.
+3. Publish-path redaction/secret policy enforcement coverage.
+4. Clawhub docs bundle final curation and submit runbook.
+
+## Exit Criteria for this WI
+
+1. `npm run test:release:gate` passes.
+2. MVP-3 docs/checklists point to this WI and show active state.
+3. Next implementation slices are clearly identified.

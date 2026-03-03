@@ -1,7 +1,7 @@
 # Ansible Completion Checklist v1 (MVP Deployment Cycles)
 
 Status: Working checklist  
-Last updated: 2026-03-02
+Last updated: 2026-03-03
 
 ## Purpose
 
@@ -142,3 +142,4 @@ Notes:
 - 2026-03-02: MVP-2 kickoff opened with compatibility-first proposal and WI: `docs/mvp-proposals/mvp-2-skill-lifecycle-automation.md`, `docs/work-items/WI-20260302-mvp2-lifecycle-automation-kickoff.md`.
 - 2026-03-02: MVP-2 Slice 1 started: publish lifecycle `G4/G5` idempotency implemented with evidence query tool/CLI (`ansible_capability_lifecycle_evidence`, `openclaw ansible capability evidence`) and integration harness `scripts/integration-mvp2-lifecycle-core.mjs`; first artifact `docs/evidence/mvp2/20260302-153035-lifecycle-core.json`.
 - 2026-03-02: MVP-2 Slice 2 started: deterministic unpublish unwind evidence added (`unwindEvidence` in `ansible_capability_unpublish`) and rollback parity harness `scripts/integration-mvp2-rollback-drill.mjs`; first artifact `docs/evidence/mvp2/20260302-160714-rollback-drill.json`.
+- 2026-03-03: MVP-3 kickoff started on `main` with WI `docs/work-items/WI-20260303-mvp3-governance-clawhub-kickoff.md`; added baseline publication gate `npm run test:release:gate` (`scripts/release-gate.mjs`) and normalized package publication metadata (author/repository/homepage/bugs).

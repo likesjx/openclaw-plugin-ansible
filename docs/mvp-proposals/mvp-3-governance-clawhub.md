@@ -1,7 +1,7 @@
 # MVP-3 Governance + Clawhub Proposal & Plan
 
-Status: draft  
-Last updated: 2026-03-02
+Status: in_progress  
+Last updated: 2026-03-03
 
 ## Proposal Summary
 
@@ -22,5 +22,9 @@ Success Gates:
 
 Disposition (current):
 
-1. Not started as an execution phase.
-2. Proposal remains open pending MVP-2 closure and dependency burn-down.
+1. Execution started on `main` via kickoff WI:
+   1. `docs/work-items/WI-20260303-mvp3-governance-clawhub-kickoff.md`
+2. Slice A focus:
+   1. publication metadata normalization
+   2. release gate automation (`npm run test:release:gate`)
+   3. checklist hardening for Clawhub submit readiness
