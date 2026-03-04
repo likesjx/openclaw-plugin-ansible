@@ -6,6 +6,15 @@ Ansible enables a single agent identity (e.g., "Jane") to operate seamlessly acr
 
 This repo also documents a pragmatic way to use Ansible as a reliable inter-agent communication substrate today: treat the shared Yjs document as the durable inbox, and treat auto-dispatch as an optimization (not the only delivery mechanism).
 
+## Four Pillars
+
+| Pillar | What It Does |
+|---|---|
+| Ring of Trust | Invite/join admission, auth-gate tickets, token lifecycle, and optional signed capability manifest verification |
+| Mesh Sync | Yjs CRDT replicated state over Tailscale for durable messages, tasks, and context |
+| Capability Routing | Capability contracts with delegation+execution skill pair semantics and governance gates |
+| Lifecycle Ops | Lock sweep, retention, coordinator sweeps, receipts, backpressure, and escalation controls |
+
 ## Full Functional Surface
 
 1. Invite/join onboarding with token exchange and optional auth-gate websocket ticket handshake before Yjs attach.
@@ -552,6 +561,10 @@ If it fails with a dirty tree, resolve/stash local changes first (do not force p
 ## Architecture
 
 See [docs/architecture.md](docs/architecture.md) for detailed technical architecture.
+
+## Naming and Trademark Notice
+
+This project's "Ansible" name references the fictional ansible communication concept from science fiction and is unrelated to Red Hat Ansible or Ansible Automation Platform.
 
 ## License
 
