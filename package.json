@@ -1,6 +1,6 @@
 {
   "name": "@jaredlikes/openclaw-plugin-ansible",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Secure mesh coordination plugin for OpenClaw: invite/join handshake, resilient task+message routing, capability lifecycle, and delegation/execution skill-pair contracts.",
   "type": "module",
   "main": "dist/index.js",
