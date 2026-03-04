@@ -1,8 +1,8 @@
 {
   "id": "ansible",
   "name": "Ansible",
-  "description": "Distributed coordination layer - one agent, multiple bodies",
-  "version": "0.1.0",
+  "description": "Secure mesh control plane: invite/join trust handshake, durable routing, capability contracts, and governed delegation.",
+  "version": "0.1.2",
   "configSchema": {
     "type": "object",
     "properties": {
