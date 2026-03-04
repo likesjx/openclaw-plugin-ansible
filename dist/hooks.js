@@ -105,7 +105,7 @@ function buildContextInjection(state, nodeId, agentId, config) {
         }
     }
     // === Pending Tasks for Me ===
-    const myTasks = getMyPendingTasks(state, agentId, config.capabilities || []);
+    const myTasks = getMyPendingTasks(state, [agentId, nodeId], config.capabilities || []);
     if (myTasks.length > 0) {
         const taskLines = myTasks
             .slice(0, CONTEXT_LIMITS.pendingTasks)
@@ -128,17 +128,25 @@ function buildContextInjection(state, nodeId, agentId, config) {
     }
     return `<ansible-context>\n${sections.join("\n\n")}\n</ansible-context>`;
 }
-function getMyPendingTasks(state, myId, myCapabilities) {
+function getMyPendingTasks(state, myIds, myCapabilities) {
     if (!state)
         return [];
-    const myContext = state.context?.get(myId);
+    const normalizedIds = Array.from(new Set(myIds
+        .map((v) => String(v || "").trim())
+        .filter((v) => v.length > 0)));
+    if (normalizedIds.length === 0)
+        return [];
+    const myId = normalizedIds[0];
+    const myIdSet = new Set(normalizedIds);
+    const myContext = state.context?.get(myId) || state.context?.get(normalizedIds[1] || "");
     const tasks = [];
     for (const task of state.tasks.values()) {
         // Include:
         // - pending tasks that match assignment/capabilities
         // - claimed/in_progress tasks that I claimed
         const isMineInFlight = (task.status === "claimed" || task.status === "in_progress") &&
-            task.claimedBy_agent === myId;
+            typeof task.claimedBy_agent === "string" &&
+            myIdSet.has(task.claimedBy_agent);
         const isPending = task.status === "pending";
         if (!isMineInFlight && !isPending)
             continue;
@@ -151,7 +159,7 @@ function getMyPendingTasks(state, myId, myCapabilities) {
                 for (const a of task.assignedTo_agents)
                     assignees.add(a);
             }
-            if (assignees.size > 0 && !assignees.has(myId))
+            if (assignees.size > 0 && !Array.from(assignees).some((id) => myIdSet.has(id)))
                 continue;
             // Check capability requirements
             if (task.requires && Array.isArray(task.requires) && task.requires.length) {

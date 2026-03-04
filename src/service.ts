@@ -218,6 +218,7 @@ export function createAnsibleService(
       // they go stale when the config is updated (e.g. adding 'admin') without
       // a fresh join. This keeps the CRDT current with the config on every startup.
       syncNodeCapabilities(config, nodeId!, doc);
+      syncPublishedExecutorSkillsIntoContext(nodeId!, doc, ctx.logger);
 
       // Start pulse heartbeat
       startPulseHeartbeat(ctx);
@@ -481,6 +482,9 @@ function connectToPeer(url: string, ctx: ServiceContext, config?: AnsibleConfig)
 
     provider.on("sync", (synced: boolean) => {
       ctx.logger.info(`Sync event for ${withNodeId}: synced=${synced}`);
+      if (synced && doc && nodeId) {
+        syncPublishedExecutorSkillsIntoContext(nodeId, doc, ctx.logger);
+      }
       fireSync(synced, withNodeId);
       if (synced) {
         ctx.logger.info(`Successfully synced with ${withNodeId}`);
@@ -859,6 +863,66 @@ function registerInternalAgents(config: AnsibleConfig, nodeId: string, yjsDoc: Y
       registeredBy: nodeId,
     });
   }
+}
+
+/**
+ * Rehydrate local executor skills from already-published capability contracts.
+ * This keeps routing/dispatch skill checks aligned even across restarts.
+ */
+function syncPublishedExecutorSkillsIntoContext(
+  nodeId: string,
+  yjsDoc: Y.Doc,
+  logger?: { debug?: (msg: string) => void },
+): void {
+  const catalog = yjsDoc.getMap("capabilities.catalog");
+  const agents = yjsDoc.getMap("agents");
+
+  const localAgentIds = new Set<string>([nodeId]);
+  for (const [agentId, raw] of agents.entries()) {
+    const rec = raw as { type?: string; gateway?: string | null } | undefined;
+    if (!rec || rec.type !== "internal") continue;
+    if (typeof rec.gateway === "string" && rec.gateway === nodeId) {
+      localAgentIds.add(String(agentId));
+    }
+  }
+
+  const discovered = new Set<string>();
+  for (const raw of catalog.values()) {
+    const rec = raw as {
+      status?: string;
+      ownerNodeId?: string;
+      ownerAgentId?: string;
+      executorSkillRef?: { name?: string };
+    } | undefined;
+    if (!rec || rec.status !== "active") continue;
+    const ownerNodeId = typeof rec.ownerNodeId === "string" ? rec.ownerNodeId.trim() : "";
+    const ownerAgentId = typeof rec.ownerAgentId === "string" ? rec.ownerAgentId.trim() : "";
+    const isLocalOwner = ownerNodeId === nodeId || (ownerAgentId && localAgentIds.has(ownerAgentId));
+    if (!isLocalOwner) continue;
+    const skill = typeof rec.executorSkillRef?.name === "string" ? rec.executorSkillRef.name.trim() : "";
+    if (!skill) continue;
+    discovered.add(skill);
+  }
+
+  if (discovered.size === 0) return;
+
+  const contextMap = yjsDoc.getMap("context");
+  const existing = (contextMap.get(nodeId) as NodeContext | undefined) || {
+    currentFocus: "",
+    activeThreads: [],
+    recentDecisions: [],
+  };
+  const mergedSkills = Array.from(new Set([...(existing.skills || []), ...Array.from(discovered)])).sort((a, b) =>
+    a.localeCompare(b),
+  );
+  const prevSkills = Array.isArray(existing.skills) ? existing.skills : [];
+  if (prevSkills.length === mergedSkills.length && prevSkills.every((v, i) => v === mergedSkills[i])) return;
+
+  contextMap.set(nodeId, {
+    ...existing,
+    skills: mergedSkills,
+  } satisfies NodeContext);
+  logger?.debug?.(`Ansible: rehydrated ${discovered.size} published executor skill(s) into context for ${nodeId}`);
 }
 
 function setupAutoPersist(ctx: ServiceContext) {

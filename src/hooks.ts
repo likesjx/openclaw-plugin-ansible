@@ -126,7 +126,7 @@ function buildContextInjection(
   }
 
   // === Pending Tasks for Me ===
-  const myTasks = getMyPendingTasks(state, agentId, config.capabilities || []);
+  const myTasks = getMyPendingTasks(state, [agentId, nodeId], config.capabilities || []);
   if (myTasks.length > 0) {
     const taskLines = myTasks
       .slice(0, CONTEXT_LIMITS.pendingTasks)
@@ -157,12 +157,22 @@ function buildContextInjection(
 
 function getMyPendingTasks(
   state: ReturnType<typeof getAnsibleState>,
-  myId: string,
+  myIds: string[],
   myCapabilities: string[]
 ): Task[] {
   if (!state) return [];
 
-  const myContext = state.context?.get(myId);
+  const normalizedIds = Array.from(
+    new Set(
+      myIds
+        .map((v) => String(v || "").trim())
+        .filter((v) => v.length > 0)
+    )
+  );
+  if (normalizedIds.length === 0) return [];
+  const myId = normalizedIds[0];
+  const myIdSet = new Set(normalizedIds);
+  const myContext = state.context?.get(myId) || state.context?.get(normalizedIds[1] || "");
   const tasks: Task[] = [];
 
   for (const task of state.tasks.values()) {
@@ -171,7 +181,8 @@ function getMyPendingTasks(
     // - claimed/in_progress tasks that I claimed
     const isMineInFlight =
       (task.status === "claimed" || task.status === "in_progress") &&
-      task.claimedBy_agent === myId;
+      typeof task.claimedBy_agent === "string" &&
+      myIdSet.has(task.claimedBy_agent);
     const isPending = task.status === "pending";
     if (!isMineInFlight && !isPending) continue;
 
@@ -182,7 +193,7 @@ function getMyPendingTasks(
       if (Array.isArray(task.assignedTo_agents)) {
         for (const a of task.assignedTo_agents) assignees.add(a);
       }
-      if (assignees.size > 0 && !assignees.has(myId)) continue;
+      if (assignees.size > 0 && !Array.from(assignees).some((id) => myIdSet.has(id))) continue;
 
       // Check capability requirements
       if (task.requires && Array.isArray(task.requires) && task.requires.length) {

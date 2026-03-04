@@ -90,9 +90,20 @@ function gatewayMatchesNode(recordGateway: unknown, nodeId: string): boolean {
   return canonicalGatewayId(recordGateway) === canonicalGatewayId(nodeId);
 }
 
-function getLocalInternalAgents(doc: ReturnType<typeof getDoc>, nodeId: string): string[] {
+function getLocalInternalAgents(
+  doc: ReturnType<typeof getDoc>,
+  nodeId: string,
+  configuredAgentIds?: string[],
+): string[] {
   if (!doc) return [nodeId];
   const out = new Set<string>([nodeId]);
+  if (Array.isArray(configuredAgentIds)) {
+    for (const id of configuredAgentIds) {
+      if (typeof id !== "string") continue;
+      const trimmed = id.trim();
+      if (trimmed.length > 0) out.add(trimmed);
+    }
+  }
   const agents = doc.getMap("agents");
   for (const [agentId, raw] of agents.entries()) {
     const record = raw as { type?: string; gateway?: string | null } | undefined;
@@ -100,6 +111,33 @@ function getLocalInternalAgents(doc: ReturnType<typeof getDoc>, nodeId: string):
     if (gatewayMatchesNode(record.gateway, nodeId)) out.add(String(agentId));
   }
   return Array.from(out).sort((a, b) => a.localeCompare(b));
+}
+
+function cleanSkillList(input: unknown): string[] {
+  if (!Array.isArray(input)) return [];
+  const out = new Set<string>();
+  for (const raw of input) {
+    if (typeof raw !== "string") continue;
+    const trimmed = raw.trim();
+    if (trimmed.length > 0) out.add(trimmed);
+  }
+  return Array.from(out);
+}
+
+function getTargetSkills(
+  doc: ReturnType<typeof getDoc>,
+  contextMap: Map<string, any> | undefined,
+  targetAgent: string,
+): string[] {
+  if (!doc) return [];
+  const directSkills = cleanSkillList(contextMap?.get(targetAgent)?.skills);
+  if (directSkills.length > 0) return directSkills;
+
+  const agents = doc.getMap("agents");
+  const rec = agents.get(targetAgent) as { gateway?: string | null } | undefined;
+  const gateway = typeof rec?.gateway === "string" ? rec.gateway.trim() : "";
+  if (!gateway) return [];
+  return cleanSkillList(contextMap?.get(gateway)?.skills);
 }
 
 function isDeliveredMessage(msg: Message, myId: string): boolean {
@@ -181,7 +219,7 @@ export function startMessageDispatcher(api: OpenClawPluginApi, config: AnsibleCo
     const myId = getNodeId();
     if (!doc || !myId) return;
 
-    const localAgents = getLocalInternalAgents(doc, myId);
+    const localAgents = getLocalInternalAgents(doc, myId, config.injectContextAgents);
     const contextMap = getAnsibleState()?.context;
 
     const msgs = doc.getMap("messages");
@@ -242,7 +280,7 @@ export function startMessageDispatcher(api: OpenClawPluginApi, config: AnsibleCo
           continue;
         }
         if (task.skillRequired) {
-          const targetSkills: string[] = contextMap?.get(targetAgent)?.skills ?? [];
+          const targetSkills = getTargetSkills(doc, contextMap as unknown as Map<string, any> | undefined, targetAgent);
           if (!targetSkills.includes(task.skillRequired)) {
             api.logger?.debug(
               `Ansible dispatcher: skipping task ${id.slice(0, 8)} for ${targetAgent} — missing skill '${task.skillRequired}'`
@@ -657,7 +695,8 @@ async function dispatchAnsibleTask(
 ): Promise<void> {
   const senderName = task.createdBy_agent;
   const rawBody = [
-    `[Ansible Task] ${task.title}`,
+    `[TASK INBOUND] New Task Assigned: ${taskId.slice(0, 8)}`,
+    `title: ${task.title}`,
     `taskId: ${taskId}`,
     `status: ${task.status}`,
     `assignedTo: ${task.assignedTo_agent || ""}`,

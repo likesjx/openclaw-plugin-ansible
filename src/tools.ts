@@ -4562,23 +4562,7 @@ export function registerAnsibleTools(
         }
         const catalogMap = getCapabilityCatalogMap(doc);
         const manifestMap = getCapabilityManifestMap(doc);
-        const capabilityContracts = resolvedTargets.capabilityMatches
-          .map((capabilityId) => {
-            const rec = catalogMap?.get(capabilityId) as CapabilityCatalogRecord | undefined;
-            if (!rec) return null;
-            const manifestKey = `${capabilityId}:${rec.version}`;
-            const manifest = manifestMap?.get(manifestKey) as SkillPairManifestV1 | undefined;
-            return {
-              capabilityId: rec.capabilityId,
-              version: rec.version,
-              contractSchemaRef: rec.contractSchemaRef,
-              defaultEtaSeconds: rec.defaultEtaSeconds,
-              compatibilityMode: manifest?.compatibilityMode || "strict",
-              riskClass: manifest?.riskClass || "medium",
-              requiresHumanApprovalForHighRisk: manifest?.governance?.requiresHumanApprovalForHighRisk === true,
-            };
-          })
-          .filter(Boolean) as Array<{
+        const capabilityContracts: Array<{
           capabilityId: string;
           version: string;
           contractSchemaRef: string;
@@ -4586,7 +4570,61 @@ export function registerAnsibleTools(
           compatibilityMode: "strict" | "backward" | "legacy-window";
           riskClass: "low" | "medium" | "high";
           requiresHumanApprovalForHighRisk: boolean;
-        }>;
+          delegationSkillRef: CapabilitySkillRef;
+          executorSkillRef: CapabilitySkillRef;
+        }> = [];
+        for (const capabilityId of resolvedTargets.capabilityMatches) {
+          const rec = catalogMap?.get(capabilityId) as CapabilityCatalogRecord | undefined;
+          if (!rec) {
+            return toolResult({
+              error: `Capability '${capabilityId}' is unresolved. Publish/repair the capability skill pair before delegating this task.`,
+            });
+          }
+          const manifestKey = `${capabilityId}:${rec.version}`;
+          const manifest = manifestMap?.get(manifestKey) as SkillPairManifestV1 | undefined;
+          const delegationSkillRef = manifest?.delegationSkillRef ?? rec.delegationSkillRef;
+          const executorSkillRef = manifest?.executorSkillRef ?? rec.executorSkillRef;
+          if (!delegationSkillRef?.name || !delegationSkillRef?.version || !executorSkillRef?.name || !executorSkillRef?.version) {
+            return toolResult({
+              error: `Capability '${capabilityId}' is missing delegation/executor skill refs. Publish a valid skill pair before task delegation.`,
+            });
+          }
+          capabilityContracts.push({
+            capabilityId: rec.capabilityId,
+            version: rec.version,
+            contractSchemaRef: rec.contractSchemaRef,
+            defaultEtaSeconds: rec.defaultEtaSeconds,
+            compatibilityMode: manifest?.compatibilityMode || "strict",
+            riskClass: manifest?.riskClass || "medium",
+            requiresHumanApprovalForHighRisk: manifest?.governance?.requiresHumanApprovalForHighRisk === true,
+            delegationSkillRef: {
+              name: delegationSkillRef.name,
+              version: delegationSkillRef.version,
+              path: delegationSkillRef.path,
+            },
+            executorSkillRef: {
+              name: executorSkillRef.name,
+              version: executorSkillRef.version,
+              path: executorSkillRef.path,
+            },
+          });
+        }
+        const routedExecutorSkills = Array.from(
+          new Set(
+            capabilityContracts
+              .map((c) => String(c.executorSkillRef?.name || "").trim())
+              .filter((name) => name.length > 0),
+          ),
+        );
+        const routedDelegationSkills = Array.from(
+          new Set(
+            capabilityContracts
+              .map((c) => String(c.delegationSkillRef?.name || "").trim())
+              .filter((name) => name.length > 0),
+          ),
+        );
+        const routedSkillRequired = routedExecutorSkills.length === 1 ? routedExecutorSkills[0] : undefined;
+
         const defaultEtaSeconds = capabilityContracts.length > 0
           ? Math.min(...capabilityContracts.map((c) => c.defaultEtaSeconds))
           : 0;
@@ -4609,6 +4647,11 @@ export function registerAnsibleTools(
             },
             contract: {
               capabilities: capabilityContracts,
+            },
+            routing: {
+              executorSkills: routedExecutorSkills,
+              delegationSkills: routedDelegationSkills,
+              skillRequired: routedSkillRequired,
             },
             backpressure: {
               maxConcurrent: policy.maxConcurrent,
@@ -4639,7 +4682,9 @@ export function registerAnsibleTools(
           assignedTo_agents: assignees.length > 1 ? assignees : undefined,
           requires: requires.length > 0 ? requires : undefined,
           intent: params.intent as string | undefined,
-          skillRequired: params.skillRequired as string | undefined,
+          // Capability routing supplies executor skill requirements.
+          // If routing has no skill signal, leave unset (no skill gate).
+          skillRequired: routedSkillRequired,
           metadata: mergedMetadata,
         };
 
