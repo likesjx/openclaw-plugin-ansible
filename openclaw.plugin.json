@@ -2,7 +2,7 @@
   "id": "ansible",
   "name": "Ansible",
   "description": "Secure mesh control plane: invite/join auth handshake, durable messaging/tasks, capability routing, delegation+executor skill contracts, heartbeat recovery, and operator governance.",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "configSchema": {
     "type": "object",
     "properties": {
