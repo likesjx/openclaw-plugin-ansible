@@ -126,7 +126,8 @@ function buildContextInjection(
   }
 
   // === Pending Tasks for Me ===
-  const myTasks = getMyPendingTasks(state, [agentId, nodeId], config.capabilities || []);
+  const myIds = getLocalAgentIds(state, nodeId, agentId, config.injectContextAgents);
+  const myTasks = getMyPendingTasks(state, myIds, config.capabilities || []);
   if (myTasks.length > 0) {
     const taskLines = myTasks
       .slice(0, CONTEXT_LIMITS.pendingTasks)
@@ -155,6 +156,50 @@ function buildContextInjection(
   return `<ansible-context>\n${sections.join("\n\n")}\n</ansible-context>`;
 }
 
+function canonicalGatewayId(input: string | null | undefined): string {
+  const raw = String(input || "").trim().toLowerCase();
+  if (!raw) return "";
+  const dashed = raw.replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  if (!dashed) return "";
+  return dashed.endsWith("-host") ? dashed.slice(0, -5) : dashed;
+}
+
+function gatewayMatchesNode(recordGateway: unknown, nodeId: string): boolean {
+  if (typeof recordGateway !== "string") return false;
+  if (recordGateway === nodeId) return true;
+  return canonicalGatewayId(recordGateway) === canonicalGatewayId(nodeId);
+}
+
+function getLocalAgentIds(
+  state: ReturnType<typeof getAnsibleState>,
+  nodeId: string,
+  agentId: string,
+  configuredAgentIds?: string[],
+): string[] {
+  const out = new Set<string>([agentId, nodeId]);
+
+  if (Array.isArray(configuredAgentIds)) {
+    for (const id of configuredAgentIds) {
+      if (typeof id !== "string") continue;
+      const trimmed = id.trim();
+      if (trimmed.length > 0) out.add(trimmed);
+    }
+  }
+
+  const agents = state?.agents;
+  if (agents) {
+    for (const [id, raw] of agents.entries()) {
+      const rec = raw as { type?: string; gateway?: string | null } | undefined;
+      if (!rec || rec.type !== "internal") continue;
+      if (!gatewayMatchesNode(rec.gateway, nodeId)) continue;
+      const trimmed = String(id || "").trim();
+      if (trimmed.length > 0) out.add(trimmed);
+    }
+  }
+
+  return Array.from(out);
+}
+
 function getMyPendingTasks(
   state: ReturnType<typeof getAnsibleState>,
   myIds: string[],
@@ -170,9 +215,10 @@ function getMyPendingTasks(
     )
   );
   if (normalizedIds.length === 0) return [];
-  const myId = normalizedIds[0];
   const myIdSet = new Set(normalizedIds);
-  const myContext = state.context?.get(myId) || state.context?.get(normalizedIds[1] || "");
+  const myContext = normalizedIds
+    .map((id) => state.context?.get(id))
+    .find((ctx) => Boolean(ctx));
   const tasks: Task[] = [];
 
   for (const task of state.tasks.values()) {
